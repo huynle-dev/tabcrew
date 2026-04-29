@@ -1,5 +1,5 @@
 import type { ToolContext, ToolHandler, ToolResult } from "../../types/messages.js";
-import { getVideoMetadata } from "../glkvmTab.js";
+import { getVideoMetadata, validateOwnedGlkvmTab } from "../glkvmTab.js";
 import { captureGlkvmFrame, type GlkvmFrame } from "./glkvmFrame.js";
 import { encodeKeyEvent } from "./kvmHidEncoder.js";
 import { buildKeySteps, buildMouseInputPlan, buildTextFallbackSteps, frameSize, type KeyAction, type MouseAction, type MouseInputPlan } from "./kvmInputHidSteps.js";
@@ -112,7 +112,7 @@ function sessionMetadata(session: GlkvmSession): Record<string, unknown> {
 }
 
 export class GlkvmSequenceTool implements ToolHandler {
-  async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const sequenceStartedAt = Date.now();
     const log: SequenceLogEntry[] = [];
     let session: GlkvmSession | undefined;
@@ -128,6 +128,7 @@ export class GlkvmSequenceTool implements ToolHandler {
     try {
       tabId = requireTabId(args);
       if (!Array.isArray(args.steps)) throw new Error('The "steps" argument is required for GLKVM sequence');
+      await validateOwnedGlkvmTab(tabId, context.sessionScope);
       for (let index = 0; index < args.steps.length; index += 1) {
         const rawStep = args.steps[index];
         if (!rawStep || typeof rawStep !== "object" || Array.isArray(rawStep)) throw new Error(`GLKVM sequence step ${index} must be an object`);

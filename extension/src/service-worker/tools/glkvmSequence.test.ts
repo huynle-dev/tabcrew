@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const frameMock = vi.hoisted(() => ({ captureGlkvmFrame: vi.fn() }));
-const tabMock = vi.hoisted(() => ({ getVideoMetadata: vi.fn(), resolveGlkvmTab: vi.fn() }));
+const tabMock = vi.hoisted(() => ({
+  getVideoMetadata: vi.fn(),
+  resolveGlkvmTab: vi.fn(),
+  validateOwnedGlkvmTab: vi.fn(),
+}));
 const transportMock = vi.hoisted(() => ({ cleanupSession: vi.fn(), connect: vi.fn(), send: vi.fn() }));
 
 vi.mock("./glkvmFrame.js", () => frameMock);
@@ -22,6 +26,11 @@ describe("GlkvmSequenceTool", () => {
     vi.clearAllMocks();
     vi.useRealTimers();
     tabMock.getVideoMetadata.mockResolvedValue({ visible: true, videoWidth: 1280, videoHeight: 720, displayRect: { x: 0, y: 0, width: 1280, height: 720 } });
+    tabMock.validateOwnedGlkvmTab.mockResolvedValue({
+      tabId: 42,
+      tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example.com/#/" },
+      ownership: { ok: true, tabId: 42, groupId: 101 },
+    });
     transportMock.connect.mockResolvedValue({ tabId: 42, sessionId: "session-1", createdAt: 123 });
     transportMock.cleanupSession.mockResolvedValue({ ok: true, releasedKeys: 0, releasedButtons: 0 });
     transportMock.send.mockResolvedValue(undefined);
@@ -43,6 +52,7 @@ describe("GlkvmSequenceTool", () => {
       { action: "capture" },
     ] }, {});
     expect(result.success).toBe(true);
+    expect(tabMock.validateOwnedGlkvmTab).toHaveBeenCalledWith(42, undefined);
     expect(tabMock.resolveGlkvmTab).not.toHaveBeenCalled();
     expect(transportMock.connect).toHaveBeenCalledTimes(1);
     expect(transportMock.connect).toHaveBeenCalledWith({ tabId: 42 });
@@ -69,6 +79,15 @@ describe("GlkvmSequenceTool", () => {
     expect(parseJsonResult(result)).toMatchObject({ completed: false, errorType: "sequence_error", error: 'The "tabId" argument is required for GLKVM sequence', log: [] });
   });
 
+  it("requires the explicit tabId to belong to the current OpenCode session", async () => {
+    tabMock.validateOwnedGlkvmTab.mockRejectedValueOnce(new Error("Tab 42 is not owned by this session"));
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "key", key: "A" }] }, { sessionScope: "scope-a" });
+    expect(result.success).toBe(false);
+    expect(tabMock.validateOwnedGlkvmTab).toHaveBeenCalledWith(42, "scope-a");
+    expect(transportMock.connect).not.toHaveBeenCalled();
+    expect(parseJsonResult(result)).toMatchObject({ completed: false, errorType: "sequence_error", error: "Tab 42 is not owned by this session", tabId: 42, log: [] });
+  });
+
   it("releases held inputs and returns a clear error when a sequence wait times out", async () => {
     frameMock.captureGlkvmFrame.mockResolvedValue({ tabId: 42, hash: "same", data: "aaa" });
     const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "key", key: "Shift", keyAction: "down" }, { action: "wait", timeout: 100, pollInterval: 50 }] }, {});
@@ -86,5 +105,17 @@ describe("GlkvmSequenceTool", () => {
     expect(result.success).toBe(false);
     expect(transportMock.cleanupSession).toHaveBeenCalledWith({ tabId: 42, sessionId: "session-1", createdAt: 123 }, { releaseAll: true });
     expect(parseJsonResult(result)).toMatchObject({ completed: false, errorType: "sequence_error", error: "socket closed", log: [{ index: 0, action: "key", status: "error", error: "socket closed" }] });
+  });
+
+  it("cleans up an established HID session when a later capture step fails", async () => {
+    frameMock.captureGlkvmFrame.mockRejectedValueOnce(new Error("tab capture failed"));
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "key", key: "Shift", keyAction: "down" }, { action: "capture" }] }, {});
+    expect(result.success).toBe(false);
+    expect(transportMock.connect).toHaveBeenCalledTimes(1);
+    expect(transportMock.cleanupSession).toHaveBeenCalledWith({ tabId: 42, sessionId: "session-1", createdAt: 123 }, { releaseAll: true });
+    expect(parseJsonResult(result)).toMatchObject({ completed: false, errorType: "sequence_error", error: "tab capture failed", cleanup: { ok: true, releasedKeys: 0, releasedButtons: 0 }, log: [
+      { index: 0, action: "key", status: "ok", key: "Shift", keyAction: "down", sent: 1 },
+      { index: 1, action: "capture", status: "error", error: "tab capture failed" },
+    ] });
   });
 });
