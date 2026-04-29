@@ -16,6 +16,7 @@ import { FindTool } from "./find.js";
 import { FormInputTool } from "./formInput.js";
 import { GetPageTextTool } from "./getPageText.js";
 import { GifCreatorTool } from "./gifCreator.js";
+import { GlkvmScreenshotTool } from "./glkvmScreenshot.js";
 import { GlkvmWaitTool } from "./glkvmWait.js";
 import { GlkvmInputTool } from "./kvmInput.js";
 import { GlkvmOcrTool } from "./kvmOcr.js";
@@ -42,6 +43,7 @@ export function registerTools(router: MessageRouter): void {
   router.register(TOOL_NAMES.FORM_INPUT, new FormInputTool());
   router.register(TOOL_NAMES.GET_PAGE_TEXT, new GetPageTextTool());
   router.register(TOOL_NAMES.GIF_CREATOR, new GifCreatorTool());
+  router.register(TOOL_NAMES.GLKVM_SCREENSHOT, new GlkvmScreenshotTool());
   router.register(TOOL_NAMES.GLKVM_WAIT, new GlkvmWaitTool());
   router.register(TOOL_NAMES.GLKVM_INPUT, new GlkvmInputTool());
   router.register(TOOL_NAMES.GLKVM_OCR, new GlkvmOcrTool());
