@@ -3,8 +3,14 @@ import type {
   ToolHandler,
   ToolResult,
 } from "../../types/messages.js";
-import { resolveGlkvmTab } from "../glkvmTab.js";
-import { encodeKeyEvent } from "./kvmHidEncoder.js";
+import { getVideoMetadata, resolveGlkvmTab } from "../glkvmTab.js";
+import {
+  encodeKeyEvent,
+  encodeMouseButton,
+  encodeMouseMove,
+  encodeMouseWheel,
+  mapToAbsolute,
+} from "./kvmHidEncoder.js";
 import {
   cleanupSession,
   connect,
@@ -16,7 +22,21 @@ import {
 
 type KeyAction = "press" | "down" | "up" | "hotkey" | "chord";
 
+type MouseAction = "click" | "move" | "drag" | "scroll";
+
+type MouseButton = "left" | "middle" | "right";
+
 type FallbackMode = "keys" | "none";
+
+interface MousePoint {
+  x: number;
+  y: number;
+}
+
+interface MappedMousePoint extends MousePoint {
+  absoluteX: number;
+  absoluteY: number;
+}
 
 interface KeyStep {
   key: string;
@@ -75,6 +95,9 @@ const EXPLICIT_CODE_PATTERN = /^(Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-2])|(?:Contro
 
 const MAX_PASTE_TEXT_LENGTH = 4096;
 
+const MOUSE_METADATA_ERROR =
+  "GLKVM video metadata is stale or unavailable. Capture a fresh glkvm_screenshot before sending mouse input.";
+
 export function resolveKvmdKeyName(key: string): string {
   const trimmed = key.trim();
   if (!trimmed) {
@@ -129,6 +152,34 @@ function getFallbackMode(value: unknown): FallbackMode {
   if (typeof value !== "string") return "keys";
   if (value === "keys" || value === "none") return value;
   throw new Error(`Unsupported GLKVM type fallback: ${value}`);
+}
+
+function getMouseButton(value: unknown): MouseButton {
+  if (value === undefined) return "left";
+  if (value === "left" || value === "middle" || value === "right") return value;
+  throw new Error(`Unsupported GLKVM mouse button: ${String(value)}`);
+}
+
+function getRequiredNumber(args: Record<string, unknown>, name: string): number {
+  const value = args[name];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(
+      `The "${name}" argument is required and must be a finite number`,
+    );
+  }
+  return value;
+}
+
+function getMouseAction(value: unknown): MouseAction | undefined {
+  if (
+    value === "click"
+    || value === "move"
+    || value === "drag"
+    || value === "scroll"
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function fallbackKeyForCharacter(char: string): string {
@@ -197,6 +248,44 @@ function cleanupFailureResult(cleanup: CleanupOutcome): ToolResult {
   });
 }
 
+function frameSize(video: {
+  videoWidth: number;
+  videoHeight: number;
+  visible: boolean;
+  displayRect: { width: number; height: number };
+}): { width: number; height: number } {
+  const width = Math.round(video.displayRect.width);
+  const height = Math.round(video.displayRect.height);
+  if (
+    !video.visible
+    || video.videoWidth <= 0
+    || video.videoHeight <= 0
+    || width <= 0
+    || height <= 0
+  ) {
+    throw new Error(MOUSE_METADATA_ERROR);
+  }
+  return { width, height };
+}
+
+function mapMousePoint(
+  point: MousePoint,
+  size: { width: number; height: number },
+): MappedMousePoint {
+  return {
+    ...point,
+    absoluteX: mapToAbsolute(point.x, 0, size.width),
+    absoluteY: mapToAbsolute(point.y, 0, size.height),
+  };
+}
+
+function formatPoint(point: MappedMousePoint): Record<string, unknown> {
+  return {
+    screenshot: { x: point.x, y: point.y },
+    absolute: { x: point.absoluteX, y: point.absoluteY },
+  };
+}
+
 function json(success: boolean, value: Record<string, unknown>): ToolResult {
   return {
     success,
@@ -214,7 +303,11 @@ export class GlkvmInputTool implements ToolHandler {
     try {
       if (args.action !== "key") {
         if (args.action !== "type") {
-          throw new Error(`Unsupported GLKVM input action: ${String(args.action)}`);
+          const mouseAction = getMouseAction(args.action);
+          if (mouseAction) return await this.executeMouse(args, mouseAction);
+          throw new Error(
+            `Unsupported GLKVM input action: ${String(args.action)}`,
+          );
         }
 
         return await this.executeType(args);
@@ -311,6 +404,133 @@ export class GlkvmInputTool implements ToolHandler {
         sessionId: session.sessionId,
         sent: steps.length,
         pasteError: error instanceof Error ? error.message : String(error),
+        cleanup: formatCleanup(cleanup),
+      });
+    }
+  }
+
+  private async executeMouse(
+    args: Record<string, unknown>,
+    action: MouseAction,
+  ): Promise<ToolResult> {
+    let session: GlkvmSession | undefined;
+    let cleanup: CleanupOutcome | undefined;
+    try {
+      const target = typeof args.target === "string" ? args.target : undefined;
+      const sessionId =
+        typeof args.sessionId === "string" ? args.sessionId : undefined;
+      const resolved = await resolveGlkvmTab(target ? { target } : undefined);
+
+      const packets: Uint8Array[] = [];
+      const response: Record<string, unknown> = { action };
+
+      if (action === "scroll") {
+        const direction =
+          args.direction === "up"
+            ? "up"
+            : args.direction === "down"
+              ? "down"
+              : undefined;
+        if (!direction) {
+          throw new Error(
+            'The "direction" argument is required for GLKVM scroll input',
+          );
+        }
+        const amount =
+          args.amount === undefined ? 1 : getRequiredNumber(args, "amount");
+        packets.push(
+          encodeMouseWheel([
+            { dx: 0, dy: direction === "down" ? -amount : amount },
+          ]),
+        );
+        response.direction = direction;
+        response.amount = amount;
+      } else {
+        const video = await getVideoMetadata(resolved.tabId);
+        const size = frameSize(video);
+        const button = getMouseButton(args.button);
+
+        if (action === "drag") {
+          const start = mapMousePoint(
+            {
+              x: getRequiredNumber(args, "startX"),
+              y: getRequiredNumber(args, "startY"),
+            },
+            size,
+          );
+          const end = mapMousePoint(
+            {
+              x: getRequiredNumber(args, "endX"),
+              y: getRequiredNumber(args, "endY"),
+            },
+            size,
+          );
+          packets.push(
+            encodeMouseMove(start.absoluteX, start.absoluteY),
+            encodeMouseButton(button, true),
+            encodeMouseMove(end.absoluteX, end.absoluteY),
+            encodeMouseButton(button, false),
+          );
+          response.button = button;
+          response.coordinates = {
+            start: formatPoint(start),
+            end: formatPoint(end),
+            screenshot: { width: size.width, height: size.height },
+          };
+        } else {
+          const point = mapMousePoint(
+            {
+              x: getRequiredNumber(args, "x"),
+              y: getRequiredNumber(args, "y"),
+            },
+            size,
+          );
+          packets.push(encodeMouseMove(point.absoluteX, point.absoluteY));
+          response.coordinates = {
+            screenshot: {
+              x: point.x,
+              y: point.y,
+              width: size.width,
+              height: size.height,
+            },
+            absolute: { x: point.absoluteX, y: point.absoluteY },
+          };
+
+          if (action === "click") {
+            packets.push(
+              encodeMouseButton(button, true),
+              encodeMouseButton(button, false),
+            );
+            response.button = button;
+          }
+        }
+      }
+
+      session = await connect({
+        tabId: resolved.tabId,
+        ...(sessionId ? { sessionId } : {}),
+      });
+
+      for (const packet of packets) {
+        await send({ session, packets: [packet] });
+      }
+
+      cleanup = await cleanupSession(session, { releaseAll: true });
+      if (!cleanup.ok) return cleanupFailureResult(cleanup);
+
+      return json(true, {
+        ...response,
+        sessionId: session.sessionId,
+        sent: packets.length,
+        cleanup: formatCleanup(cleanup),
+      });
+    } catch (error) {
+      if (session) {
+        cleanup = await cleanupSession(session, { releaseAll: true });
+      }
+      return json(false, {
+        errorType: "input_error",
+        error: error instanceof Error ? error.message : String(error),
         cleanup: formatCleanup(cleanup),
       });
     }

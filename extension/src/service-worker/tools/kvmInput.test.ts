@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const glkvmTabMock = vi.hoisted(() => ({
+  getVideoMetadata: vi.fn(),
   resolveGlkvmTab: vi.fn(),
 }));
 
@@ -20,6 +21,39 @@ function decodeKeyPacket(packet: Uint8Array): { down: boolean; key: string } {
   return {
     down: packet[1] === 1,
     key: new TextDecoder().decode(packet.slice(2)),
+  };
+}
+
+function toInt8(byte: number): number {
+  return byte > 127 ? byte - 256 : byte;
+}
+
+function decodeMouseButtonPacket(packet: Uint8Array): {
+  down: boolean;
+  button: string;
+} {
+  return {
+    down: packet[1] === 1,
+    button: new TextDecoder().decode(packet.slice(2)),
+  };
+}
+
+function decodeInt16BE(hi: number, lo: number): number {
+  const value = (hi << 8) | lo;
+  return value >= 0x8000 ? value - 0x10000 : value;
+}
+
+function sentPackets(): Uint8Array[] {
+  return transportMock.send.mock.calls.map(
+    (call) => call[0].packets[0] as Uint8Array,
+  );
+}
+
+function sentMouseMove(packet: Uint8Array): { x: number; y: number } {
+  expect(packet[0]).toBe(0x03);
+  return {
+    x: decodeInt16BE(packet[1], packet[2]),
+    y: decodeInt16BE(packet[3], packet[4]),
   };
 }
 
@@ -71,6 +105,12 @@ describe("GlkvmInputTool keyboard input", () => {
         url: "https://kvm.example.com/#/",
       },
     });
+    glkvmTabMock.getVideoMetadata.mockResolvedValue({
+      videoWidth: 1920,
+      videoHeight: 1080,
+      displayRect: { x: 20, y: 40, width: 960, height: 540 },
+      visible: true,
+    });
 
     transportMock.connect.mockResolvedValue({
       tabId: 42,
@@ -79,7 +119,11 @@ describe("GlkvmInputTool keyboard input", () => {
     });
     transportMock.send.mockResolvedValue(undefined);
     transportMock.pasteText.mockResolvedValue(undefined);
-    transportMock.cleanupSession.mockResolvedValue({ ok: true, releasedKeys: 0, releasedButtons: 0 });
+    transportMock.cleanupSession.mockResolvedValue({
+      ok: true,
+      releasedKeys: 0,
+      releasedButtons: 0,
+    });
   });
 
   it("presses a single key as down then up", async () => {
@@ -296,5 +340,122 @@ describe("GlkvmInputTool keyboard input", () => {
       expect.objectContaining({ sessionId: "__oc_kvm_test" }),
       { releaseAll: true },
     );
+  });
+
+  it("clicks by mapping screenshot coordinates to GLKVM absolute HID coordinates", async () => {
+    const result = await new GlkvmInputTool().execute(
+      { action: "click", x: 480, y: 270, button: "right" },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+    const packets = sentPackets();
+    expect(sentMouseMove(packets[0])).toEqual({ x: 0, y: 0 });
+    expect(decodeMouseButtonPacket(packets[1])).toEqual({
+      down: true,
+      button: "right",
+    });
+    expect(decodeMouseButtonPacket(packets[2])).toEqual({
+      down: false,
+      button: "right",
+    });
+    expect(parseJsonResult(result)).toMatchObject({
+      action: "click",
+      button: "right",
+      coordinates: {
+        screenshot: { x: 480, y: 270, width: 960, height: 540 },
+        absolute: { x: 0, y: 0 },
+      },
+      sent: 3,
+      cleanup: { ok: true },
+    });
+  });
+
+  it("moves with bounds clamped to the signed absolute HID range", async () => {
+    const result = await new GlkvmInputTool().execute(
+      { action: "move", x: -10, y: 999 },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+    expect(sentMouseMove(sentPackets()[0])).toEqual({ x: -32768, y: 32767 });
+    expect(parseJsonResult(result)).toMatchObject({
+      action: "move",
+      sent: 1,
+    });
+  });
+
+  it("drags from start to end coordinates with button held", async () => {
+    const result = await new GlkvmInputTool().execute(
+      {
+        action: "drag",
+        startX: 0,
+        startY: 0,
+        endX: 960,
+        endY: 540,
+        button: "left",
+      },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+    const packets = sentPackets();
+    expect(sentMouseMove(packets[0])).toEqual({ x: -32768, y: -32768 });
+    expect(decodeMouseButtonPacket(packets[1])).toEqual({
+      down: true,
+      button: "left",
+    });
+    expect(sentMouseMove(packets[2])).toEqual({ x: 32767, y: 32767 });
+    expect(decodeMouseButtonPacket(packets[3])).toEqual({
+      down: false,
+      button: "left",
+    });
+    expect(parseJsonResult(result)).toMatchObject({
+      action: "drag",
+      button: "left",
+      sent: 4,
+    });
+  });
+
+  it("scrolls with signed wheel deltas", async () => {
+    const result = await new GlkvmInputTool().execute(
+      { action: "scroll", direction: "down", amount: 3 },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+    const packet = sentPackets()[0];
+    expect(packet[0]).toBe(0x05);
+    expect(packet[1]).toBe(0);
+    expect(toInt8(packet[2])).toBe(0);
+    expect(toInt8(packet[3])).toBe(-3);
+    expect(parseJsonResult(result)).toMatchObject({
+      action: "scroll",
+      direction: "down",
+      amount: 3,
+      sent: 1,
+    });
+  });
+
+  it("reports stale or missing video frame metadata before sending mouse input", async () => {
+    glkvmTabMock.getVideoMetadata.mockResolvedValueOnce({
+      videoWidth: 0,
+      videoHeight: 0,
+      displayRect: { x: 0, y: 0, width: 0, height: 0 },
+      visible: true,
+    });
+
+    const result = await new GlkvmInputTool().execute(
+      { action: "click", x: 10, y: 10 },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(transportMock.connect).not.toHaveBeenCalled();
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "input_error",
+      error:
+        "GLKVM video metadata is stale or unavailable. Capture a fresh glkvm_screenshot before sending mouse input.",
+    });
   });
 });
