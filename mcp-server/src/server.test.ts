@@ -22,9 +22,9 @@ describe("getToolSchemas", () => {
     expect(schema.inputSchema.required).toContain(property);
   };
 
-  it("returns exactly 21 tool schemas", () => {
+  it("returns one schema for each shared tool name", () => {
     const schemas = getToolSchemas();
-    expect(schemas).toHaveLength(21);
+    expect(schemas).toHaveLength(ALL_TOOL_NAMES.length);
   });
 
   it("includes all tool names from shared constants", () => {
@@ -203,11 +203,14 @@ describe("getToolSchemas", () => {
   });
 
   it("registers the GLKVM tool schemas from shared constants", () => {
+    expect(schemaFor(TOOL_NAMES.GLKVM_OPEN).description).toContain("GLKVM");
+    expect(schemaFor(TOOL_NAMES.GLKVM_ATTACH).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_STATUS).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_SCREENSHOT).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_INPUT).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_WAIT).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_SEQUENCE).description).toContain("GLKVM");
+    expect(schemaFor(TOOL_NAMES.GLKVM_NAV).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_OCR).description).toContain("GLKVM");
   });
 
@@ -217,29 +220,62 @@ describe("getToolSchemas", () => {
     expect(schema.description).toContain("optional");
     expect(schema.description).toContain("unavailable");
     expect(schema.inputSchema.properties).toMatchObject({
-      target: { type: "string" },
+      tabId: { type: "number" },
       sessionId: { type: "string" },
       language: { type: "string" },
       region: { type: "object" },
     });
-    expect(schema.inputSchema.required ?? []).toEqual([]);
+    expect(schema.inputSchema.required).toContain("tabId");
   });
 
-  it("uses explicit GLKVM target/session targeting instead of tabId", () => {
+  it("uses explicit OpenCode-owned tabId targeting for GLKVM tools", () => {
     const glkvmTools = [
       TOOL_NAMES.GLKVM_STATUS,
       TOOL_NAMES.GLKVM_SCREENSHOT,
       TOOL_NAMES.GLKVM_INPUT,
       TOOL_NAMES.GLKVM_WAIT,
+      TOOL_NAMES.GLKVM_SEQUENCE,
+      TOOL_NAMES.GLKVM_NAV,
       TOOL_NAMES.GLKVM_OCR,
     ];
 
     for (const toolName of glkvmTools) {
       const schema = schemaFor(toolName);
-      expect(schema.inputSchema.properties).toHaveProperty("target");
+      expect(schema.inputSchema.properties).toHaveProperty("tabId");
       expect(schema.inputSchema.properties).toHaveProperty("sessionId");
-      expect(schema.inputSchema.properties).not.toHaveProperty("tabId");
+      expect(schema.inputSchema.properties).not.toHaveProperty("target");
+      expect(schema.inputSchema.required).toContain("tabId");
+      expect(schema.inputSchema.properties.tabId.description).toContain(
+        "OpenCode-owned",
+      );
     }
+  });
+
+  it("advertises GLKVM open and attach ownership tools", () => {
+    const openSchema = schemaFor(TOOL_NAMES.GLKVM_OPEN);
+    expect(openSchema.description).toContain("OpenCode-owned");
+    expect(openSchema.inputSchema.properties).toEqual(
+      expect.objectContaining({
+        url: expect.any(Object),
+        active: expect.any(Object),
+        timeout: expect.any(Object),
+      })
+    );
+    expect(openSchema.inputSchema.required).toContain("url");
+    expect(openSchema.inputSchema.properties).not.toHaveProperty("tabId");
+
+    const attachSchema = schemaFor(TOOL_NAMES.GLKVM_ATTACH);
+    expect(attachSchema.description).toContain("OpenCode-owned");
+    expect(attachSchema.inputSchema.properties).toEqual(
+      expect.objectContaining({
+        tabId: expect.any(Object),
+        timeout: expect.any(Object),
+      })
+    );
+    expect(attachSchema.inputSchema.required).toContain("tabId");
+    expect(attachSchema.inputSchema.properties.tabId.description).toContain(
+      "OpenCode-owned",
+    );
   });
 
   it("advertises GLKVM screenshot OCR as optional", () => {
@@ -270,12 +306,13 @@ describe("getToolSchemas", () => {
     expect(waitSchema.description).toContain("change");
     expect(waitSchema.inputSchema.properties).toEqual(
       expect.objectContaining({
-        target: expect.any(Object),
+        tabId: expect.any(Object),
         sessionId: expect.any(Object),
         timeout: expect.any(Object),
         pollInterval: expect.any(Object),
       })
     );
+    expect(waitSchema.inputSchema.required).toContain("tabId");
     expect(waitSchema.inputSchema.properties).not.toHaveProperty("text");
     expect(waitSchema.inputSchema.properties).not.toHaveProperty("includeOcr");
     expect(waitSchema.inputSchema.properties).not.toHaveProperty("interval");
@@ -310,6 +347,41 @@ describe("getToolSchemas", () => {
       })
     );
   });
+
+  it("advertises GLKVM navigation macro arguments", () => {
+    const navSchema = schemaFor(TOOL_NAMES.GLKVM_NAV);
+
+    expect(navSchema.description).toContain("OS-aware");
+    expect(navSchema.description).toContain("OpenCode-owned");
+    expect(navSchema.inputSchema.required).toEqual(
+      expect.arrayContaining(["tabId", "macro"]),
+    );
+    expect(navSchema.inputSchema.properties).toEqual(
+      expect.objectContaining({
+        tabId: expect.any(Object),
+        sessionId: expect.any(Object),
+        macro: expect.objectContaining({
+          enum: [
+            "app_switch",
+            "app_switch_n",
+            "open_launcher",
+            "open_app",
+            "confirm",
+            "escape",
+            "next_field",
+            "previous_field",
+          ],
+        }),
+        os: expect.objectContaining({
+          enum: ["macos", "windows", "linux", "unknown"],
+        }),
+        app: expect.any(Object),
+        count: expect.any(Object),
+        timeout: expect.any(Object),
+        pollInterval: expect.any(Object),
+      })
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -341,9 +413,9 @@ describe("createMcpServer", () => {
     ]);
   });
 
-  it("lists all 21 tools via MCP protocol", async () => {
+  it("lists all shared tools via MCP protocol", async () => {
     const result = await client.listTools();
-    expect(result.tools).toHaveLength(21);
+    expect(result.tools).toHaveLength(ALL_TOOL_NAMES.length);
   });
 
   it("tool names match shared constants", async () => {

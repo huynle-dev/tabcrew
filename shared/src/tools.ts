@@ -37,6 +37,10 @@ export const TOOL_NAMES = {
   TABS_CLOSE: "tabs_close",
   /** Record browser actions as a GIF */
   GIF_CREATOR: "gif_creator",
+  /** Open a GLKVM URL in an OpenCode-owned tab */
+  GLKVM_OPEN: "glkvm_open",
+  /** Attach an existing GLKVM tab as OpenCode-owned */
+  GLKVM_ATTACH: "glkvm_attach",
   /** Get GLKVM connection and session status */
   GLKVM_STATUS: "glkvm_status",
   /** Capture a screenshot from a GLKVM target */
@@ -47,6 +51,8 @@ export const TOOL_NAMES = {
   GLKVM_WAIT: "glkvm_wait",
   /** Execute a batch of GLKVM input, capture, and frame wait steps */
   GLKVM_SEQUENCE: "glkvm_sequence",
+  /** Run an OS-aware GLKVM navigation macro */
+  GLKVM_NAV: "glkvm_nav",
   /** Read optional GLKVM OCR text when the device exposes OCR support */
   GLKVM_OCR: "glkvm_ocr",
 } as const;

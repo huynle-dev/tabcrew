@@ -1,7 +1,7 @@
 /**
  * MCP Server that exposes Chrome browser tools to OpenCode.
  *
- * Registers 19 tool schemas via the MCP protocol and forwards
+ * Registers 24 tool schemas via the MCP protocol and forwards
  * tool calls to the Chrome extension through the native host socket.
  */
 
@@ -400,31 +400,76 @@ const TOOL_SCHEMAS: Tool[] = [
     },
   },
   {
+    name: TOOL_NAMES.GLKVM_OPEN,
+    description:
+      "Open a GLKVM URL in an OpenCode-owned tab and return its tabId for subsequent GLKVM tools",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "GLKVM web UI URL to open in an OpenCode-owned tab",
+        },
+        active: {
+          type: "boolean",
+          description: "Whether to foreground the owned tab (default: true)",
+        },
+        timeout: {
+          type: "number",
+          description:
+            "Maximum time to wait for the GLKVM tab to become ready in milliseconds",
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: TOOL_NAMES.GLKVM_ATTACH,
+    description:
+      "Attach an existing logged-in GLKVM tab as OpenCode-owned and return its tabId for subsequent GLKVM tools",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId: {
+          type: "number",
+          description: "Existing Chrome tab ID to mark as an OpenCode-owned GLKVM tab",
+        },
+        timeout: {
+          type: "number",
+          description:
+            "Maximum time to wait for the attached GLKVM tab to become ready in milliseconds",
+        },
+      },
+      required: ["tabId"],
+    },
+  },
+  {
     name: TOOL_NAMES.GLKVM_STATUS,
     description: "Get GLKVM connection and session status",
     inputSchema: {
       type: "object",
       properties: {
-        target: {
-          type: "string",
-          description: "GLKVM target identifier or URL",
+        tabId: {
+          type: "number",
+          description: "OpenCode-owned GLKVM tab ID to inspect",
         },
         sessionId: {
           type: "string",
           description: "Existing GLKVM session ID to inspect",
         },
       },
+      required: ["tabId"],
     },
   },
   {
     name: TOOL_NAMES.GLKVM_SCREENSHOT,
-    description: "Capture a screenshot from a GLKVM target",
+    description: "Capture a screenshot from an OpenCode-owned GLKVM tab",
     inputSchema: {
       type: "object",
       properties: {
-        target: {
-          type: "string",
-          description: "GLKVM target identifier or URL",
+        tabId: {
+          type: "number",
+          description: "OpenCode-owned GLKVM tab ID to capture from",
         },
         sessionId: {
           type: "string",
@@ -435,17 +480,18 @@ const TOOL_SCHEMAS: Tool[] = [
           description: "Whether to include OCR text extracted from the screenshot",
         },
       },
+      required: ["tabId"],
     },
   },
   {
     name: TOOL_NAMES.GLKVM_INPUT,
-    description: "Send keyboard and pointer input to a GLKVM target",
+    description: "Send keyboard and pointer input to an OpenCode-owned GLKVM tab",
     inputSchema: {
       type: "object",
       properties: {
-        target: {
-          type: "string",
-          description: "GLKVM target identifier or URL",
+        tabId: {
+          type: "number",
+          description: "OpenCode-owned GLKVM tab ID to send input to",
         },
         sessionId: {
           type: "string",
@@ -515,19 +561,19 @@ const TOOL_SCHEMAS: Tool[] = [
           description: 'End Y coordinate for the "drag" action',
         },
       },
-      required: ["action"],
+      required: ["tabId", "action"],
     },
   },
   {
     name: TOOL_NAMES.GLKVM_WAIT,
     description:
-      "Wait for a GLKVM target's captured video frame to change after an action",
+      "Wait for an OpenCode-owned GLKVM tab's captured video frame to change after an action",
     inputSchema: {
       type: "object",
       properties: {
-        target: {
-          type: "string",
-          description: "GLKVM target identifier or URL",
+        tabId: {
+          type: "number",
+          description: "OpenCode-owned GLKVM tab ID to poll for frame changes",
         },
         sessionId: {
           type: "string",
@@ -542,18 +588,19 @@ const TOOL_SCHEMAS: Tool[] = [
           description: "Polling interval in milliseconds (default: 250)",
         },
       },
+      required: ["tabId"],
     },
   },
   {
     name: TOOL_NAMES.GLKVM_SEQUENCE,
     description:
-      "Execute batched GLKVM key, capture, and frame wait steps over one control loop.",
+      "Execute batched GLKVM key, capture, and frame wait steps over one OpenCode-owned tab control loop.",
     inputSchema: {
       type: "object",
       properties: {
         tabId: {
           type: "number",
-          description: "Explicit GLKVM tab ID to target for the sequence",
+          description: "OpenCode-owned GLKVM tab ID to target for the sequence",
         },
         sessionId: {
           type: "string",
@@ -660,15 +707,69 @@ const TOOL_SCHEMAS: Tool[] = [
     },
   },
   {
+    name: TOOL_NAMES.GLKVM_NAV,
+    description:
+      "Run an OS-aware navigation macro on an OpenCode-owned GLKVM tab using KVM HID sequence steps",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId: {
+          type: "number",
+          description: "OpenCode-owned GLKVM tab ID to target for navigation",
+        },
+        sessionId: {
+          type: "string",
+          description: "Existing GLKVM HID session ID to reuse when available",
+        },
+        macro: {
+          type: "string",
+          enum: [
+            "app_switch",
+            "app_switch_n",
+            "open_launcher",
+            "open_app",
+            "confirm",
+            "escape",
+            "next_field",
+            "previous_field",
+          ],
+          description: "Navigation macro to expand into GLKVM sequence steps",
+        },
+        os: {
+          type: "string",
+          enum: ["macos", "windows", "linux", "unknown"],
+          description: 'Remote OS profile for shortcut expansion (default: "unknown")',
+        },
+        app: {
+          type: "string",
+          description: 'Application name or launcher text for the "open_app" macro',
+        },
+        count: {
+          type: "number",
+          description: 'Number of app switch steps for the "app_switch_n" macro',
+        },
+        timeout: {
+          type: "number",
+          description: "Maximum time to wait in milliseconds for frame waits",
+        },
+        pollInterval: {
+          type: "number",
+          description: "Polling interval in milliseconds for frame waits",
+        },
+      },
+      required: ["tabId", "macro"],
+    },
+  },
+  {
     name: TOOL_NAMES.GLKVM_OCR,
     description:
       "Read optional GLKVM OCR text from a selected remote-frame region when the target reports OCR support; returns clear unavailable errors when OCR, text extraction, or language support is unavailable.",
     inputSchema: {
       type: "object",
       properties: {
-        target: {
-          type: "string",
-          description: "GLKVM target identifier or URL",
+        tabId: {
+          type: "number",
+          description: "OpenCode-owned GLKVM tab ID to read OCR from",
         },
         sessionId: {
           type: "string",
@@ -690,6 +791,7 @@ const TOOL_SCHEMAS: Tool[] = [
           },
         },
       },
+      required: ["tabId"],
     },
   },
 ];
