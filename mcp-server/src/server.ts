@@ -544,6 +544,39 @@ const TOOL_SCHEMAS: Tool[] = [
       },
     },
   },
+  {
+    name: TOOL_NAMES.GLKVM_OCR,
+    description:
+      "Read optional GLKVM OCR text from a selected remote-frame region when the target reports OCR support; returns clear unavailable errors when OCR, text extraction, or language support is unavailable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          description: "GLKVM target identifier or URL",
+        },
+        sessionId: {
+          type: "string",
+          description: "Existing GLKVM session ID to reuse",
+        },
+        language: {
+          type: "string",
+          description: "Optional OCR language to request when supported",
+        },
+        region: {
+          type: "object",
+          description:
+            "Optional selected remote-frame region in intrinsic video pixels",
+          properties: {
+            x: { type: "number", description: "Region X coordinate" },
+            y: { type: "number", description: "Region Y coordinate" },
+            width: { type: "number", description: "Region width" },
+            height: { type: "number", description: "Region height" },
+          },
+        },
+      },
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

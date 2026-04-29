@@ -45,6 +45,8 @@ export const TOOL_NAMES = {
   GLKVM_INPUT: "glkvm_input",
   /** Wait for a GLKVM target's captured video frame to change */
   GLKVM_WAIT: "glkvm_wait",
+  /** Read optional GLKVM OCR text when the device exposes OCR support */
+  GLKVM_OCR: "glkvm_ocr",
 } as const;
 
 /** Union type of all valid tool name strings */

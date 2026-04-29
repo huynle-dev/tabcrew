@@ -18,6 +18,7 @@ import { GetPageTextTool } from "./getPageText.js";
 import { GifCreatorTool } from "./gifCreator.js";
 import { GlkvmWaitTool } from "./glkvmWait.js";
 import { GlkvmInputTool } from "./kvmInput.js";
+import { GlkvmOcrTool } from "./kvmOcr.js";
 import { JavaScriptTool } from "./javascript.js";
 import { NavigateTool } from "./navigate.js";
 import { NetworkTool } from "./network.js";
@@ -43,6 +44,7 @@ export function registerTools(router: MessageRouter): void {
   router.register(TOOL_NAMES.GIF_CREATOR, new GifCreatorTool());
   router.register(TOOL_NAMES.GLKVM_WAIT, new GlkvmWaitTool());
   router.register(TOOL_NAMES.GLKVM_INPUT, new GlkvmInputTool());
+  router.register(TOOL_NAMES.GLKVM_OCR, new GlkvmOcrTool());
   router.register(TOOL_NAMES.JAVASCRIPT, new JavaScriptTool());
   router.register(TOOL_NAMES.NAVIGATE, new NavigateTool());
   router.register(TOOL_NAMES.READ_NETWORK, new NetworkTool());
