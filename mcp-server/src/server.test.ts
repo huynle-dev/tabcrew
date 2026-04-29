@@ -239,6 +239,8 @@ describe("getToolSchemas", () => {
       action: {
         enum: ["key", "type", "click", "move", "drag", "scroll"],
       },
+      keyAction: { enum: ["press", "down", "up", "hotkey", "chord"] },
+      fallback: { enum: ["keys", "none"] },
       button: { enum: ["left", "middle", "right"] },
       direction: { enum: ["up", "down"] },
     });

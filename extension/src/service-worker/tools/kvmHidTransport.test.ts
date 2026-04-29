@@ -21,9 +21,15 @@ vi.mock("../cdp.js", () => ({
 const {
   connect,
   send,
+  pasteText,
   close,
+  cleanupSession,
+  cleanupSessionsForTab,
+  releaseAll,
+  getHidSessionsForTab,
   getSessionStatus,
   generateSessionId,
+  initKvmHidCleanup,
   GlkvmTransportError,
 } = await import("./kvmHidTransport.js");
 
@@ -309,6 +315,29 @@ describe("send", () => {
     expect(expression).toContain("[3,0,0,0,0]");
   });
 
+  it("tracks pressed keys and mouse buttons in the page session wrapper", async () => {
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({ ok: true }),
+    );
+
+    await send({
+      session,
+      packets: [
+        new Uint8Array([0x01, 1, 75, 101, 121, 65]), // KeyA down
+        new Uint8Array([0x02, 1, 108, 101, 102, 116]), // left down
+        new Uint8Array([0x01, 0, 75, 101, 121, 65]), // KeyA up
+      ],
+    });
+
+    const expression = cdpManagerMock.sendCommand.mock.calls[0][2]
+      .expression as string;
+    expect(expression).toContain("pressedKeys");
+    expect(expression).toContain("pressedButtons");
+    expect(expression).toContain("pressedKeys.add");
+    expect(expression).toContain("pressedKeys.delete");
+    expect(expression).toContain("pressedButtons.add");
+  });
+
   it("does nothing for empty packet array", async () => {
     await send({ session, packets: [] });
     expect(cdpManagerMock.sendCommand).not.toHaveBeenCalled();
@@ -358,6 +387,163 @@ describe("send", () => {
 });
 
 // ---------------------------------------------------------------------------
+// pasteText
+// ---------------------------------------------------------------------------
+
+describe("pasteText", () => {
+  it("posts text to the KVMD paste-as-keys endpoint in page context", async () => {
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({ ok: true, status: 200 }),
+    );
+
+    await pasteText({ tabId: 42, text: "hello world" });
+
+    expect(cdpManagerMock.sendCommand).toHaveBeenCalledWith(
+      42,
+      "Runtime.evaluate",
+      expect.objectContaining({
+        returnByValue: true,
+        awaitPromise: true,
+      }),
+    );
+    const expression = cdpManagerMock.sendCommand.mock.calls[0][2]
+      .expression as string;
+    expect(expression).toContain("fetch(\"/api/hid/print\"");
+    expect(expression).toContain("method: \"POST\"");
+    expect(expression).toContain("credentials: \"include\"");
+    expect(expression).toContain("text/plain;charset=UTF-8");
+    expect(expression).toContain("hello world");
+  });
+
+  it("throws a transport error for paste-as-keys endpoint failures", async () => {
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({
+        ok: false,
+        status: 503,
+        error: "GLKVM paste-as-keys endpoint returned 503: HID offline",
+        errorCode: "PROTOCOL_ERROR",
+      }),
+    );
+
+    await expect(pasteText({ tabId: 42, text: "hello" })).rejects.toMatchObject({
+      code: "PROTOCOL_ERROR",
+      message: "GLKVM paste-as-keys endpoint returned 503: HID offline",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cleanupSession / releaseAll
+// ---------------------------------------------------------------------------
+
+describe("cleanupSession", () => {
+  const session = {
+    sessionId: "__oc_kvm_test",
+    tabId: 42,
+    createdAt: Date.now(),
+  };
+
+  it("is exported as an explicit cleanup API", () => {
+    expect(cleanupSession).toBeTypeOf("function");
+  });
+
+  it("can release tracked keys and buttons without closing the session", async () => {
+    expect(releaseAll).toBeTypeOf("function");
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({ ok: true, releasedKeys: 1, releasedButtons: 1 }),
+    );
+
+    const outcome = await releaseAll(session);
+
+    expect(outcome).toEqual({ ok: true, releasedKeys: 1, releasedButtons: 1 });
+    const expression = cdpManagerMock.sendCommand.mock.calls[0][2]
+      .expression as string;
+    expect(expression).toContain("pressedKeys");
+    expect(expression).toContain("pressedButtons");
+    expect(expression).toContain("ws.send");
+    expect(expression).toContain("new Uint8Array([1, 0");
+    expect(expression).toContain("new Uint8Array([2, 0");
+    expect(expression).toContain("pressedKeys.clear()");
+    expect(expression).toContain("pressedButtons.clear()");
+    expect(expression).not.toContain("ws.close()");
+  });
+
+  it("returns cleanup failures as outcome data instead of throwing", async () => {
+    expect(cleanupSession).toBeTypeOf("function");
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({
+        ok: false,
+        cleanupFailed: true,
+        error: "Release-all failed: InvalidStateError",
+        errorCode: "PROTOCOL_ERROR",
+      }),
+    );
+
+    const outcome = await cleanupSession(session, { releaseAll: true });
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      cleanupFailed: true,
+      error: "Release-all failed: InvalidStateError",
+      errorCode: "PROTOCOL_ERROR",
+    });
+  });
+
+  it("cleans up and unregisters tracked sessions for an explicit tab cleanup", async () => {
+    cdpManagerMock.sendCommand
+      .mockResolvedValueOnce(mockEvalResult({ ok: true, readyState: 1 }))
+      .mockResolvedValueOnce(mockEvalResult({ ok: true, releasedKeys: 1 }));
+
+    const tracked = await connect({ tabId: 900 });
+
+    expect(getHidSessionsForTab(900)).toEqual([tracked]);
+
+    const outcomes = await cleanupSessionsForTab(900, {
+      releaseAll: true,
+      close: true,
+    });
+
+    expect(outcomes).toEqual([
+      expect.objectContaining({
+        tabId: 900,
+        sessionId: tracked.sessionId,
+        ok: true,
+        releasedKeys: 1,
+      }),
+    ]);
+    expect(getHidSessionsForTab(900)).toEqual([]);
+  });
+
+  it("forgets tracked HID sessions when Chrome reports a tab removal", async () => {
+    const listeners: Array<(tabId: number) => void> = [];
+    Object.assign(globalThis, {
+      chrome: {
+        tabs: {
+          onRemoved: {
+            addListener: vi.fn((listener: (tabId: number) => void) => {
+              listeners.push(listener);
+            }),
+          },
+        },
+      },
+    });
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({ ok: true, readyState: 1 }),
+    );
+
+    const tracked = await connect({ tabId: 901 });
+
+    expect(getHidSessionsForTab(901)).toEqual([tracked]);
+    initKvmHidCleanup();
+    expect(listeners).toHaveLength(1);
+
+    listeners[0](901);
+
+    expect(getHidSessionsForTab(901)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // close
 // ---------------------------------------------------------------------------
 
@@ -389,6 +575,16 @@ describe("close", () => {
       .expression as string;
     expect(expression).toContain("delete window");
     expect(expression).toContain("__oc_kvm_test");
+    expect(expression).toContain("pressedKeys");
+    expect(expression).toContain("pressedButtons");
+  });
+
+  it("uses cleanupSession best-effort and does not throw on cleanup failure outcomes", async () => {
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({ ok: false, cleanupFailed: true, error: "cleanup failed" }),
+    );
+
+    await expect(close(session)).resolves.toBeUndefined();
   });
 
   it("does not throw when CDP sendCommand fails (best-effort cleanup)", async () => {
@@ -532,6 +728,35 @@ describe("connect script content", () => {
     const expression = cdpManagerMock.sendCommand.mock.calls[0][2]
       .expression as string;
     expect(expression).toContain('binaryType = "arraybuffer"');
+  });
+
+  it("stores a wrapper object with pressed state sets", async () => {
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({ ok: true, readyState: 1 }),
+    );
+
+    await connect({ tabId: 42 });
+
+    const expression = cdpManagerMock.sendCommand.mock.calls[0][2]
+      .expression as string;
+    expect(expression).toContain("window[");
+    expect(expression).toContain("ws");
+    expect(expression).toContain("pressedKeys: new Set()");
+    expect(expression).toContain("pressedButtons: new Set()");
+  });
+
+  it("deletes the page global when the WebSocket closes after connecting", async () => {
+    cdpManagerMock.sendCommand.mockResolvedValueOnce(
+      mockEvalResult({ ok: true, readyState: 1 }),
+    );
+
+    await connect({ tabId: 42 });
+
+    const expression = cdpManagerMock.sendCommand.mock.calls[0][2]
+      .expression as string;
+    expect(expression).toContain('addEventListener("close"');
+    expect(expression).toContain("delete window");
+    expect(expression).toContain("window[sessionKey] === session");
   });
 
   it("detects auth rejection close codes", async () => {

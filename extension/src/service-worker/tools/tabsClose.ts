@@ -11,12 +11,14 @@ import type {
   ToolResult,
   ToolContext,
 } from "../../types/messages.js";
+import { cleanupSessionsForTab } from "./kvmHidTransport.js";
 
 export class TabsCloseTool implements ToolHandler {
   async execute(
     args: Record<string, unknown>,
     _context: ToolContext,
   ): Promise<ToolResult> {
+    let hidCleanup: Awaited<ReturnType<typeof cleanupSessionsForTab>> = [];
     try {
       let ids: number[];
 
@@ -43,6 +45,14 @@ export class TabsCloseTool implements ToolHandler {
         };
       }
 
+      hidCleanup = (
+        await Promise.all(
+          ids.map((id) =>
+            cleanupSessionsForTab(id, { releaseAll: true, close: true }),
+          ),
+        )
+      ).flat();
+
       await chrome.tabs.remove(ids);
 
       return {
@@ -50,7 +60,15 @@ export class TabsCloseTool implements ToolHandler {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ closed: ids, count: ids.length }, null, 2),
+            text: JSON.stringify(
+              {
+                closed: ids,
+                count: ids.length,
+                ...(hidCleanup.length > 0 ? { hidCleanup } : {}),
+              },
+              null,
+              2,
+            ),
           },
         ],
       };
@@ -60,7 +78,15 @@ export class TabsCloseTool implements ToolHandler {
         content: [
           {
             type: "text",
-            text: `Failed to close tab(s): ${error instanceof Error ? error.message : String(error)}`,
+            text: JSON.stringify(
+              {
+                errorType: "tab_close_error",
+                error: `Failed to close tab(s): ${error instanceof Error ? error.message : String(error)}`,
+                ...(hidCleanup.length > 0 ? { hidCleanup } : {}),
+              },
+              null,
+              2,
+            ),
           },
         ],
       };

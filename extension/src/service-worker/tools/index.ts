@@ -17,6 +17,7 @@ import { FormInputTool } from "./formInput.js";
 import { GetPageTextTool } from "./getPageText.js";
 import { GifCreatorTool } from "./gifCreator.js";
 import { GlkvmWaitTool } from "./glkvmWait.js";
+import { GlkvmInputTool } from "./kvmInput.js";
 import { JavaScriptTool } from "./javascript.js";
 import { NavigateTool } from "./navigate.js";
 import { NetworkTool } from "./network.js";
@@ -27,7 +28,7 @@ import { TabsContextTool } from "./tabsContext.js";
 import { TabsCreateTool } from "./tabsCreate.js";
 
 /**
- * Register all 15 tool handlers (plus GIF creator) with the message router.
+ * Register all tool handlers with the message router.
  *
  * Each handler implements {@link ToolHandler} and is registered under its
  * canonical name from {@link TOOL_NAMES}.
@@ -41,6 +42,7 @@ export function registerTools(router: MessageRouter): void {
   router.register(TOOL_NAMES.GET_PAGE_TEXT, new GetPageTextTool());
   router.register(TOOL_NAMES.GIF_CREATOR, new GifCreatorTool());
   router.register(TOOL_NAMES.GLKVM_WAIT, new GlkvmWaitTool());
+  router.register(TOOL_NAMES.GLKVM_INPUT, new GlkvmInputTool());
   router.register(TOOL_NAMES.JAVASCRIPT, new JavaScriptTool());
   router.register(TOOL_NAMES.NAVIGATE, new NavigateTool());
   router.register(TOOL_NAMES.READ_NETWORK, new NetworkTool());

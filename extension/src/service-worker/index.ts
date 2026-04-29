@@ -22,6 +22,7 @@ import {
   setConnectionStatus,
 } from "./sidePanelHandler.js";
 import { registerTools } from "./tools/index.js";
+import { initKvmHidCleanup } from "./tools/kvmHidTransport.js";
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -42,6 +43,10 @@ initSidePanelHandler();
 cdpManager.initialize().catch((err) => {
   console.error("[ServiceWorker] Failed to initialize CDP manager:", err);
 });
+
+// --- GLKVM HID cleanup ---
+
+initKvmHidCleanup();
 
 // --- Native messaging connection ---
 

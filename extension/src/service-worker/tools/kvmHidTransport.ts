@@ -69,6 +69,10 @@ interface PageContextResult {
   errorCode?: GlkvmTransportErrorCode;
   sessionId?: string;
   readyState?: number;
+  status?: number;
+  cleanupFailed?: boolean;
+  releasedKeys?: number;
+  releasedButtons?: number;
 }
 
 /** Session state tracked by the transport */
@@ -99,6 +103,40 @@ export interface SendOptions {
   packets: Uint8Array[];
 }
 
+/** Options for sending text through KVMD's paste-as-keys endpoint */
+export interface PasteTextOptions {
+  /** Tab ID of the GLKVM page */
+  tabId: number;
+  /** Text to type on the remote target */
+  text: string;
+  /** Request timeout in milliseconds (default: 10000) */
+  timeout?: number;
+}
+
+/** Options for explicit page-context session cleanup */
+export interface CleanupOptions {
+  /** Send key/button up packets for anything tracked as pressed */
+  releaseAll?: boolean;
+  /** Close the WebSocket and delete the page global (default: false) */
+  close?: boolean;
+}
+
+/** Non-throwing cleanup result so callers can distinguish cleanup failures */
+export interface CleanupOutcome {
+  ok: boolean;
+  cleanupFailed?: boolean;
+  error?: string;
+  errorCode?: GlkvmTransportErrorCode;
+  releasedKeys?: number;
+  releasedButtons?: number;
+}
+
+/** Cleanup result for a tracked service-worker session */
+export interface SessionCleanupOutcome extends CleanupOutcome {
+  tabId: number;
+  sessionId: string;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -106,12 +144,34 @@ export interface SendOptions {
 /** Default timeout for WebSocket connection in milliseconds */
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 
+/** Default timeout for HTTP paste-as-keys requests */
+const DEFAULT_PASTE_TIMEOUT_MS = 10_000;
+
 /** Prefix for session globals on the GLKVM page window object */
 const SESSION_PREFIX = "__oc_kvm_";
 
 /** localStorage keys where GLKVM stores auth tokens */
 const TOKEN_KEY_MULTI = "gl-kvm-token-keys";
 const TOKEN_KEY_SINGLE = "gl-kvm-token-key";
+
+const sessionsByTabId = new Map<number, Map<string, GlkvmSession>>();
+let tabRemovalCleanupInitialized = false;
+
+function trackSession(session: GlkvmSession): void {
+  let tabSessions = sessionsByTabId.get(session.tabId);
+  if (!tabSessions) {
+    tabSessions = new Map();
+    sessionsByTabId.set(session.tabId, tabSessions);
+  }
+  tabSessions.set(session.sessionId, session);
+}
+
+function untrackSession(session: GlkvmSession): void {
+  const tabSessions = sessionsByTabId.get(session.tabId);
+  if (!tabSessions) return;
+  tabSessions.delete(session.sessionId);
+  if (tabSessions.size === 0) sessionsByTabId.delete(session.tabId);
+}
 
 // ---------------------------------------------------------------------------
 // Page-context scripts
@@ -132,6 +192,7 @@ function buildConnectScript(sessionKey: string, timeoutMs: number): string {
   return `
     (async () => {
       try {
+        const sessionKey = ${JSON.stringify(sessionKey)};
         // --- Read auth token ---
         let token = null;
         const multiRaw = localStorage.getItem(${JSON.stringify(TOKEN_KEY_MULTI)});
@@ -187,8 +248,18 @@ function buildConnectScript(sessionKey: string, timeoutMs: number): string {
         if (!result.ok) return result;
 
         // --- Store session ---
-        window[${JSON.stringify(sessionKey)}] = ws;
-        return { ok: true, sessionId: ${JSON.stringify(sessionKey)}, readyState: ws.readyState };
+        const session = {
+          ws,
+          pressedKeys: new Set(),
+          pressedButtons: new Set(),
+        };
+        ws.addEventListener("close", () => {
+          if (window[sessionKey] === session) {
+            delete window[sessionKey];
+          }
+        });
+        window[sessionKey] = session;
+        return { ok: true, sessionId: sessionKey, readyState: ws.readyState };
       } catch (e) {
         return { ok: false, error: "Unexpected error: " + (e && e.message || String(e)), errorCode: "CONNECTION_FAILED" };
       }
@@ -202,10 +273,44 @@ function buildConnectScript(sessionKey: string, timeoutMs: number): string {
 function buildCheckSessionScript(sessionKey: string): string {
   return `
     (() => {
-      const ws = window[${JSON.stringify(sessionKey)}];
-      if (!ws) return { ok: false, error: "Session not found", errorCode: "PROTOCOL_ERROR" };
+      const stored = window[${JSON.stringify(sessionKey)}];
+      if (!stored) return { ok: false, error: "Session not found", errorCode: "PROTOCOL_ERROR" };
+      const ws = stored.ws || stored;
       return { ok: true, sessionId: ${JSON.stringify(sessionKey)}, readyState: ws.readyState };
     })()
+  `;
+}
+
+/** Shared page-context helper for wrapper sessions, legacy raw WebSocket sessions, and releases. */
+function buildSessionHelperScript(sessionKey: string): string {
+  return `
+      const sessionKey = ${JSON.stringify(sessionKey)};
+      const stored = window[sessionKey];
+      if (!stored) return { ok: false, error: "Session not found. The WebSocket may have been closed.", errorCode: "PROTOCOL_ERROR" };
+      const session = stored.ws ? stored : {
+        ws: stored,
+        pressedKeys: new Set(),
+        pressedButtons: new Set(),
+      };
+      if (!stored.ws) window[sessionKey] = session;
+      const ws = session.ws;
+      if (!session.pressedKeys) session.pressedKeys = new Set();
+      if (!session.pressedButtons) session.pressedButtons = new Set();
+      const decodeName = (arr) => String.fromCharCode(...arr.slice(2));
+      const sendPacket = (arr) => ws.send(new Uint8Array(arr).buffer);
+      const releaseTracked = () => {
+        const keys = Array.from(session.pressedKeys);
+        const buttons = Array.from(session.pressedButtons);
+        for (const key of keys) {
+          ws.send(new Uint8Array([1, 0, ...Array.from(String(key), (ch) => ch.charCodeAt(0))]).buffer);
+        }
+        for (const button of buttons) {
+          ws.send(new Uint8Array([2, 0, ...Array.from(String(button), (ch) => ch.charCodeAt(0))]).buffer);
+        }
+        session.pressedKeys.clear();
+        session.pressedButtons.clear();
+        return { releasedKeys: keys.length, releasedButtons: buttons.length };
+      };
   `;
 }
 
@@ -222,15 +327,24 @@ function buildSendScript(
   const packetsJson = JSON.stringify(packetArrays);
   return `
     (() => {
-      const ws = window[${JSON.stringify(sessionKey)}];
-      if (!ws) return { ok: false, error: "Session not found. The WebSocket may have been closed.", errorCode: "PROTOCOL_ERROR" };
+${buildSessionHelperScript(sessionKey)}
       if (ws.readyState !== WebSocket.OPEN) {
         return { ok: false, error: "WebSocket is not open (readyState=" + ws.readyState + ")", errorCode: "PROTOCOL_ERROR" };
       }
       try {
         const packets = ${packetsJson};
         for (const arr of packets) {
-          ws.send(new Uint8Array(arr).buffer);
+          sendPacket(arr);
+          if (arr[0] === 1) {
+            const key = decodeName(arr);
+            if (arr[1] === 1) session.pressedKeys.add(key);
+            if (arr[1] === 0) session.pressedKeys.delete(key);
+          }
+          if (arr[0] === 2) {
+            const button = decodeName(arr);
+            if (arr[1] === 1) session.pressedButtons.add(button);
+            if (arr[1] === 0) session.pressedButtons.delete(button);
+          }
         }
         return { ok: true };
       } catch (e) {
@@ -241,17 +355,94 @@ function buildSendScript(
 }
 
 /**
- * Build JavaScript to close an existing session's WebSocket.
+ * Build JavaScript to send text through KVMD's authenticated paste-as-keys API.
  */
-function buildCloseScript(sessionKey: string): string {
+function buildPasteTextScript(text: string, timeoutMs: number): string {
+  return `
+    (async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ${timeoutMs});
+      try {
+        const response = await fetch("/api/hid/print", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "text/plain;charset=UTF-8" },
+          body: ${JSON.stringify(text)},
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (!response.ok) {
+          let detail = "";
+          try { detail = (await response.text()).trim(); } catch {}
+          const suffix = detail || response.statusText || "HTTP error";
+          const authFailed = response.status === 401 || response.status === 403;
+          const tooLarge = response.status === 413;
+          const hidOffline = response.status === 503;
+          let message = "GLKVM paste-as-keys endpoint returned " + response.status + ": " + suffix;
+          if (authFailed) message += ". Re-authenticate in the GLKVM web interface.";
+          if (tooLarge) message += ". Reduce the text size and retry.";
+          if (hidOffline) message += ". HID may be offline or disabled.";
+          return {
+            ok: false,
+            status: response.status,
+            error: message,
+            errorCode: authFailed ? "AUTH_FAILED" : "PROTOCOL_ERROR",
+          };
+        }
+        return { ok: true, status: response.status };
+      } catch (e) {
+        clearTimeout(timer);
+        if (e && e.name === "AbortError") {
+          return { ok: false, error: "GLKVM paste-as-keys endpoint timed out after ${timeoutMs}ms", errorCode: "TIMEOUT" };
+        }
+        return { ok: false, error: "GLKVM paste-as-keys endpoint request failed: " + (e && e.message || String(e)), errorCode: "CONNECTION_FAILED" };
+      }
+    })()
+  `;
+}
+
+/**
+ * Build JavaScript to release tracked inputs and optionally close a session.
+ */
+function buildCleanupScript(
+  sessionKey: string,
+  options: Required<CleanupOptions>,
+): string {
+  const closeBlock = options.close
+    ? `
+      try { ws.close(); } catch (e) {
+        return { ok: false, cleanupFailed: true, error: "Close failed: " + (e && e.message || String(e)), errorCode: "PROTOCOL_ERROR", releasedKeys, releasedButtons };
+      }
+      delete window[sessionKey];
+    `
+    : "";
   return `
     (() => {
-      const ws = window[${JSON.stringify(sessionKey)}];
-      if (ws) {
-        try { ws.close(); } catch {}
-        delete window[${JSON.stringify(sessionKey)}];
+${buildSessionHelperScript(sessionKey)}
+      let releasedKeys = 0;
+      let releasedButtons = 0;
+      let cleanupError = null;
+      let cleanupErrorCode = null;
+      if (${JSON.stringify(options.releaseAll)}) {
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            const released = releaseTracked();
+            releasedKeys = released.releasedKeys;
+            releasedButtons = released.releasedButtons;
+          } catch (e) {
+            cleanupError = "Release-all failed: " + (e && e.message || String(e));
+            cleanupErrorCode = "PROTOCOL_ERROR";
+          }
+        } else {
+          cleanupError = "Release-all failed: WebSocket is not open (readyState=" + ws.readyState + ")";
+          cleanupErrorCode = "PROTOCOL_ERROR";
+        }
       }
-      return { ok: true };
+${closeBlock}
+      if (cleanupError) {
+        return { ok: false, cleanupFailed: true, error: cleanupError, errorCode: cleanupErrorCode, releasedKeys, releasedButtons };
+      }
+      return { ok: true, releasedKeys, releasedButtons };
     })()
   `;
 }
@@ -343,6 +534,44 @@ export function generateSessionId(): string {
   return `${SESSION_PREFIX}${id}`;
 }
 
+/** Return tracked HID sessions for a tab from service-worker memory. */
+export function getHidSessionsForTab(tabId: number): GlkvmSession[] {
+  return Array.from(sessionsByTabId.get(tabId)?.values() ?? []);
+}
+
+/**
+ * Register the service-worker tab-removal hook that forgets tracked HID sessions.
+ * Once a tab is gone, page-context release packets are no longer possible; the
+ * explicit tabs_close path performs release-all before removal.
+ */
+export function initKvmHidCleanup(): void {
+  if (tabRemovalCleanupInitialized) return;
+  const onRemoved = globalThis.chrome?.tabs?.onRemoved;
+  if (!onRemoved) return;
+
+  onRemoved.addListener((tabId: number) => {
+    sessionsByTabId.delete(tabId);
+  });
+  tabRemovalCleanupInitialized = true;
+}
+
+/** Release/close every tracked HID session for a tab before destructive actions. */
+export async function cleanupSessionsForTab(
+  tabId: number,
+  options: CleanupOptions = { releaseAll: true, close: true },
+): Promise<SessionCleanupOutcome[]> {
+  const sessions = getHidSessionsForTab(tabId);
+  const outcomes: SessionCleanupOutcome[] = [];
+
+  for (const session of sessions) {
+    const outcome = await cleanupSession(session, options);
+    if (options.close && outcome.ok) untrackSession(session);
+    outcomes.push({ ...outcome, tabId, sessionId: session.sessionId });
+  }
+
+  return outcomes;
+}
+
 /**
  * Establish a WebSocket connection to the GLKVM HID endpoint.
  *
@@ -366,11 +595,13 @@ export async function connect(options: ConnectOptions): Promise<GlkvmSession> {
     );
 
     if (result.ok && result.readyState === 1 /* WebSocket.OPEN */) {
-      return {
+      const session = {
         sessionId: options.sessionId,
         tabId,
         createdAt: Date.now(),
       };
+      trackSession(session);
+      return session;
     }
     // Session is gone or not open — fall through to create new one
   }
@@ -390,11 +621,13 @@ export async function connect(options: ConnectOptions): Promise<GlkvmSession> {
     );
   }
 
-  return {
+  const session = {
     sessionId,
     tabId,
     createdAt: Date.now(),
   };
+  trackSession(session);
+  return session;
 }
 
 /**
@@ -429,6 +662,71 @@ export async function send(options: SendOptions): Promise<void> {
 }
 
 /**
+ * Send text through KVMD's /api/hid/print endpoint in the authenticated page context.
+ */
+export async function pasteText(options: PasteTextOptions): Promise<void> {
+  const { tabId, text, timeout = DEFAULT_PASTE_TIMEOUT_MS } = options;
+  const result = await evaluateInPage(
+    tabId,
+    buildPasteTextScript(text, timeout),
+    true,
+  );
+
+  if (!result.ok) {
+    throw new GlkvmTransportError(
+      result.errorCode ?? "PROTOCOL_ERROR",
+      result.error ?? "Failed to use GLKVM paste-as-keys endpoint",
+    );
+  }
+}
+
+/**
+ * Explicitly release tracked HID keys/buttons and/or clean up page session state.
+ *
+ * This API is intentionally non-throwing for page-reported cleanup failures so
+ * callers can report cleanup failure separately from a primary action failure.
+ * CDP/evaluation failures are also returned as cleanup outcomes.
+ */
+export async function cleanupSession(
+  session: GlkvmSession,
+  options: CleanupOptions = {},
+): Promise<CleanupOutcome> {
+  try {
+    const result = await evaluateInPage(
+      session.tabId,
+      buildCleanupScript(session.sessionId, {
+        releaseAll: options.releaseAll ?? false,
+        close: options.close ?? false,
+      }),
+      false,
+    );
+
+    const outcome = {
+      ok: result.ok,
+      cleanupFailed: result.cleanupFailed,
+      error: result.error,
+      errorCode: result.errorCode,
+      releasedKeys: result.releasedKeys,
+      releasedButtons: result.releasedButtons,
+    };
+    if (options.close && outcome.ok) untrackSession(session);
+    return outcome;
+  } catch (err) {
+    return {
+      ok: false,
+      cleanupFailed: true,
+      error: err instanceof Error ? err.message : String(err),
+      errorCode: err instanceof GlkvmTransportError ? err.code : "EVAL_ERROR",
+    };
+  }
+}
+
+/** Release all tracked keys/buttons without closing the WebSocket session. */
+export async function releaseAll(session: GlkvmSession): Promise<CleanupOutcome> {
+  return cleanupSession(session, { releaseAll: true });
+}
+
+/**
  * Close a session's WebSocket connection and clean up the page global.
  *
  * Safe to call multiple times or on already-closed sessions.
@@ -436,15 +734,7 @@ export async function send(options: SendOptions): Promise<void> {
  * @param session - The session to close
  */
 export async function close(session: GlkvmSession): Promise<void> {
-  try {
-    await evaluateInPage(
-      session.tabId,
-      buildCloseScript(session.sessionId),
-      false,
-    );
-  } catch {
-    // Best-effort cleanup — tab may already be closed
-  }
+  await cleanupSession(session, { releaseAll: true, close: true });
 }
 
 /**

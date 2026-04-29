@@ -462,7 +462,19 @@ const TOOL_SCHEMAS: Tool[] = [
         },
         key: {
           type: "string",
-          description: 'Key name or combo for the "key" action',
+          description: 'Key name or combo for the "key" action, e.g. "Enter" or "ctrl+alt+delete"',
+        },
+        keyAction: {
+          type: "string",
+          enum: ["press", "down", "up", "hotkey", "chord"],
+          description:
+            'Keyboard semantic for the "key" action (default: "press")',
+        },
+        fallback: {
+          type: "string",
+          enum: ["keys", "none"],
+          description:
+            'Fallback behavior for "type" when paste-as-keys is unavailable (default: "keys")',
         },
         x: {
           type: "number",
