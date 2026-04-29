@@ -219,11 +219,8 @@ export class GifCreatorTool implements ToolHandler {
         content: [
           {
             type: "image",
-            source: {
-              type: "base64",
-              media_type: "image/gif",
-              data: response.data,
-            },
+            data: response.data,
+            mimeType: "image/gif",
           },
           {
             type: "text",

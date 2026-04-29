@@ -364,11 +364,8 @@ export class ComputerTool implements ToolHandler {
         content: [
           {
             type: "image",
-            source: {
-              type: "base64",
-              media_type: "image/jpeg",
-              data,
-            },
+            data,
+            mimeType: "image/jpeg",
           },
           {
             type: "text",

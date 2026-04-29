@@ -19,11 +19,8 @@ export interface TextContent {
 
 export interface ImageContent {
   readonly type: "image";
-  readonly source: {
-    readonly type: "base64";
-    readonly media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
-    readonly data: string;
-  };
+  readonly data: string;
+  readonly mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 }
 
 export type ContentBlock = TextContent | ImageContent;
