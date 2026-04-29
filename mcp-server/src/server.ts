@@ -1,7 +1,7 @@
 /**
  * MCP Server that exposes Chrome browser tools to OpenCode.
  *
- * Registers 15 tool schemas via the MCP protocol and forwards
+ * Registers 19 tool schemas via the MCP protocol and forwards
  * tool calls to the Chrome extension through the native host socket.
  */
 
@@ -397,6 +397,146 @@ const TOOL_SCHEMAS: Tool[] = [
         },
       },
       required: ["action", "tabId"],
+    },
+  },
+  {
+    name: TOOL_NAMES.GLKVM_STATUS,
+    description: "Get GLKVM connection and session status",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          description: "GLKVM target identifier or URL",
+        },
+        sessionId: {
+          type: "string",
+          description: "Existing GLKVM session ID to inspect",
+        },
+      },
+    },
+  },
+  {
+    name: TOOL_NAMES.GLKVM_SCREENSHOT,
+    description: "Capture a screenshot from a GLKVM target",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          description: "GLKVM target identifier or URL",
+        },
+        sessionId: {
+          type: "string",
+          description: "Existing GLKVM session ID to reuse",
+        },
+        includeOcr: {
+          type: "boolean",
+          description: "Whether to include OCR text extracted from the screenshot",
+        },
+      },
+    },
+  },
+  {
+    name: TOOL_NAMES.GLKVM_INPUT,
+    description: "Send keyboard and pointer input to a GLKVM target",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          description: "GLKVM target identifier or URL",
+        },
+        sessionId: {
+          type: "string",
+          description: "Existing GLKVM session ID to reuse",
+        },
+        action: {
+          type: "string",
+          enum: ["key", "type", "click", "move", "drag", "scroll"],
+          description: "Input action to perform",
+        },
+        text: {
+          type: "string",
+          description: 'Text to type for the "type" action',
+        },
+        key: {
+          type: "string",
+          description: 'Key name or combo for the "key" action',
+        },
+        x: {
+          type: "number",
+          description: "X coordinate in GLKVM screenshot pixel space",
+        },
+        y: {
+          type: "number",
+          description: "Y coordinate in GLKVM screenshot pixel space",
+        },
+        button: {
+          type: "string",
+          enum: ["left", "middle", "right"],
+          description: "Mouse button for click or drag actions",
+        },
+        direction: {
+          type: "string",
+          enum: ["up", "down"],
+          description: "Scroll direction",
+        },
+        amount: {
+          type: "number",
+          description: "Scroll amount",
+        },
+        startX: {
+          type: "number",
+          description: 'Start X coordinate for the "drag" action',
+        },
+        startY: {
+          type: "number",
+          description: 'Start Y coordinate for the "drag" action',
+        },
+        endX: {
+          type: "number",
+          description: 'End X coordinate for the "drag" action',
+        },
+        endY: {
+          type: "number",
+          description: 'End Y coordinate for the "drag" action',
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: TOOL_NAMES.GLKVM_WAIT,
+    description: "Wait for a GLKVM target to reach an OCR-observed state",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          description: "GLKVM target identifier or URL",
+        },
+        sessionId: {
+          type: "string",
+          description: "Existing GLKVM session ID to reuse",
+        },
+        text: {
+          type: "string",
+          description: "OCR text or regular expression to wait for",
+        },
+        timeout: {
+          type: "number",
+          description: "Maximum time to wait in milliseconds",
+        },
+        interval: {
+          type: "number",
+          description: "Polling interval in milliseconds",
+        },
+        includeOcr: {
+          type: "boolean",
+          description: "Whether to include OCR text in the final response",
+        },
+      },
     },
   },
 ];

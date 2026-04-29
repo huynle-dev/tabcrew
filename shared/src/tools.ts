@@ -37,6 +37,14 @@ export const TOOL_NAMES = {
   TABS_CLOSE: "tabs_close",
   /** Record browser actions as a GIF */
   GIF_CREATOR: "gif_creator",
+  /** Get GLKVM connection and session status */
+  GLKVM_STATUS: "glkvm_status",
+  /** Capture a screenshot from a GLKVM target */
+  GLKVM_SCREENSHOT: "glkvm_screenshot",
+  /** Send keyboard and pointer input to a GLKVM target */
+  GLKVM_INPUT: "glkvm_input",
+  /** Wait for a GLKVM target to reach an OCR-observed state */
+  GLKVM_WAIT: "glkvm_wait",
 } as const;
 
 /** Union type of all valid tool name strings */

@@ -22,18 +22,16 @@ describe("getToolSchemas", () => {
     expect(schema.inputSchema.required).toContain(property);
   };
 
-  it("returns exactly 15 tool schemas", () => {
+  it("returns exactly 19 tool schemas", () => {
     const schemas = getToolSchemas();
-    expect(schemas).toHaveLength(15);
+    expect(schemas).toHaveLength(19);
   });
 
   it("includes all tool names from shared constants", () => {
     const schemas = getToolSchemas();
     const schemaNames = schemas.map((s) => s.name);
 
-    for (const toolName of ALL_TOOL_NAMES) {
-      expect(schemaNames).toContain(toolName);
-    }
+    expect([...schemaNames].sort()).toEqual([...ALL_TOOL_NAMES].sort());
   });
 
   it("every schema has name, description, and inputSchema", () => {
@@ -203,6 +201,58 @@ describe("getToolSchemas", () => {
       tabIds: { type: "array", items: { type: "number" } },
     });
   });
+
+  it("registers the GLKVM tool schemas from shared constants", () => {
+    expect(schemaFor(TOOL_NAMES.GLKVM_STATUS).description).toContain("GLKVM");
+    expect(schemaFor(TOOL_NAMES.GLKVM_SCREENSHOT).description).toContain("GLKVM");
+    expect(schemaFor(TOOL_NAMES.GLKVM_INPUT).description).toContain("GLKVM");
+    expect(schemaFor(TOOL_NAMES.GLKVM_WAIT).description).toContain("GLKVM");
+  });
+
+  it("uses explicit GLKVM target/session targeting instead of tabId", () => {
+    const glkvmTools = [
+      TOOL_NAMES.GLKVM_STATUS,
+      TOOL_NAMES.GLKVM_SCREENSHOT,
+      TOOL_NAMES.GLKVM_INPUT,
+      TOOL_NAMES.GLKVM_WAIT,
+    ];
+
+    for (const toolName of glkvmTools) {
+      const schema = schemaFor(toolName);
+      expect(schema.inputSchema.properties).toHaveProperty("target");
+      expect(schema.inputSchema.properties).toHaveProperty("sessionId");
+      expect(schema.inputSchema.properties).not.toHaveProperty("tabId");
+    }
+  });
+
+  it("advertises GLKVM screenshot OCR as optional", () => {
+    const schema = schemaFor(TOOL_NAMES.GLKVM_SCREENSHOT);
+    expect(schema.inputSchema.properties).toMatchObject({
+      includeOcr: { type: "boolean" },
+    });
+    expect(schema.inputSchema.required ?? []).not.toContain("includeOcr");
+  });
+
+  it("advertises GLKVM input and wait argument shapes", () => {
+    const inputSchema = schemaFor(TOOL_NAMES.GLKVM_INPUT);
+    expect(inputSchema.inputSchema.properties).toMatchObject({
+      action: {
+        enum: ["key", "type", "click", "move", "drag", "scroll"],
+      },
+      button: { enum: ["left", "middle", "right"] },
+      direction: { enum: ["up", "down"] },
+    });
+    expect(inputSchema.inputSchema.required).toContain("action");
+
+    const waitSchema = schemaFor(TOOL_NAMES.GLKVM_WAIT);
+    expect(waitSchema.inputSchema.properties).toEqual(
+      expect.objectContaining({
+        text: expect.any(Object),
+        timeout: expect.any(Object),
+        includeOcr: expect.any(Object),
+      })
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -234,9 +284,9 @@ describe("createMcpServer", () => {
     ]);
   });
 
-  it("lists all 15 tools via MCP protocol", async () => {
+  it("lists all 19 tools via MCP protocol", async () => {
     const result = await client.listTools();
-    expect(result.tools).toHaveLength(15);
+    expect(result.tools).toHaveLength(19);
   });
 
   it("tool names match shared constants", async () => {
