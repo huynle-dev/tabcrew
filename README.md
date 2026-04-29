@@ -4,7 +4,7 @@ A Chrome extension that exposes browser automation as [MCP](https://modelcontext
 
 ## What it does
 
-OpenCode (or any MCP client) can take screenshots, click, type, navigate, read page content, monitor console/network traffic, record GIFs, and more — all through structured MCP tool calls against a live Chrome session.
+OpenCode (or any MCP client) can take screenshots, click, type, navigate, read page content, monitor console/network traffic, record GIFs, control a logged-in GLKVM remote console, and more — all through structured MCP tool calls against a live Chrome session.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ OpenCode (or any MCP client) can take screenshots, click, type, navigate, read p
 OpenCode (AI)
     │  MCP protocol (stdio)
     ▼
-mcp-server          — stdio MCP server exposing 15 browser tools
+mcp-server          — stdio MCP server exposing browser and GLKVM tools
     │  length-prefixed JSON over Unix domain socket
     ▼
 native-host         — Node.js process launched by Chrome via Native Messaging
@@ -22,6 +22,7 @@ Chrome Extension    — service worker dispatches tool calls via Chrome APIs & C
     │
     ├── content scripts   — accessibility tree, ref-based targeting, visual indicator
     ├── side panel UI     — connection status and live tool history
+    ├── GLKVM bridge      — authenticated page-context KVM control
     └── offscreen doc     — GIF encoder (pure-JS, no deps)
 ```
 
@@ -53,6 +54,49 @@ is foregrounded.
 | `tabs_create` | creates new tab; no `tabId` input | Open a new tab; `active` controls foregrounding |
 | `tabs_close` | requires `tabId` or `tabIds` | Close one or more tabs by ID |
 | `gif_creator` | requires `tabId` | Record browser actions as an animated GIF (start → screenshot → stop) |
+| `glkvm_status` | optional `target` / `sessionId` | Inspect a logged-in GLKVM tab, video stream state, and optional HID session state |
+| `glkvm_screenshot` | optional `target` / `sessionId` | Capture the current GLKVM video frame; optional OCR metadata may be requested |
+| `glkvm_input` | optional `target` / `sessionId` | Send remote keyboard, text, mouse, drag, and scroll input through GLKVM HID |
+| `glkvm_wait` | optional `target` / `sessionId` | Poll GLKVM frames until the remote display changes or the timeout expires |
+| `glkvm_ocr` | optional `target` / `sessionId` | Read optional GLKVM OCR text when the device reports OCR support |
+
+OpenCode may display MCP tools with the configured server name as a prefix, such as `opencode-chrome_glkvm_status`. The registered MCP tool names are the unprefixed names shown above.
+
+## GLKVM control
+
+The `glkvm_*` tools control the remote machine behind a GLKVM/KVMD web console. They do not click the Chrome page itself. Open and log in to the GLKVM web interface in Chrome first; the extension reuses that tab's cookies and `localStorage` token by running GLKVM API calls in the page context.
+
+Target selection is intentionally conservative. If exactly one GLKVM tab is open, the tools can auto-select it. If multiple GLKVM tabs are open, pass `target` as a hostname or full URL so input cannot be sent to the wrong remote machine. If no logged-in GLKVM tab is available, auth/session errors ask you to open or re-authenticate in the GLKVM web interface.
+
+Mouse coordinates for `glkvm_input` use GLKVM screenshot space. Use `glkvm_screenshot` first, then pass `x`, `y`, `startX`, `startY`, `endX`, and `endY` measured against the returned video-frame image. The tool maps those screenshot-space points to KVMD absolute HID coordinates internally and returns both the original screenshot coordinates and diagnostic absolute coordinates. Do not pass browser page coordinates or the returned HID absolute values back as mouse input.
+
+Examples:
+
+```json
+{ "target": "kvm.example.com" }
+```
+
+```json
+{ "target": "kvm.example.com", "action": "key", "key": "ctrl+alt+delete", "keyAction": "hotkey" }
+```
+
+```json
+{ "target": "kvm.example.com", "action": "click", "x": 640, "y": 360, "button": "left" }
+```
+
+```json
+{ "target": "kvm.example.com", "timeout": 5000, "pollInterval": 250 }
+```
+
+Operational guardrails:
+
+- `target` disambiguates GLKVM tabs by URL or hostname; omit it only when one GLKVM tab is open.
+- Keyboard and mouse operations attempt release-all cleanup after input, and results include cleanup status when relevant.
+- `tabs_close` releases and closes tracked GLKVM HID sessions before closing a tab.
+- Offline devices, missing tokens, rejected WebSockets, stale sessions, hidden video streams, and unavailable OCR return structured errors instead of silently sending input elsewhere.
+- `glkvm_ocr.region` uses intrinsic remote-frame pixels; OCR can report unavailable when the GLKVM device disables OCR or does not expose text results.
+
+See `docs/glkvm-control.md` for the detailed safety model and argument reference.
 
 ## Requirements
 
