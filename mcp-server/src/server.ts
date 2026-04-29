@@ -508,7 +508,8 @@ const TOOL_SCHEMAS: Tool[] = [
   },
   {
     name: TOOL_NAMES.GLKVM_WAIT,
-    description: "Wait for a GLKVM target to reach an OCR-observed state",
+    description:
+      "Wait for a GLKVM target's captured video frame to change after an action",
     inputSchema: {
       type: "object",
       properties: {
@@ -520,21 +521,13 @@ const TOOL_SCHEMAS: Tool[] = [
           type: "string",
           description: "Existing GLKVM session ID to reuse",
         },
-        text: {
-          type: "string",
-          description: "OCR text or regular expression to wait for",
-        },
         timeout: {
           type: "number",
-          description: "Maximum time to wait in milliseconds",
+          description: "Maximum time to wait in milliseconds (default: 5000)",
         },
-        interval: {
+        pollInterval: {
           type: "number",
-          description: "Polling interval in milliseconds",
-        },
-        includeOcr: {
-          type: "boolean",
-          description: "Whether to include OCR text in the final response",
+          description: "Polling interval in milliseconds (default: 250)",
         },
       },
     },

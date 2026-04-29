@@ -233,7 +233,7 @@ describe("getToolSchemas", () => {
     expect(schema.inputSchema.required ?? []).not.toContain("includeOcr");
   });
 
-  it("advertises GLKVM input and wait argument shapes", () => {
+  it("advertises GLKVM input argument shapes", () => {
     const inputSchema = schemaFor(TOOL_NAMES.GLKVM_INPUT);
     expect(inputSchema.inputSchema.properties).toMatchObject({
       action: {
@@ -243,15 +243,23 @@ describe("getToolSchemas", () => {
       direction: { enum: ["up", "down"] },
     });
     expect(inputSchema.inputSchema.required).toContain("action");
+  });
 
+  it("advertises GLKVM wait as frame-change polling", () => {
     const waitSchema = schemaFor(TOOL_NAMES.GLKVM_WAIT);
+    expect(waitSchema.description).toContain("frame");
+    expect(waitSchema.description).toContain("change");
     expect(waitSchema.inputSchema.properties).toEqual(
       expect.objectContaining({
-        text: expect.any(Object),
+        target: expect.any(Object),
+        sessionId: expect.any(Object),
         timeout: expect.any(Object),
-        includeOcr: expect.any(Object),
+        pollInterval: expect.any(Object),
       })
     );
+    expect(waitSchema.inputSchema.properties).not.toHaveProperty("text");
+    expect(waitSchema.inputSchema.properties).not.toHaveProperty("includeOcr");
+    expect(waitSchema.inputSchema.properties).not.toHaveProperty("interval");
   });
 });
 

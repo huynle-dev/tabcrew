@@ -43,7 +43,7 @@ export const TOOL_NAMES = {
   GLKVM_SCREENSHOT: "glkvm_screenshot",
   /** Send keyboard and pointer input to a GLKVM target */
   GLKVM_INPUT: "glkvm_input",
-  /** Wait for a GLKVM target to reach an OCR-observed state */
+  /** Wait for a GLKVM target's captured video frame to change */
   GLKVM_WAIT: "glkvm_wait",
 } as const;
 
