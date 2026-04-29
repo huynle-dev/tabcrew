@@ -23,6 +23,7 @@
  */
 
 import { cdpManager } from "./cdp.js";
+import { tabGroupManager, type TabOwnershipResult } from "./tabGroups.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,6 +57,51 @@ export interface GlkvmVideoMetadata {
 export interface ResolvedGlkvmTarget {
   readonly tabId: number;
   readonly tab: GlkvmTabInfo;
+}
+
+export type GlkvmTabValidationErrorCode =
+  | "TAB_NOT_FOUND"
+  | "NOT_GLKVM_TAB"
+  | Exclude<TabOwnershipResult, { ok: true }>["code"];
+
+export class GlkvmTabValidationError extends Error {
+  readonly code: GlkvmTabValidationErrorCode;
+  readonly tabId: number;
+  readonly sessionScope?: string;
+  readonly groupId?: number;
+  readonly actualGroupId?: number;
+  readonly actualTitle?: string;
+  readonly url?: string;
+  readonly title?: string;
+
+  constructor(details: {
+    code: GlkvmTabValidationErrorCode;
+    message: string;
+    tabId: number;
+    sessionScope?: string;
+    groupId?: number;
+    actualGroupId?: number;
+    actualTitle?: string;
+    url?: string;
+    title?: string;
+  }) {
+    super(details.message);
+    this.name = "GlkvmTabValidationError";
+    this.code = details.code;
+    this.tabId = details.tabId;
+    this.sessionScope = details.sessionScope;
+    this.groupId = details.groupId;
+    this.actualGroupId = details.actualGroupId;
+    this.actualTitle = details.actualTitle;
+    this.url = details.url;
+    this.title = details.title;
+  }
+}
+
+export interface ValidatedOwnedGlkvmTab {
+  readonly tabId: number;
+  readonly tab: GlkvmTabInfo;
+  readonly ownership: Extract<TabOwnershipResult, { ok: true }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,12 +139,7 @@ export async function findGlkvmTabs(): Promise<GlkvmTabInfo[]> {
   return allTabs
     .filter((tab): tab is chrome.tabs.Tab & { id: number } => {
       if (tab.id === undefined) return false;
-
-      const url = tab.url ?? "";
-      const title = tab.title ?? "";
-
-      // Must have the hash-routing pattern AND "GLKVM" in the title
-      return GLKVM_HASH_PATTERN.test(url) && title.includes(GLKVM_TITLE);
+      return isGlkvmTab(tab);
     })
     .map((tab) => ({
       tabId: tab.id,
@@ -191,6 +232,69 @@ export async function resolveGlkvmTab(options?: {
   throw new Error(
     `Multiple GLKVM tabs found. Specify a target to select one:\n${available}`,
   );
+}
+
+/**
+ * Validate that a tab exists, looks like a GLKVM page, and belongs to the
+ * tracked OpenCode tab group for the supplied session scope.
+ *
+ * This helper fails closed with structured errors because GLKVM HID input acts
+ * on a real remote machine. Discovery helpers intentionally remain ownership-
+ * agnostic; use this before tab-scoped KVM control operations.
+ */
+export async function validateOwnedGlkvmTab(
+  tabId: number,
+  sessionScope?: string,
+): Promise<ValidatedOwnedGlkvmTab> {
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    throw new GlkvmTabValidationError({
+      code: "TAB_NOT_FOUND",
+      message: `Tab ${tabId} was not found. The tab may have been closed.`,
+      tabId,
+      sessionScope,
+    });
+  }
+
+  const tabInfo = toGlkvmTabInfo(tab, tabId);
+  if (!isGlkvmTab(tab)) {
+    throw new GlkvmTabValidationError({
+      code: "NOT_GLKVM_TAB",
+      message: `Tab ${tabId} is not a GLKVM tab. Expected a GLKVM page with a /#/ URL and title containing "GLKVM".`,
+      tabId,
+      sessionScope,
+      url: tabInfo.url,
+      title: tabInfo.title,
+    });
+  }
+
+  const ownership = await tabGroupManager.validateOwnedTab(tabId, sessionScope);
+  if (!ownership.ok) {
+    throw new GlkvmTabValidationError({
+      code: ownership.code,
+      message: ownership.message,
+      tabId: ownership.tabId,
+      sessionScope: ownership.sessionScope,
+      groupId: ownership.groupId,
+      actualGroupId: ownership.actualGroupId,
+      actualTitle: ownership.actualTitle,
+      url: tabInfo.url,
+      title: tabInfo.title,
+    });
+  }
+
+  return { tabId, tab: tabInfo, ownership };
+}
+
+/** Resolve a GLKVM target, then require OpenCode tab-group ownership. */
+export async function resolveOwnedGlkvmTab(
+  options: { target?: string; tabId?: number } | undefined,
+  sessionScope?: string,
+): Promise<ValidatedOwnedGlkvmTab> {
+  const resolved = await resolveGlkvmTab(options);
+  return validateOwnedGlkvmTab(resolved.tabId, sessionScope);
 }
 
 // ---------------------------------------------------------------------------
@@ -354,4 +458,18 @@ function matchTabByTarget(
   }
 
   return undefined;
+}
+
+function isGlkvmTab(tab: chrome.tabs.Tab): boolean {
+  const url = tab.url ?? "";
+  const title = tab.title ?? "";
+  return GLKVM_HASH_PATTERN.test(url) && title.includes(GLKVM_TITLE);
+}
+
+function toGlkvmTabInfo(tab: chrome.tabs.Tab, tabId: number): GlkvmTabInfo {
+  return {
+    tabId,
+    title: tab.title ?? "",
+    url: tab.url ?? "",
+  };
 }

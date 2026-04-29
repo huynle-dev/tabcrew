@@ -10,8 +10,16 @@ const cdpManagerMock = vi.hoisted(() => ({
   sendCommand: vi.fn(),
 }));
 
+const validateOwnedTabMock = vi.hoisted(() => vi.fn());
+
 vi.mock("./cdp.js", () => ({
   cdpManager: cdpManagerMock,
+}));
+
+vi.mock("./tabGroups.js", () => ({
+  tabGroupManager: {
+    validateOwnedTab: validateOwnedTabMock,
+  },
 }));
 
 // Minimal chrome stub covering tabs API used by glkvmTab utilities
@@ -28,6 +36,8 @@ Object.assign(globalThis, { chrome: chromeStub });
 const {
   findGlkvmTabs,
   resolveGlkvmTab,
+  validateOwnedGlkvmTab,
+  resolveOwnedGlkvmTab,
   getVideoMetadata,
 } = await import("./glkvmTab.js");
 
@@ -40,6 +50,7 @@ function makeTab(overrides: {
   id: number;
   url: string;
   title: string;
+  groupId?: number;
 }): chrome.tabs.Tab {
   return {
     id: overrides.id,
@@ -54,7 +65,18 @@ function makeTab(overrides: {
     selected: false,
     discarded: false,
     autoDiscardable: true,
-    groupId: -1,
+    groupId: overrides.groupId ?? -1,
+  };
+}
+
+function ownershipFailure(code: string, message = `${code} message`) {
+  return {
+    ok: false,
+    code,
+    message,
+    tabId: 42,
+    sessionScope: "scope-a",
+    groupId: 101,
   };
 }
 
@@ -374,6 +396,111 @@ describe("resolveGlkvmTab", () => {
     ]);
 
     await expect(resolveGlkvmTab()).rejects.toThrow("kvm1.example.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateOwnedGlkvmTab / resolveOwnedGlkvmTab
+// ---------------------------------------------------------------------------
+
+describe("owned GLKVM tab validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("fails with structured TAB_NOT_FOUND when the tab is missing", async () => {
+    chromeStub.tabs.get.mockRejectedValueOnce(new Error("No tab with id: 999"));
+
+    await expect(validateOwnedGlkvmTab(999, "scope-a")).rejects.toMatchObject({
+      code: "TAB_NOT_FOUND",
+      tabId: 999,
+      message: expect.stringContaining("Tab 999 was not found"),
+    });
+    expect(validateOwnedTabMock).not.toHaveBeenCalled();
+  });
+
+  it("fails with structured NOT_GLKVM_TAB when the tab lacks GLKVM signals", async () => {
+    chromeStub.tabs.get.mockResolvedValueOnce(
+      makeTab({ id: 42, url: "https://example.com/#/", title: "Dashboard" }),
+    );
+
+    await expect(validateOwnedGlkvmTab(42, "scope-a")).rejects.toMatchObject({
+      code: "NOT_GLKVM_TAB",
+      tabId: 42,
+      message: expect.stringContaining("not a GLKVM tab"),
+    });
+    expect(validateOwnedTabMock).not.toHaveBeenCalled();
+  });
+
+  it("returns tab info when the tab exists, is GLKVM, and is owned", async () => {
+    chromeStub.tabs.get.mockResolvedValueOnce(
+      makeTab({
+        id: 42,
+        url: "https://kvm.example.com/#/",
+        title: "GLKVM - Server",
+        groupId: 101,
+      }),
+    );
+    validateOwnedTabMock.mockResolvedValueOnce({ ok: true, tabId: 42, groupId: 101 });
+
+    const result = await validateOwnedGlkvmTab(42, "scope-a");
+
+    expect(result).toEqual({
+      tabId: 42,
+      tab: {
+        tabId: 42,
+        title: "GLKVM - Server",
+        url: "https://kvm.example.com/#/",
+      },
+      ownership: { ok: true, tabId: 42, groupId: 101 },
+    });
+    expect(validateOwnedTabMock).toHaveBeenCalledWith(42, "scope-a");
+  });
+
+  it.each([
+    "NO_TRACKED_GROUP",
+    "TRACKED_GROUP_REMOVED",
+    "TRACKED_GROUP_RENAMED",
+    "TAB_UNGROUPED",
+    "TAB_IN_DIFFERENT_GROUP",
+  ])("fails closed with structured %s ownership errors", async (code) => {
+    chromeStub.tabs.get.mockResolvedValueOnce(
+      makeTab({ id: 42, url: "https://kvm.example.com/#/", title: "GLKVM" }),
+    );
+    validateOwnedTabMock.mockResolvedValueOnce(ownershipFailure(code));
+
+    await expect(validateOwnedGlkvmTab(42, "scope-a")).rejects.toMatchObject({
+      code,
+      tabId: 42,
+      message: `${code} message`,
+    });
+  });
+
+  it("keeps resolveGlkvmTab({ tabId }) available without ownership validation", async () => {
+    chromeStub.tabs.get.mockResolvedValueOnce(
+      makeTab({ id: 42, url: "https://example.com", title: "Not GLKVM" }),
+    );
+
+    const result = await resolveGlkvmTab({ tabId: 42 });
+
+    expect(result.tabId).toBe(42);
+    expect(result.tab.title).toBe("Not GLKVM");
+    expect(validateOwnedTabMock).not.toHaveBeenCalled();
+  });
+
+  it("resolveOwnedGlkvmTab resolves discovery targets then validates ownership", async () => {
+    chromeStub.tabs.query.mockResolvedValueOnce([
+      makeTab({ id: 42, url: "https://kvm.example.com/#/", title: "GLKVM" }),
+    ]);
+    chromeStub.tabs.get.mockResolvedValueOnce(
+      makeTab({ id: 42, url: "https://kvm.example.com/#/", title: "GLKVM" }),
+    );
+    validateOwnedTabMock.mockResolvedValueOnce({ ok: true, tabId: 42, groupId: 101 });
+
+    const result = await resolveOwnedGlkvmTab({ target: "kvm.example.com" }, "scope-a");
+
+    expect(result.tabId).toBe(42);
+    expect(validateOwnedTabMock).toHaveBeenCalledWith(42, "scope-a");
   });
 });
 
