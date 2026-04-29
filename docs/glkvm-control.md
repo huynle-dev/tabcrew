@@ -7,7 +7,7 @@ The GLKVM tools expose remote KVM control through the Chrome tab that is already
 | MCP tool | OpenCode display example | Purpose |
 |---|---|---|
 | `glkvm_status` | `opencode-chrome_glkvm_status` | Resolve the GLKVM tab, report video stream state, and inspect an optional HID session. |
-| `glkvm_screenshot` | `opencode-chrome_glkvm_screenshot` | Capture the current GLKVM video frame and optionally request OCR metadata. |
+| `glkvm_screenshot` | `opencode-chrome_glkvm_screenshot` | Capture the current GLKVM video frame, optionally crop/downscale it, and return hash/dimension metadata. |
 | `glkvm_input` | `opencode-chrome_glkvm_input` | Send keyboard, text, mouse, drag, and scroll input to the remote machine. |
 | `glkvm_wait` | `opencode-chrome_glkvm_wait` | Poll captured frames until the remote display changes or a timeout expires. |
 | `glkvm_ocr` | `opencode-chrome_glkvm_ocr` | Read optional OCR text from a remote-frame region when the device exposes OCR support. |
@@ -51,6 +51,7 @@ GLKVM control uses three coordinate spaces. Use the right one for each tool.
 | Coordinate space | Where it appears | Meaning |
 |---|---|---|
 | Browser page pixels | Browser `computer` tool only | Chrome window/screenshot coordinates. Do not use these for GLKVM HID input. |
+| Intrinsic remote-frame pixels | `glkvm_screenshot.region`, `glkvm_ocr.region`, frame `source` metadata | Native KVM video pixels from the GLKVM `<video>` element (`videoWidth` / `videoHeight`). |
 | GLKVM screenshot space | `glkvm_input` mouse arguments | Pixels in the captured GLKVM video-frame image returned by `glkvm_screenshot`. |
 | Remote HID absolute space | Diagnostic `absolute` response fields | KVMD absolute mouse range generated internally for HID packets. Do not pass these values as input. |
 
@@ -87,7 +88,25 @@ Example drag:
 }
 ```
 
-`glkvm_ocr.region` is different: it is expressed in intrinsic remote-frame pixels (`x`, `y`, `width`, `height`) and must fit inside the remote video dimensions.
+`glkvm_screenshot.region` and `glkvm_ocr.region` are expressed in intrinsic remote-frame pixels (`x`, `y`, `width`, `height`) and must fit inside the remote video dimensions.
+
+## Screenshot Crop, Downscale, And Hash Metadata
+
+`glkvm_screenshot` accepts optional frame-shaping arguments for faster perception loops:
+
+```json
+{
+  "tabId": 42,
+  "region": { "x": 0, "y": 0, "width": 1280, "height": 720 },
+  "maxWidth": 640,
+  "maxHeight": 360
+}
+```
+
+- `region` crops the GLKVM frame in intrinsic remote-frame pixels before any downscaling.
+- `maxWidth` and `maxHeight` downscale the returned JPEG while preserving aspect ratio; they never upscale the capture.
+- The image block contains the final JPEG. The metadata block reports `source` intrinsic dimensions, applied `region` / `crop`, final `output` dimensions in `glkvm_screenshot_pixels`, `hash`, and `hashAlgorithm`.
+- The frame hash is computed from the final returned JPEG data and is suitable for visual change/stability detection.
 
 ## Input Actions
 

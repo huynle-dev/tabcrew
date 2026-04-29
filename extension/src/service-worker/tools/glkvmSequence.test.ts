@@ -50,14 +50,16 @@ describe("GlkvmSequenceTool", () => {
       { action: "scroll", direction: "down", amount: 2 },
       { action: "wait", timeout: 1000, pollInterval: 1 },
       { action: "capture" },
-    ] }, {});
+    ] }, { sessionScope: "scope-a" });
     expect(result.success).toBe(true);
-    expect(tabMock.validateOwnedGlkvmTab).toHaveBeenCalledWith(42, undefined);
+    expect(tabMock.validateOwnedGlkvmTab).toHaveBeenCalledWith(42, "scope-a");
     expect(tabMock.resolveGlkvmTab).not.toHaveBeenCalled();
     expect(transportMock.connect).toHaveBeenCalledTimes(1);
     expect(transportMock.connect).toHaveBeenCalledWith({ tabId: 42 });
     expect(transportMock.send).toHaveBeenCalledTimes(14);
-    expect(frameMock.captureGlkvmFrame).toHaveBeenCalledWith({ tabId: 42 });
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(1, { tabId: 42, sessionScope: "scope-a" });
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(2, { tabId: 42, sessionScope: "scope-a" });
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(3, { tabId: 42, sessionScope: "scope-a" });
     expect(transportMock.cleanupSession).toHaveBeenCalledWith({ tabId: 42, sessionId: "session-1", createdAt: 123 }, { releaseAll: true });
     expect(parseJsonResult(result)).toMatchObject({ completed: true, tabId: 42, session: { sessionId: "session-1", tabId: 42 }, cleanup: { ok: true, releasedKeys: 0, releasedButtons: 0 }, finalFrame: { tabId: 42, hash: "final", width: 1280, height: 720 }, log: [
       { index: 0, action: "key", status: "ok", key: "Shift", keyAction: "down", sent: 1 },

@@ -479,6 +479,25 @@ const TOOL_SCHEMAS: Tool[] = [
           type: "boolean",
           description: "Whether to include OCR text extracted from the screenshot",
         },
+        region: {
+          type: "object",
+          description:
+            "Optional crop region in intrinsic remote-frame pixels before downscaling",
+          properties: {
+            x: { type: "number", description: "Region X coordinate" },
+            y: { type: "number", description: "Region Y coordinate" },
+            width: { type: "number", description: "Region width" },
+            height: { type: "number", description: "Region height" },
+          },
+        },
+        maxWidth: {
+          type: "number",
+          description: "Optional maximum output width for downscale in pixels",
+        },
+        maxHeight: {
+          type: "number",
+          description: "Optional maximum output height for downscale in pixels",
+        },
       },
       required: ["tabId"],
     },

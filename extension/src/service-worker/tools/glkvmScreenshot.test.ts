@@ -4,7 +4,12 @@ const frameMock = vi.hoisted(() => ({
   captureGlkvmFrame: vi.fn(),
 }));
 
+const glkvmTabMock = vi.hoisted(() => ({
+  validateOwnedGlkvmTab: vi.fn(),
+}));
+
 vi.mock("./glkvmFrame.js", () => frameMock);
+vi.mock("../glkvmTab.js", () => glkvmTabMock);
 
 const { GlkvmScreenshotTool } = await import("./glkvmScreenshot.js");
 
@@ -22,9 +27,14 @@ function parseMetadata(
 describe("GlkvmScreenshotTool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    glkvmTabMock.validateOwnedGlkvmTab.mockResolvedValue({
+      tabId: 42,
+      tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example.com/#/" },
+      ownership: { ok: true, tabId: 42, groupId: 101 },
+    });
   });
 
-  it("returns the captured GLKVM video frame as an MCP JPEG image block", async () => {
+  it("validates an explicit owned tabId before returning the captured GLKVM video frame", async () => {
     frameMock.captureGlkvmFrame.mockResolvedValue({
       tabId: 42,
       data: "jpeg-base64-frame",
@@ -34,13 +44,18 @@ describe("GlkvmScreenshotTool", () => {
     });
 
     const result = await new GlkvmScreenshotTool().execute(
-      { target: "kvm.example.com" },
-      {},
+      { tabId: 42 },
+      { sessionScope: "scope-a" },
     );
 
     expect(result.success).toBe(true);
+    expect(glkvmTabMock.validateOwnedGlkvmTab).toHaveBeenCalledWith(
+      42,
+      "scope-a",
+    );
     expect(frameMock.captureGlkvmFrame).toHaveBeenCalledWith({
-      target: "kvm.example.com",
+      tabId: 42,
+      sessionScope: "scope-a",
     });
     expect(result.content[0]).toEqual({
       type: "image",
@@ -56,26 +71,129 @@ describe("GlkvmScreenshotTool", () => {
     });
   });
 
-  it("fails clearly when the target is not an OpenCode-owned GLKVM tab", async () => {
-    frameMock.captureGlkvmFrame.mockRejectedValue(
-      new Error(
-        'No GLKVM tab found matching "example.com". Open and log in to your GLKVM device first.',
-      ),
+  it("passes region and downscale options to frame capture as intrinsic crop options", async () => {
+    frameMock.captureGlkvmFrame.mockResolvedValue({
+      tabId: 42,
+      data: "cropped-downscaled-jpeg",
+      hash: "feedbeef",
+      hashAlgorithm: "fnv1a-32",
+      width: 320,
+      height: 180,
+      source: {
+        width: 1920,
+        height: 1080,
+        coordinateSpace: "intrinsic_remote_frame_pixels",
+      },
+      crop: {
+        x: 100,
+        y: 50,
+        width: 800,
+        height: 450,
+        coordinateSpace: "intrinsic_remote_frame_pixels",
+      },
+      output: {
+        width: 320,
+        height: 180,
+        coordinateSpace: "glkvm_screenshot_pixels",
+      },
+    });
+
+    const result = await new GlkvmScreenshotTool().execute(
+      {
+        tabId: 42,
+        region: { x: 100, y: 50, width: 800, height: 450 },
+        maxWidth: 320,
+        maxHeight: 240,
+      },
+      { sessionScope: "scope-a" },
     );
 
+    expect(result.success).toBe(true);
+    expect(frameMock.captureGlkvmFrame).toHaveBeenCalledWith({
+      tabId: 42,
+      sessionScope: "scope-a",
+      crop: { x: 100, y: 50, width: 800, height: 450 },
+      maxWidth: 320,
+      maxHeight: 240,
+    });
+    expect(parseMetadata(result)).toEqual({
+      tabId: 42,
+      mimeType: "image/jpeg",
+      hash: "feedbeef",
+      hashAlgorithm: "fnv1a-32",
+      width: 320,
+      height: 180,
+      source: {
+        width: 1920,
+        height: 1080,
+        coordinateSpace: "intrinsic_remote_frame_pixels",
+      },
+      region: {
+        x: 100,
+        y: 50,
+        width: 800,
+        height: 450,
+        coordinateSpace: "intrinsic_remote_frame_pixels",
+      },
+      crop: {
+        x: 100,
+        y: 50,
+        width: 800,
+        height: 450,
+        coordinateSpace: "intrinsic_remote_frame_pixels",
+      },
+      output: {
+        width: 320,
+        height: 180,
+        coordinateSpace: "glkvm_screenshot_pixels",
+      },
+    });
+  });
+
+  it("rejects invalid region arguments before frame capture", async () => {
+    const result = await new GlkvmScreenshotTool().execute(
+      { tabId: 42, region: { x: 0, y: 0, width: 0, height: 100 } },
+      { sessionScope: "scope-a" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(frameMock.captureGlkvmFrame).not.toHaveBeenCalled();
+    expect(result.content[0]).toEqual({
+      type: "text",
+      text: expect.stringContaining("Invalid region.width"),
+    });
+  });
+
+  it("rejects invalid downscale arguments before frame capture", async () => {
+    const result = await new GlkvmScreenshotTool().execute(
+      { tabId: 42, maxWidth: Number.POSITIVE_INFINITY },
+      { sessionScope: "scope-a" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(frameMock.captureGlkvmFrame).not.toHaveBeenCalled();
+    expect(result.content[0]).toEqual({
+      type: "text",
+      text: expect.stringContaining("Invalid maxWidth"),
+    });
+  });
+
+  it("rejects target-only direct control before frame capture", async () => {
     const result = await new GlkvmScreenshotTool().execute(
       { target: "example.com" },
       {},
     );
 
     expect(result.success).toBe(false);
+    expect(glkvmTabMock.validateOwnedGlkvmTab).not.toHaveBeenCalled();
+    expect(frameMock.captureGlkvmFrame).not.toHaveBeenCalled();
     expect(result.content[0]).toEqual({
       type: "text",
       text: JSON.stringify(
         {
           errorType: "capture_error",
           error:
-            'No GLKVM tab found matching "example.com". Open and log in to your GLKVM device first.',
+            "Direct GLKVM control requires an OpenCode-owned tabId. Pass an integer tabId from discovery/open/attach. URL targets are only for discovery/open/attach and are deprecated for direct GLKVM control.",
         },
         null,
         2,
@@ -84,12 +202,12 @@ describe("GlkvmScreenshotTool", () => {
   });
 
   it("fails clearly when the resolved GLKVM tab is missing", async () => {
-    frameMock.captureGlkvmFrame.mockRejectedValue(
+    glkvmTabMock.validateOwnedGlkvmTab.mockRejectedValue(
       new Error("Tab 99 not found. The tab may have been closed."),
     );
 
     const result = await new GlkvmScreenshotTool().execute(
-      { target: "kvm.example.com" },
+      { tabId: 99 },
       {},
     );
 
@@ -100,17 +218,18 @@ describe("GlkvmScreenshotTool", () => {
     });
   });
 
-  it("rejects caller-supplied browser tabIds so unowned tabs cannot be captured", async () => {
+  it("rejects non-integer tabIds before frame capture", async () => {
     const result = await new GlkvmScreenshotTool().execute(
-      { tabId: 123, target: "kvm.example.com" },
+      { tabId: "123" },
       {},
     );
 
     expect(result.success).toBe(false);
+    expect(glkvmTabMock.validateOwnedGlkvmTab).not.toHaveBeenCalled();
     expect(frameMock.captureGlkvmFrame).not.toHaveBeenCalled();
     expect(result.content[0]).toEqual({
       type: "text",
-      text: expect.stringContaining("does not accept browser tabId"),
+      text: expect.stringContaining("requires an OpenCode-owned tabId"),
     });
   });
 });

@@ -286,6 +286,36 @@ describe("getToolSchemas", () => {
     expect(schema.inputSchema.required ?? []).not.toContain("includeOcr");
   });
 
+  it("advertises GLKVM screenshot crop and downscale options", () => {
+    const schema = schemaFor(TOOL_NAMES.GLKVM_SCREENSHOT);
+
+    expect(schema.inputSchema.properties).toMatchObject({
+      region: {
+        type: "object",
+        properties: {
+          x: { type: "number" },
+          y: { type: "number" },
+          width: { type: "number" },
+          height: { type: "number" },
+        },
+      },
+      maxWidth: { type: "number" },
+      maxHeight: { type: "number" },
+    });
+    expect(schema.inputSchema.properties.region.description).toContain(
+      "intrinsic remote-frame pixels",
+    );
+    expect(schema.inputSchema.properties.maxWidth.description).toContain(
+      "downscale",
+    );
+    expect(schema.inputSchema.properties.maxHeight.description).toContain(
+      "downscale",
+    );
+    expect(schema.inputSchema.required ?? []).not.toEqual(
+      expect.arrayContaining(["region", "maxWidth", "maxHeight"]),
+    );
+  });
+
   it("advertises GLKVM input argument shapes", () => {
     const inputSchema = schemaFor(TOOL_NAMES.GLKVM_INPUT);
     expect(inputSchema.inputSchema.properties).toMatchObject({

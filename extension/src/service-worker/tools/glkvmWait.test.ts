@@ -4,7 +4,12 @@ const frameMock = vi.hoisted(() => ({
   captureGlkvmFrame: vi.fn(),
 }));
 
+const glkvmTabMock = vi.hoisted(() => ({
+  requireOwnedGlkvmTabForDirectControl: vi.fn(),
+}));
+
 vi.mock("./glkvmFrame.js", () => frameMock);
+vi.mock("../glkvmTab.js", () => glkvmTabMock);
 
 const { GlkvmWaitTool } = await import("./glkvmWait.js");
 
@@ -21,23 +26,41 @@ describe("GlkvmWaitTool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockResolvedValue({
+      tabId: 42,
+      tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example.com/#/" },
+      ownership: { ok: true, tabId: 42, groupId: 101 },
+    });
   });
 
-  it("polls KVM frames until the frame hash changes", async () => {
+  it("validates explicit owned tabId before polling KVM frames until the frame hash changes", async () => {
     frameMock.captureGlkvmFrame
       .mockResolvedValueOnce({ tabId: 42, hash: "before", data: "aaa" })
       .mockResolvedValueOnce({ tabId: 42, hash: "before", data: "aaa" })
       .mockResolvedValueOnce({ tabId: 42, hash: "after", data: "bbb" });
 
     const result = await new GlkvmWaitTool().execute(
-      { target: "kvm.example.com", timeout: 1000, pollInterval: 1 },
-      {},
+      { tabId: 42, timeout: 1000, pollInterval: 1 },
+      { sessionScope: "scope-a" },
     );
 
     expect(result.success).toBe(true);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { tabId: 42 },
+      "scope-a",
+    );
     expect(frameMock.captureGlkvmFrame).toHaveBeenCalledTimes(3);
-    expect(frameMock.captureGlkvmFrame).toHaveBeenCalledWith({
-      target: "kvm.example.com",
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(1, {
+      tabId: 42,
+      sessionScope: "scope-a",
+    });
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(2, {
+      tabId: 42,
+      sessionScope: "scope-a",
+    });
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(3, {
+      tabId: 42,
+      sessionScope: "scope-a",
     });
     expect(parseJsonResult(result)).toMatchObject({
       changed: true,
@@ -55,7 +78,7 @@ describe("GlkvmWaitTool", () => {
     });
 
     const result = await new GlkvmWaitTool().execute(
-      { timeout: 100, pollInterval: 50 },
+      { tabId: 42, timeout: 100, pollInterval: 50 },
       {},
     );
 
@@ -69,9 +92,9 @@ describe("GlkvmWaitTool", () => {
     });
   });
 
-  it("reports capture errors distinctly from timeouts", async () => {
-    frameMock.captureGlkvmFrame.mockRejectedValue(
-      new Error("No GLKVM tab found. Open and log in first."),
+  it("rejects missing tabId before first frame capture", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error("Direct GLKVM control requires an OpenCode-owned tabId. Available GLKVM tabs:\n  (none)"),
     );
 
     const result = await new GlkvmWaitTool().execute(
@@ -80,11 +103,34 @@ describe("GlkvmWaitTool", () => {
     );
 
     expect(result.success).toBe(false);
+    expect(frameMock.captureGlkvmFrame).not.toHaveBeenCalled();
     expect(parseJsonResult(result)).toMatchObject({
       changed: false,
       timedOut: false,
       errorType: "capture_error",
-      error: "No GLKVM tab found. Open and log in first.",
+      error: expect.stringContaining("requires an OpenCode-owned tabId"),
+    });
+  });
+
+  it("rejects target-only wait control before first frame capture", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error("Direct GLKVM control requires an OpenCode-owned tabId. URL targets are only for discovery/open/attach."),
+    );
+
+    const result = await new GlkvmWaitTool().execute(
+      { target: "kvm.example.com", timeout: 100, pollInterval: 50 },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { target: "kvm.example.com" },
+      undefined,
+    );
+    expect(frameMock.captureGlkvmFrame).not.toHaveBeenCalled();
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "capture_error",
+      error: expect.stringContaining("URL targets are only for discovery/open/attach"),
     });
   });
 });

@@ -77,19 +77,20 @@ async function sendPacketsInOrder(session: GlkvmSession, packets: Uint8Array[]):
   for (const packet of packets) await send({ session, packets: [packet] });
 }
 
-async function waitForFrameChange(tabId: number, step: Record<string, unknown>): Promise<{ log: SequenceLogEntry; frame: GlkvmFrame }> {
+async function waitForFrameChange(tabId: number, step: Record<string, unknown>, sessionScope?: string): Promise<{ log: SequenceLogEntry; frame: GlkvmFrame }> {
   const timeoutMs = clampNumber(step.timeout, DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
   const pollIntervalMs = clampNumber(step.pollInterval, DEFAULT_POLL_INTERVAL_MS, MIN_POLL_INTERVAL_MS, MAX_POLL_INTERVAL_MS);
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMs;
-  const initialFrame = await captureGlkvmFrame({ tabId });
+  const captureOptions = { tabId, sessionScope };
+  const initialFrame = await captureGlkvmFrame(captureOptions);
   let currentFrame = initialFrame;
   let polls = 0;
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
     await sleep(Math.min(pollIntervalMs, Math.max(0, remaining)));
     polls += 1;
-    currentFrame = await captureGlkvmFrame({ tabId });
+    currentFrame = await captureGlkvmFrame(captureOptions);
     if (currentFrame.hash !== initialFrame.hash) return { frame: currentFrame, log: { action: "wait", status: "ok", changed: true, timedOut: false, tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
   }
   return { frame: currentFrame, log: { action: "wait", status: "timeout", changed: false, timedOut: true, reason: "timeout", tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
@@ -159,14 +160,14 @@ export class GlkvmSequenceTool implements ToolHandler {
             continue;
           }
           if (action === "wait") {
-            const wait = await waitForFrameChange(tabId, step);
+            const wait = await waitForFrameChange(tabId, step, context.sessionScope);
             finalFrame = wait.frame;
             log.push({ index, ...wait.log });
             if (wait.log.timedOut) throw new SequenceWaitTimeout(index, wait.log.timeoutMs as number);
             continue;
           }
           if (action === "capture") {
-            finalFrame = await captureGlkvmFrame({ tabId });
+            finalFrame = await captureGlkvmFrame({ tabId, sessionScope: context.sessionScope });
             log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), frame: frameMetadata(finalFrame) });
             continue;
           }

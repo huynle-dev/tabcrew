@@ -60,6 +60,7 @@ export interface ResolvedGlkvmTarget {
 }
 
 export type GlkvmTabValidationErrorCode =
+  | "TAB_ID_REQUIRED"
   | "TAB_NOT_FOUND"
   | "NOT_GLKVM_TAB"
   | Exclude<TabOwnershipResult, { ok: true }>["code"];
@@ -102,6 +103,11 @@ export interface ValidatedOwnedGlkvmTab {
   readonly tabId: number;
   readonly tab: GlkvmTabInfo;
   readonly ownership: Extract<TabOwnershipResult, { ok: true }>;
+}
+
+export interface RequireOwnedGlkvmTabOptions {
+  readonly tabId?: unknown;
+  readonly target?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +303,68 @@ export async function resolveOwnedGlkvmTab(
   return validateOwnedGlkvmTab(resolved.tabId, sessionScope);
 }
 
+/**
+ * Require an explicit OpenCode-owned GLKVM tab ID for direct-control tools.
+ *
+ * Unlike discovery helpers, this never falls back to target matching or global
+ * GLKVM auto-resolution. Direct control can affect a real remote machine, so
+ * callers must pass the browser tab ID obtained from OpenCode-owned discovery,
+ * open, or attach flows.
+ */
+export async function requireOwnedGlkvmTabForDirectControl(
+  options: RequireOwnedGlkvmTabOptions | undefined,
+  sessionScope?: string,
+): Promise<ValidatedOwnedGlkvmTab> {
+  const tabId = options?.tabId;
+
+  if (typeof tabId !== "number" || !Number.isInteger(tabId)) {
+    const hasInvalidTabId = tabId !== undefined;
+    const diagnostics = hasInvalidTabId
+      ? undefined
+      : await getGlkvmTargetDiagnostics(sessionScope, {
+          includeOwnedWhenSingle: Boolean(options?.target),
+        });
+    const targetGuidance = options?.target
+      ? " URL targets are only for discovery/open/attach and are deprecated for direct GLKVM control."
+      : "";
+    throw new GlkvmTabValidationError({
+      code: "TAB_ID_REQUIRED",
+      message: [
+        `Direct GLKVM control requires an OpenCode-owned tabId. Pass an integer tabId from discovery/open/attach.${targetGuidance}`,
+        diagnostics,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      tabId: -1,
+      sessionScope,
+    });
+  }
+
+  const numericTabId = tabId as number;
+
+  try {
+    return await validateOwnedGlkvmTab(numericTabId, sessionScope);
+  } catch (error) {
+    if (error instanceof GlkvmTabValidationError) {
+      const diagnostics = await getGlkvmTargetDiagnostics(sessionScope, {
+        includeOwnedWhenSingle: true,
+      });
+      throw new GlkvmTabValidationError({
+        code: error.code,
+        message: `${error.message}\n${diagnostics}`,
+        tabId: error.tabId,
+        sessionScope: error.sessionScope,
+        groupId: error.groupId,
+        actualGroupId: error.actualGroupId,
+        actualTitle: error.actualTitle,
+        url: error.url,
+        title: error.title,
+      });
+    }
+    throw error;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Video Detection
 // ---------------------------------------------------------------------------
@@ -472,4 +540,42 @@ function toGlkvmTabInfo(tab: chrome.tabs.Tab, tabId: number): GlkvmTabInfo {
     title: tab.title ?? "",
     url: tab.url ?? "",
   };
+}
+
+async function getGlkvmTargetDiagnostics(
+  sessionScope?: string,
+  options?: { includeOwnedWhenSingle?: boolean },
+): Promise<string> {
+  const glkvmTabs = await findGlkvmTabs();
+  const ownedTabs: GlkvmTabInfo[] = [];
+  const includeOwned = glkvmTabs.length > 1 || options?.includeOwnedWhenSingle;
+
+  if (includeOwned) {
+    for (const tab of glkvmTabs) {
+      const ownership = await tabGroupManager.validateOwnedTab(
+        tab.tabId,
+        sessionScope,
+      );
+      if (ownership?.ok) {
+        ownedTabs.push(tab);
+      }
+    }
+  }
+
+  const sections = [`Available GLKVM tabs:\n${formatGlkvmTabList(glkvmTabs)}`];
+  if (includeOwned) {
+    sections.push(`OpenCode-owned GLKVM tabs:\n${formatGlkvmTabList(ownedTabs)}`);
+  }
+
+  return sections.join("\n");
+}
+
+function formatGlkvmTabList(tabs: GlkvmTabInfo[]): string {
+  if (tabs.length === 0) {
+    return "  (none)";
+  }
+
+  return tabs
+    .map((tab) => `  - tab ${tab.tabId}: ${tab.url} (${tab.title})`)
+    .join("\n");
 }

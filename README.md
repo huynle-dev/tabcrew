@@ -55,7 +55,7 @@ is foregrounded.
 | `tabs_close` | requires `tabId` or `tabIds` | Close one or more tabs by ID |
 | `gif_creator` | requires `tabId` | Record browser actions as an animated GIF (start → screenshot → stop) |
 | `glkvm_status` | optional `target` / `sessionId` | Inspect a logged-in GLKVM tab, video stream state, and optional HID session state |
-| `glkvm_screenshot` | optional `target` / `sessionId` | Capture the current GLKVM video frame; optional OCR metadata may be requested |
+| `glkvm_screenshot` | requires OpenCode-owned `tabId`; optional `sessionId` | Capture the current GLKVM video frame; optional intrinsic-region crop, max-dimension downscale, OCR metadata request, and frame hash/dimension metadata |
 | `glkvm_input` | optional `target` / `sessionId` | Send remote keyboard, text, mouse, drag, and scroll input through GLKVM HID |
 | `glkvm_wait` | optional `target` / `sessionId` | Poll GLKVM frames until the remote display changes or the timeout expires |
 | `glkvm_ocr` | optional `target` / `sessionId` | Read optional GLKVM OCR text when the device reports OCR support |
@@ -69,6 +69,8 @@ The `glkvm_*` tools control the remote machine behind a GLKVM/KVMD web console. 
 Target selection is intentionally conservative. If exactly one GLKVM tab is open, the tools can auto-select it. If multiple GLKVM tabs are open, pass `target` as a hostname or full URL so input cannot be sent to the wrong remote machine. If no logged-in GLKVM tab is available, auth/session errors ask you to open or re-authenticate in the GLKVM web interface.
 
 Mouse coordinates for `glkvm_input` use GLKVM screenshot space. Use `glkvm_screenshot` first, then pass `x`, `y`, `startX`, `startY`, `endX`, and `endY` measured against the returned video-frame image. The tool maps those screenshot-space points to KVMD absolute HID coordinates internally and returns both the original screenshot coordinates and diagnostic absolute coordinates. Do not pass browser page coordinates or the returned HID absolute values back as mouse input.
+
+`glkvm_screenshot.region` crops in intrinsic remote-frame pixels before optional `maxWidth` / `maxHeight` downscaling. Result metadata reports the source intrinsic dimensions, applied region/crop, final output dimensions in `glkvm_screenshot_pixels`, and a frame hash (`hash` plus `hashAlgorithm`) for change/stability detection.
 
 Examples:
 

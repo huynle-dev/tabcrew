@@ -3,6 +3,7 @@ import type {
   ToolHandler,
   ToolResult,
 } from "../../types/messages.js";
+import { requireOwnedGlkvmTabForDirectControl } from "../glkvmTab.js";
 import { captureGlkvmFrame } from "./glkvmFrame.js";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -29,10 +30,17 @@ function sleep(ms: number): Promise<void> {
 export class GlkvmWaitTool implements ToolHandler {
   async execute(
     args: Record<string, unknown>,
-    _context: ToolContext,
+    context: ToolContext,
   ): Promise<ToolResult> {
     try {
-      const target = typeof args.target === "string" ? args.target : undefined;
+      const validationOptions = {
+        ...("tabId" in args ? { tabId: args.tabId } : {}),
+        ...(typeof args.target === "string" ? { target: args.target } : {}),
+      };
+      const validated = await requireOwnedGlkvmTabForDirectControl(
+        validationOptions,
+        context.sessionScope,
+      );
       const timeoutMs = clampNumber(
         args.timeout,
         DEFAULT_TIMEOUT_MS,
@@ -48,7 +56,10 @@ export class GlkvmWaitTool implements ToolHandler {
 
       const startedAt = Date.now();
       const deadline = startedAt + timeoutMs;
-      const captureOptions = target ? { target } : undefined;
+      const captureOptions = {
+        tabId: validated.tabId,
+        sessionScope: context.sessionScope,
+      };
       const initialFrame = await captureGlkvmFrame(captureOptions);
       let polls = 0;
 
