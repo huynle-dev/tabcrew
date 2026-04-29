@@ -45,6 +45,8 @@ export const TOOL_NAMES = {
   GLKVM_INPUT: "glkvm_input",
   /** Wait for a GLKVM target's captured video frame to change */
   GLKVM_WAIT: "glkvm_wait",
+  /** Execute a batch of GLKVM input, capture, and frame wait steps */
+  GLKVM_SEQUENCE: "glkvm_sequence",
   /** Read optional GLKVM OCR text when the device exposes OCR support */
   GLKVM_OCR: "glkvm_ocr",
 } as const;

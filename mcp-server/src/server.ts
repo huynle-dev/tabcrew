@@ -545,6 +545,121 @@ const TOOL_SCHEMAS: Tool[] = [
     },
   },
   {
+    name: TOOL_NAMES.GLKVM_SEQUENCE,
+    description:
+      "Execute batched GLKVM key, capture, and frame wait steps over one control loop.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId: {
+          type: "number",
+          description: "Explicit GLKVM tab ID to target for the sequence",
+        },
+        sessionId: {
+          type: "string",
+          description: "Existing GLKVM HID session ID to reuse when available",
+        },
+        steps: {
+          type: "array",
+          description: "Ordered GLKVM key, capture, and frame wait steps",
+          items: {
+            type: "object",
+            properties: {
+              action: {
+                type: "string",
+                enum: [
+                  "key",
+                  "type",
+                  "click",
+                  "move",
+                  "drag",
+                  "scroll",
+                  "wait",
+                  "waitFrameChange",
+                  "waitFrameStable",
+                  "capture",
+                ],
+                description: "Sequence step action to perform",
+              },
+              text: {
+                type: "string",
+                description: 'Text to type for a "type" step',
+              },
+              key: {
+                type: "string",
+                description:
+                  'Key name or combo for a "key" step, e.g. "Enter" or "ctrl+alt+delete"',
+              },
+              keyAction: {
+                type: "string",
+                enum: ["press", "down", "up", "hotkey", "chord"],
+                description:
+                  'Keyboard semantic for a "key" step (default: "press")',
+              },
+              x: {
+                type: "number",
+                description: "X coordinate in GLKVM screenshot pixel space",
+              },
+              y: {
+                type: "number",
+                description: "Y coordinate in GLKVM screenshot pixel space",
+              },
+              button: {
+                type: "string",
+                enum: ["left", "middle", "right"],
+                description: "Mouse button for click or drag steps",
+              },
+              direction: {
+                type: "string",
+                enum: ["up", "down"],
+                description: "Scroll direction",
+              },
+              amount: {
+                type: "number",
+                description: "Scroll amount",
+              },
+              startX: {
+                type: "number",
+                description: 'Start X coordinate for a "drag" step',
+              },
+              startY: {
+                type: "number",
+                description: 'Start Y coordinate for a "drag" step',
+              },
+              endX: {
+                type: "number",
+                description: 'End X coordinate for a "drag" step',
+              },
+              endY: {
+                type: "number",
+                description: 'End Y coordinate for a "drag" step',
+              },
+              timeout: {
+                type: "number",
+                description: "Maximum time to wait in milliseconds for frame waits",
+              },
+              pollInterval: {
+                type: "number",
+                description: "Polling interval in milliseconds for frame waits",
+              },
+              stabilityDuration: {
+                type: "number",
+                description:
+                  "Required unchanged-frame duration in milliseconds for waitFrameStable",
+              },
+              includeData: {
+                type: "boolean",
+                description: "Include JPEG frame data in capture step logs",
+              },
+            },
+            required: ["action"],
+          },
+        },
+      },
+      required: ["tabId", "steps"],
+    },
+  },
+  {
     name: TOOL_NAMES.GLKVM_OCR,
     description:
       "Read optional GLKVM OCR text from a selected remote-frame region when the target reports OCR support; returns clear unavailable errors when OCR, text extraction, or language support is unavailable.",

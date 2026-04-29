@@ -18,5 +18,6 @@ describe("registerTools", () => {
     registerTools(router);
 
     expect(router.getRegisteredTools()).toContain(TOOL_NAMES.GLKVM_SCREENSHOT);
+    expect(router.getRegisteredTools()).toContain(TOOL_NAMES.GLKVM_SEQUENCE);
   });
 });

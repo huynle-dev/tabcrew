@@ -30,6 +30,7 @@ function hashFrameData(data: string): string {
 
 export async function captureGlkvmFrame(options?: {
   target?: string;
+  tabId?: number;
 }): Promise<GlkvmFrame> {
   const resolved = await resolveGlkvmTab(options);
   const video = await getVideoMetadata(resolved.tabId);

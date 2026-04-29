@@ -22,9 +22,9 @@ describe("getToolSchemas", () => {
     expect(schema.inputSchema.required).toContain(property);
   };
 
-  it("returns exactly 20 tool schemas", () => {
+  it("returns exactly 21 tool schemas", () => {
     const schemas = getToolSchemas();
-    expect(schemas).toHaveLength(20);
+    expect(schemas).toHaveLength(21);
   });
 
   it("includes all tool names from shared constants", () => {
@@ -207,6 +207,7 @@ describe("getToolSchemas", () => {
     expect(schemaFor(TOOL_NAMES.GLKVM_SCREENSHOT).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_INPUT).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_WAIT).description).toContain("GLKVM");
+    expect(schemaFor(TOOL_NAMES.GLKVM_SEQUENCE).description).toContain("GLKVM");
     expect(schemaFor(TOOL_NAMES.GLKVM_OCR).description).toContain("GLKVM");
   });
 
@@ -279,6 +280,36 @@ describe("getToolSchemas", () => {
     expect(waitSchema.inputSchema.properties).not.toHaveProperty("includeOcr");
     expect(waitSchema.inputSchema.properties).not.toHaveProperty("interval");
   });
+
+  it("advertises GLKVM sequence frame waits", () => {
+    const sequenceSchema = schemaFor(TOOL_NAMES.GLKVM_SEQUENCE);
+
+    expect(sequenceSchema.description).toContain("batched");
+    expect(sequenceSchema.inputSchema.required).toEqual(
+      expect.arrayContaining(["tabId", "steps"]),
+    );
+    expect(sequenceSchema.inputSchema.properties).toEqual(
+      expect.objectContaining({
+        tabId: expect.any(Object),
+        sessionId: expect.any(Object),
+        steps: expect.any(Object),
+      })
+    );
+    expect(sequenceSchema.inputSchema.properties.steps.items.properties.action.enum).toEqual(
+      ["key", "type", "click", "move", "drag", "scroll", "wait", "waitFrameChange", "waitFrameStable", "capture"],
+    );
+    expect(sequenceSchema.inputSchema.properties.steps.items.properties).toEqual(
+      expect.objectContaining({
+        text: expect.any(Object),
+        key: expect.any(Object),
+        keyAction: expect.any(Object),
+        timeout: expect.any(Object),
+        pollInterval: expect.any(Object),
+        stabilityDuration: expect.any(Object),
+        includeData: expect.any(Object),
+      })
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -310,9 +341,9 @@ describe("createMcpServer", () => {
     ]);
   });
 
-  it("lists all 20 tools via MCP protocol", async () => {
+  it("lists all 21 tools via MCP protocol", async () => {
     const result = await client.listTools();
-    expect(result.tools).toHaveLength(20);
+    expect(result.tools).toHaveLength(21);
   });
 
   it("tool names match shared constants", async () => {
