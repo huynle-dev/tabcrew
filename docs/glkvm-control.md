@@ -18,6 +18,7 @@ They do not automate the browser DOM/page. They do not click Chrome UI, query ac
 | `glkvm_open` | `opencode-chrome_glkvm_open` | Open a GLKVM URL in an OpenCode-owned tab and return its `tabId`. |
 | `glkvm_attach` | `opencode-chrome_glkvm_attach` | Mark an existing logged-in GLKVM tab as OpenCode-owned and return its `tabId`. |
 | `glkvm_status` | `opencode-chrome_glkvm_status` | Validate an OpenCode-owned GLKVM `tabId`, report video stream state, and inspect an optional HID session. |
+| `glkvm_smoke_test` | `opencode-chrome_glkvm_smoke_test` | Run a default no-input readiness and frame smoke test; calibration remains explicitly gated. |
 | `glkvm_screenshot` | `opencode-chrome_glkvm_screenshot` | Capture the current GLKVM video frame, optionally crop/downscale it, and return hash/dimension metadata. |
 | `glkvm_input` | `opencode-chrome_glkvm_input` | Send keyboard, text, mouse, drag, and scroll input to the remote machine. |
 | `glkvm_wait` | `opencode-chrome_glkvm_wait` | Poll captured frames until the remote display changes or a timeout expires. |
@@ -46,7 +47,7 @@ Selection rules:
 
 - Use `glkvm_open` with a URL to open a GLKVM web UI in an OpenCode-owned tab.
 - Use `glkvm_attach` with an existing Chrome tab ID to mark a logged-in GLKVM tab as OpenCode-owned.
-- Pass the returned integer `tabId` to `glkvm_status`, `glkvm_screenshot`, `glkvm_input`, `glkvm_wait`, `glkvm_sequence`, `glkvm_nav`, and `glkvm_ocr`.
+- Pass the returned integer `tabId` to `glkvm_status`, `glkvm_smoke_test`, `glkvm_screenshot`, `glkvm_input`, `glkvm_wait`, `glkvm_sequence`, `glkvm_nav`, and `glkvm_ocr`.
 - URL or hostname `target` values are only for discovery/open/attach flows. Direct-control schemas do not expose `target`, and target-only direct control is rejected.
 - When targeting fails, errors include both available GLKVM tabs and OpenCode-owned GLKVM tabs so callers can choose safely.
 
@@ -73,6 +74,14 @@ Recommended `glkvm_attach` pattern for an existing logged-in GLKVM tab:
 ```
 
 `glkvm_attach` does not log in for you; it only marks a suitable existing GLKVM tab as OpenCode-owned. If the tab is not a GLKVM page or is not authenticated enough for GLKVM/KVMD APIs, later tools return structured auth/targeting errors instead of selecting another tab.
+
+## No-Input Smoke Testing And Calibration Gating
+
+`glkvm_smoke_test` is safe to run before sending any remote-machine input. It can open a GLKVM URL with `url`, attach an existing tab with `tabId` plus `attach: true`, or validate an already OpenCode-owned `tabId`. It then checks readiness/status metadata, captures a full frame, captures a centered crop, and waits for frame stability. The default result reports `inputSent: false`; it must not send keyboard HID, mouse HID, scroll events, sequence steps, navigation macros, or runtime SSH commands.
+
+Optional HID calibration is explicitly gated. A calibration request without `calibration: { "enabled": true, "approved": true }` is blocked, and calibration is not part of the default smoke path. Treat calibration approval as an operator decision because any future calibration routine may move the remote pointer or send HID input.
+
+The rpi-lab SSH oracle is test-only. It may be used by automated tests or lab validation outside the runtime tool path, but GLKVM runtime control must continue to use the authenticated GLKVM page context and KVM/video APIs rather than SSHing into the remote host.
 
 ## Coordinate Systems
 

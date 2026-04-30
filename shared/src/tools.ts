@@ -43,6 +43,8 @@ export const TOOL_NAMES = {
   GLKVM_ATTACH: "glkvm_attach",
   /** Get GLKVM connection and session status */
   GLKVM_STATUS: "glkvm_status",
+  /** Run a no-input GLKVM readiness and frame smoke test */
+  GLKVM_SMOKE_TEST: "glkvm_smoke_test",
   /** Capture a screenshot from a GLKVM target */
   GLKVM_SCREENSHOT: "glkvm_screenshot",
   /** Send keyboard and pointer input to a GLKVM target */

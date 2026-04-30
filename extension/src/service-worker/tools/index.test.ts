@@ -28,6 +28,7 @@ describe("registerTools", () => {
         TOOL_NAMES.GLKVM_SEQUENCE,
         TOOL_NAMES.GLKVM_NAV,
         TOOL_NAMES.GLKVM_OCR,
+        TOOL_NAMES.GLKVM_SMOKE_TEST,
       ]),
     );
   });

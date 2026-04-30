@@ -1,7 +1,7 @@
 /**
  * MCP Server that exposes Chrome browser tools to OpenCode.
  *
- * Registers 24 tool schemas via the MCP protocol and forwards
+ * Registers 25 tool schemas via the MCP protocol and forwards
  * tool calls to the Chrome extension through the native host socket.
  */
 
@@ -459,6 +459,60 @@ const TOOL_SCHEMAS: Tool[] = [
         },
       },
       required: ["tabId"],
+    },
+  },
+  {
+    name: TOOL_NAMES.GLKVM_SMOKE_TEST,
+    description:
+      "Run a no-input GLKVM open/attach readiness, screenshot, crop, and stable-frame smoke test; HID calibration is explicit opt-in only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "Optional GLKVM URL to open in an OpenCode-owned tab before smoke checks",
+        },
+        active: {
+          type: "boolean",
+          description: "Whether an opened GLKVM tab should be foregrounded (default: true)",
+        },
+        tabId: {
+          type: "integer",
+          description: "OpenCode-owned GLKVM tab ID, or existing GLKVM tab ID when attach is true",
+        },
+        attach: {
+          type: "boolean",
+          description: "Attach the provided existing GLKVM tab as OpenCode-owned before smoke checks",
+        },
+        timeout: {
+          type: "number",
+          description: "Maximum time to wait for frame stability in milliseconds (default: 5000)",
+        },
+        pollInterval: {
+          type: "number",
+          description: "Polling interval for frame stability checks in milliseconds (default: 250)",
+        },
+        stabilityDuration: {
+          type: "number",
+          description:
+            "Required unchanged-frame duration for the no-input stable wait in milliseconds (default: 1000)",
+        },
+        calibration: {
+          type: "object",
+          description:
+            "Optional HID calibration request. Calibration is blocked unless enabled and approved are both true, and is not part of the default smoke path.",
+          properties: {
+            enabled: {
+              type: "boolean",
+              description: "Request HID calibration tooling instead of only default no-input smoke checks",
+            },
+            approved: {
+              type: "boolean",
+              description: "Explicit approval gate required before any HID calibration path can run",
+            },
+          },
+        },
+      },
     },
   },
   {

@@ -21,6 +21,7 @@ import { GlkvmNavTool } from "./glkvmNav.js";
 import { GlkvmOpenTool } from "./glkvmOpen.js";
 import { GlkvmScreenshotTool } from "./glkvmScreenshot.js";
 import { GlkvmSequenceTool } from "./glkvmSequence.js";
+import { GlkvmSmokeTestTool } from "./glkvmSmokeTest.js";
 import { GlkvmWaitTool } from "./glkvmWait.js";
 import { GlkvmInputTool } from "./kvmInput.js";
 import { GlkvmOcrTool } from "./kvmOcr.js";
@@ -53,6 +54,7 @@ export function registerTools(router: MessageRouter): void {
   router.register(TOOL_NAMES.GLKVM_NAV, new GlkvmNavTool());
   router.register(TOOL_NAMES.GLKVM_SCREENSHOT, new GlkvmScreenshotTool());
   router.register(TOOL_NAMES.GLKVM_SEQUENCE, new GlkvmSequenceTool());
+  router.register(TOOL_NAMES.GLKVM_SMOKE_TEST, new GlkvmSmokeTestTool());
   router.register(TOOL_NAMES.GLKVM_WAIT, new GlkvmWaitTool());
   router.register(TOOL_NAMES.GLKVM_INPUT, new GlkvmInputTool());
   router.register(TOOL_NAMES.GLKVM_OCR, new GlkvmOcrTool());

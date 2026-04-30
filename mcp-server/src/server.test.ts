@@ -14,6 +14,7 @@ describe("getToolSchemas", () => {
     TOOL_NAMES.GLKVM_OPEN,
     TOOL_NAMES.GLKVM_ATTACH,
     TOOL_NAMES.GLKVM_STATUS,
+    TOOL_NAMES.GLKVM_SMOKE_TEST,
     TOOL_NAMES.GLKVM_SCREENSHOT,
     TOOL_NAMES.GLKVM_INPUT,
     TOOL_NAMES.GLKVM_WAIT,
@@ -250,6 +251,36 @@ describe("getToolSchemas", () => {
     expect(schema.inputSchema.required).toContain("tabId");
   });
 
+  it("advertises GLKVM smoke test as no-input and calibration gated", () => {
+    const schema = schemaFor(TOOL_NAMES.GLKVM_SMOKE_TEST);
+
+    expect(schema.description).toContain("no-input");
+    expect(schema.description).toContain("calibration");
+    expect(schema.inputSchema.properties).toMatchObject({
+      url: { type: "string" },
+      active: { type: "boolean" },
+      tabId: { type: "integer" },
+      attach: { type: "boolean" },
+      timeout: { type: "number" },
+      pollInterval: { type: "number" },
+      stabilityDuration: { type: "number" },
+      calibration: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+          approved: { type: "boolean" },
+        },
+      },
+    });
+    expect(schema.inputSchema.required ?? []).not.toContain("tabId");
+    expect(schema.inputSchema.properties).not.toHaveProperty("sessionId");
+    expect(schema.inputSchema.properties).not.toHaveProperty("action");
+    expect(schema.inputSchema.properties).not.toHaveProperty("key");
+    expect(schema.inputSchema.properties).not.toHaveProperty("text");
+    expect(schema.inputSchema.properties).not.toHaveProperty("x");
+    expect(schema.inputSchema.properties).not.toHaveProperty("y");
+  });
+
   it("uses explicit OpenCode-owned tabId targeting for GLKVM tools", () => {
     for (const toolName of DIRECT_CONTROL_GLKVM_TOOLS) {
       const schema = schemaFor(toolName);
@@ -265,6 +296,20 @@ describe("getToolSchemas", () => {
         "OpenCode-owned",
       );
     }
+  });
+
+  it("supports GLKVM smoke open or attach selectors without HID input fields", () => {
+    const schema = schemaFor(TOOL_NAMES.GLKVM_SMOKE_TEST);
+    expect(schema.inputSchema.properties.url.description).toContain("open");
+    expect(schema.inputSchema.properties.tabId.description).toContain("OpenCode-owned");
+    expect(schema.inputSchema.properties.attach.description).toContain("Attach");
+    expect(schema.inputSchema.properties).not.toHaveProperty("target");
+    expect(schema.inputSchema.properties).not.toHaveProperty("hostname");
+    expect(schema.inputSchema.properties).not.toHaveProperty("sessionId");
+    expect(schema.inputSchema.properties).not.toHaveProperty("key");
+    expect(schema.inputSchema.properties).not.toHaveProperty("text");
+    expect(schema.inputSchema.properties).not.toHaveProperty("x");
+    expect(schema.inputSchema.properties).not.toHaveProperty("y");
   });
 
   it("advertises GLKVM open and attach ownership tools", () => {
@@ -558,6 +603,33 @@ describe("createMcpServer", () => {
     expect(result.content).toEqual([
       { type: "text", text: "Navigated to: https://example.com" },
     ]);
+  });
+
+  it("forwards GLKVM smoke test calls without normalization", async () => {
+    const sendSpy = vi.spyOn(mockSocketClient, "sendToolRequest").mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+    });
+
+    await client.callTool({
+      name: TOOL_NAMES.GLKVM_SMOKE_TEST,
+      arguments: {
+        url: "https://kvm.example.com/#/",
+        active: false,
+        timeout: 1000,
+        pollInterval: 100,
+        stabilityDuration: 250,
+        calibration: { enabled: true, approved: true },
+      },
+    });
+
+    expect(sendSpy).toHaveBeenCalledWith(TOOL_NAMES.GLKVM_SMOKE_TEST, {
+      url: "https://kvm.example.com/#/",
+      active: false,
+      timeout: 1000,
+      pollInterval: 100,
+      stabilityDuration: 250,
+      calibration: { enabled: true, approved: true },
+    });
   });
 
   it("returns error when socket client throws", async () => {
