@@ -54,11 +54,15 @@ is foregrounded.
 | `tabs_create` | creates new tab; no `tabId` input | Open a new tab; `active` controls foregrounding |
 | `tabs_close` | requires `tabId` or `tabIds` | Close one or more tabs by ID |
 | `gif_creator` | requires `tabId` | Record browser actions as an animated GIF (start → screenshot → stop) |
-| `glkvm_status` | optional `target` / `sessionId` | Inspect a logged-in GLKVM tab, video stream state, and optional HID session state |
+| `glkvm_open` | URL discovery/open; no `tabId` input | Open a GLKVM URL in an OpenCode-owned tab and return its `tabId` |
+| `glkvm_attach` | requires existing `tabId` | Mark an existing logged-in GLKVM tab as OpenCode-owned |
+| `glkvm_status` | requires OpenCode-owned `tabId`; optional `sessionId` | Inspect a logged-in GLKVM tab, video stream state, and optional HID session state |
 | `glkvm_screenshot` | requires OpenCode-owned `tabId`; optional `sessionId` | Capture the current GLKVM video frame; optional intrinsic-region crop, max-dimension downscale, OCR metadata request, and frame hash/dimension metadata |
-| `glkvm_input` | optional `target` / `sessionId` | Send remote keyboard, text, mouse, drag, and scroll input through GLKVM HID |
-| `glkvm_wait` | optional `target` / `sessionId` | Poll GLKVM frames until the remote display changes or the timeout expires |
-| `glkvm_ocr` | optional `target` / `sessionId` | Read optional GLKVM OCR text when the device reports OCR support |
+| `glkvm_input` | requires OpenCode-owned `tabId`; optional `sessionId` | Send remote keyboard, text, mouse, drag, and scroll input through GLKVM HID |
+| `glkvm_wait` | requires OpenCode-owned `tabId`; optional `sessionId` | Poll GLKVM frames until the remote display changes or the timeout expires |
+| `glkvm_sequence` | requires OpenCode-owned `tabId`; optional `sessionId` | Run batched input, capture, and frame-wait steps over one GLKVM tab |
+| `glkvm_nav` | requires OpenCode-owned `tabId`; optional `sessionId` | Run OS-aware navigation macros through GLKVM HID |
+| `glkvm_ocr` | requires OpenCode-owned `tabId`; optional `sessionId` | Read optional GLKVM OCR text when the device reports OCR support |
 
 OpenCode may display MCP tools with the configured server name as a prefix, such as `opencode-chrome_glkvm_status`. The registered MCP tool names are the unprefixed names shown above.
 
@@ -66,7 +70,7 @@ OpenCode may display MCP tools with the configured server name as a prefix, such
 
 The `glkvm_*` tools control the remote machine behind a GLKVM/KVMD web console. They do not click the Chrome page itself. Open and log in to the GLKVM web interface in Chrome first; the extension reuses that tab's cookies and `localStorage` token by running GLKVM API calls in the page context.
 
-Target selection is intentionally conservative. If exactly one GLKVM tab is open, the tools can auto-select it. If multiple GLKVM tabs are open, pass `target` as a hostname or full URL so input cannot be sent to the wrong remote machine. If no logged-in GLKVM tab is available, auth/session errors ask you to open or re-authenticate in the GLKVM web interface.
+Target selection is intentionally conservative. Use `glkvm_open` to open a GLKVM URL in an OpenCode-owned tab, or `glkvm_attach` to claim an existing logged-in GLKVM tab. Every direct-control tool then requires that returned OpenCode-owned `tabId`; URL/hostname `target` values are limited to discovery/open/attach flows and are rejected for target-only direct control. If targeting fails, errors list available GLKVM tabs and OpenCode-owned GLKVM tabs so callers can choose safely.
 
 Mouse coordinates for `glkvm_input` use GLKVM screenshot space. Use `glkvm_screenshot` first, then pass `x`, `y`, `startX`, `startY`, `endX`, and `endY` measured against the returned video-frame image. The tool maps those screenshot-space points to KVMD absolute HID coordinates internally and returns both the original screenshot coordinates and diagnostic absolute coordinates. Do not pass browser page coordinates or the returned HID absolute values back as mouse input.
 
@@ -75,24 +79,28 @@ Mouse coordinates for `glkvm_input` use GLKVM screenshot space. Use `glkvm_scree
 Examples:
 
 ```json
-{ "target": "kvm.example.com" }
+{ "url": "https://kvm.example.com/#/" }
 ```
 
 ```json
-{ "target": "kvm.example.com", "action": "key", "key": "ctrl+alt+delete", "keyAction": "hotkey" }
+{ "tabId": 42 }
 ```
 
 ```json
-{ "target": "kvm.example.com", "action": "click", "x": 640, "y": 360, "button": "left" }
+{ "tabId": 42, "action": "key", "key": "ctrl+alt+delete", "keyAction": "hotkey" }
 ```
 
 ```json
-{ "target": "kvm.example.com", "timeout": 5000, "pollInterval": 250 }
+{ "tabId": 42, "action": "click", "x": 640, "y": 360, "button": "left" }
+```
+
+```json
+{ "tabId": 42, "timeout": 5000, "pollInterval": 250 }
 ```
 
 Operational guardrails:
 
-- `target` disambiguates GLKVM tabs by URL or hostname; omit it only when one GLKVM tab is open.
+- Direct GLKVM control requires an integer `tabId` that belongs to an OpenCode-owned GLKVM tab.
 - Keyboard and mouse operations attempt release-all cleanup after input, and results include cleanup status when relevant.
 - `tabs_close` releases and closes tracked GLKVM HID sessions before closing a tab.
 - Offline devices, missing tokens, rejected WebSockets, stale sessions, hidden video streams, and unavailable OCR return structured errors instead of silently sending input elsewhere.

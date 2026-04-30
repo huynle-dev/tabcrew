@@ -6,10 +6,14 @@ The GLKVM tools expose remote KVM control through the Chrome tab that is already
 
 | MCP tool | OpenCode display example | Purpose |
 |---|---|---|
-| `glkvm_status` | `opencode-chrome_glkvm_status` | Resolve the GLKVM tab, report video stream state, and inspect an optional HID session. |
+| `glkvm_open` | `opencode-chrome_glkvm_open` | Open a GLKVM URL in an OpenCode-owned tab and return its `tabId`. |
+| `glkvm_attach` | `opencode-chrome_glkvm_attach` | Mark an existing logged-in GLKVM tab as OpenCode-owned and return its `tabId`. |
+| `glkvm_status` | `opencode-chrome_glkvm_status` | Validate an OpenCode-owned GLKVM `tabId`, report video stream state, and inspect an optional HID session. |
 | `glkvm_screenshot` | `opencode-chrome_glkvm_screenshot` | Capture the current GLKVM video frame, optionally crop/downscale it, and return hash/dimension metadata. |
 | `glkvm_input` | `opencode-chrome_glkvm_input` | Send keyboard, text, mouse, drag, and scroll input to the remote machine. |
 | `glkvm_wait` | `opencode-chrome_glkvm_wait` | Poll captured frames until the remote display changes or a timeout expires. |
+| `glkvm_sequence` | `opencode-chrome_glkvm_sequence` | Run batched input, capture, and frame-wait steps over one OpenCode-owned GLKVM tab. |
+| `glkvm_nav` | `opencode-chrome_glkvm_nav` | Run OS-aware navigation macros through GLKVM HID. |
 | `glkvm_ocr` | `opencode-chrome_glkvm_ocr` | Read optional OCR text from a remote-frame region when the device exposes OCR support. |
 
 OpenCode prefixes tool names with the configured MCP server name. The registered names in the MCP server are the unprefixed `glkvm_*` names.
@@ -25,24 +29,31 @@ The extension does not ask for GLKVM credentials and does not store a separate G
 
 Implementation detail: GLKVM requires the browser session cookie plus token state from the page. The extension runs GLKVM API calls in the GLKVM tab's page context with CDP `Runtime.evaluate`, so the request has the same cookies and `localStorage` token as the logged-in page.
 
-## Target Selection
+## OpenCode-Owned Tab Selection
 
-The tools accept `target` as an optional GLKVM target identifier or URL. They do not expose browser `tabId` as a public input.
+Direct GLKVM control requires an explicit browser `tabId` that is both a GLKVM tab and owned by the current OpenCode session. This prevents a caller from silently controlling an arbitrary matching GLKVM tab outside the OpenCode tab group.
 
-Target resolution rules:
+Selection rules:
 
-- When one GLKVM tab is open, omitting `target` auto-selects that tab.
-- When multiple GLKVM tabs are open, pass `target` to avoid controlling the wrong remote machine.
-- `target` may be a full URL, hostname, or partial hostname that matches a GLKVM tab URL.
-- When no matching GLKVM tab exists, tools fail with a clear error instead of falling back to another tab.
+- Use `glkvm_open` with a URL to open a GLKVM web UI in an OpenCode-owned tab.
+- Use `glkvm_attach` with an existing Chrome tab ID to mark a logged-in GLKVM tab as OpenCode-owned.
+- Pass the returned integer `tabId` to `glkvm_status`, `glkvm_screenshot`, `glkvm_input`, `glkvm_wait`, `glkvm_sequence`, `glkvm_nav`, and `glkvm_ocr`.
+- URL or hostname `target` values are only for discovery/open/attach flows. Direct-control schemas do not expose `target`, and target-only direct control is rejected.
+- When targeting fails, errors include both available GLKVM tabs and OpenCode-owned GLKVM tabs so callers can choose safely.
 
 Recommended pattern:
 
 ```json
-{ "target": "kvm.example.com" }
+{ "url": "https://kvm.example.com/#/" }
 ```
 
-Use `tabs_context` if you need to inspect currently open browser tabs before choosing a target.
+Then use the returned `tabId`:
+
+```json
+{ "tabId": 42 }
+```
+
+Use `tabs_context` if you need to inspect currently open browser tabs before attaching one with `glkvm_attach`.
 
 ## Coordinate Systems
 
@@ -66,7 +77,7 @@ Example click:
 
 ```json
 {
-  "target": "kvm.example.com",
+  "tabId": 42,
   "action": "click",
   "x": 640,
   "y": 360,
@@ -78,7 +89,7 @@ Example drag:
 
 ```json
 {
-  "target": "kvm.example.com",
+  "tabId": 42,
   "action": "drag",
   "startX": 400,
   "startY": 300,
@@ -125,7 +136,7 @@ Example hotkey:
 
 ```json
 {
-  "target": "kvm.example.com",
+  "tabId": 42,
   "action": "key",
   "key": "ctrl+alt+delete",
   "keyAction": "hotkey"
@@ -136,7 +147,7 @@ Example text input:
 
 ```json
 {
-  "target": "kvm.example.com",
+  "tabId": 42,
   "action": "type",
   "text": "boot rescue\n"
 }
@@ -148,7 +159,7 @@ Example text input:
 
 ```json
 {
-  "target": "kvm.example.com",
+  "tabId": 42,
   "timeout": 5000,
   "pollInterval": 250
 }
@@ -158,7 +169,7 @@ Example text input:
 
 ```json
 {
-  "target": "kvm.example.com",
+  "tabId": 42,
   "language": "eng",
   "region": { "x": 0, "y": 0, "width": 800, "height": 200 }
 }
@@ -171,8 +182,9 @@ The GLKVM tools are designed to fail closed because HID input affects a real rem
 Tab targeting guardrails:
 
 - GLKVM tabs are detected by GLKVM URL/title signals.
-- A single tab can be auto-selected, but multiple tabs require an explicit `target`.
-- A target mismatch returns the available GLKVM tabs instead of selecting an arbitrary tab.
+- Direct control requires an explicit integer `tabId` from `glkvm_open`, `glkvm_attach`, or OpenCode-owned discovery.
+- The tab must still be a GLKVM page and must belong to the current OpenCode-owned tab group.
+- Targeting failures return available GLKVM tabs and OpenCode-owned GLKVM tabs instead of selecting an arbitrary tab.
 
 Authentication and offline guardrails:
 

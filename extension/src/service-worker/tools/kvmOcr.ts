@@ -4,7 +4,7 @@ import type {
   ToolResult,
 } from "../../types/messages.js";
 import { cdpManager } from "../cdp.js";
-import { getVideoMetadata, resolveGlkvmTab } from "../glkvmTab.js";
+import { getVideoMetadata, requireOwnedGlkvmTabForDirectControl } from "../glkvmTab.js";
 
 export type SupportedOcrPercent = 5 | 10 | 15 | 20;
 
@@ -132,7 +132,7 @@ export async function readKvmOcr(options: {
 export class GlkvmOcrTool implements ToolHandler {
   async execute(
     args: Record<string, unknown>,
-    _context: ToolContext,
+    context: ToolContext,
   ): Promise<ToolResult> {
     const target = typeof args.target === "string" ? args.target : undefined;
     const sessionId =
@@ -141,15 +141,21 @@ export class GlkvmOcrTool implements ToolHandler {
       typeof args.language === "string" ? args.language : undefined;
 
     try {
-      const resolved = await resolveGlkvmTab(target ? { target } : undefined);
-      const video = await getVideoMetadata(resolved.tabId);
+      const validated = await requireOwnedGlkvmTabForDirectControl(
+        {
+          ...("tabId" in args ? { tabId: args.tabId } : {}),
+          ...(target ? { target } : {}),
+        },
+        context.sessionScope,
+      );
+      const video = await getVideoMetadata(validated.tabId);
       const frame = {
         width: video.videoWidth,
         height: video.videoHeight,
       };
       const region = parseRegion(args.region, frame);
       const text = await readKvmOcr({
-        tabId: resolved.tabId,
+        tabId: validated.tabId,
         region,
         frame,
         language,
@@ -159,8 +165,8 @@ export class GlkvmOcrTool implements ToolHandler {
         ...(target ? { target } : {}),
         ...(sessionId ? { sessionId } : {}),
         ...(language ? { language } : {}),
-        tabId: resolved.tabId,
-        tab: resolved.tab,
+        tabId: validated.tabId,
+        tab: validated.tab,
         region,
         text,
       });

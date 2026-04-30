@@ -3,7 +3,7 @@ import type {
   ToolHandler,
   ToolResult,
 } from "../../types/messages.js";
-import { getVideoMetadata, resolveGlkvmTab } from "../glkvmTab.js";
+import { getVideoMetadata, requireOwnedGlkvmTabForDirectControl } from "../glkvmTab.js";
 import { encodeKeyEvent } from "./kvmHidEncoder.js";
 import {
   buildKeySteps,
@@ -108,10 +108,20 @@ function json(success: boolean, value: Record<string, unknown>): ToolResult {
   };
 }
 
+function directControlOptions(args: Record<string, unknown>): {
+  tabId?: unknown;
+  target?: string;
+} {
+  return {
+    ...("tabId" in args ? { tabId: args.tabId } : {}),
+    ...(typeof args.target === "string" ? { target: args.target } : {}),
+  };
+}
+
 export class GlkvmInputTool implements ToolHandler {
   async execute(
     args: Record<string, unknown>,
-    _context: ToolContext,
+    context: ToolContext,
   ): Promise<ToolResult> {
     let session: GlkvmSession | undefined;
     let cleanup: CleanupOutcome | undefined;
@@ -119,27 +129,29 @@ export class GlkvmInputTool implements ToolHandler {
       if (args.action !== "key") {
         if (args.action !== "type") {
           const mouseAction = getMouseAction(args.action);
-          if (mouseAction) return await this.executeMouse(args, mouseAction);
+          if (mouseAction) return await this.executeMouse(args, mouseAction, context);
           throw new Error(
             `Unsupported GLKVM input action: ${String(args.action)}`,
           );
         }
 
-        return await this.executeType(args);
+        return await this.executeType(args, context);
       }
       if (typeof args.key !== "string") {
         throw new Error('The "key" argument is required for GLKVM key input');
       }
 
-      const target = typeof args.target === "string" ? args.target : undefined;
       const sessionId =
         typeof args.sessionId === "string" ? args.sessionId : undefined;
       const keyAction = getKeyAction(args.keyAction);
       const steps = buildKeySteps(args.key, keyAction);
 
-      const resolved = await resolveGlkvmTab(target ? { target } : undefined);
+      const validated = await requireOwnedGlkvmTabForDirectControl(
+        directControlOptions(args),
+        context.sessionScope,
+      );
       session = await connect({
-        tabId: resolved.tabId,
+        tabId: validated.tabId,
         ...(sessionId ? { sessionId } : {}),
       });
 
@@ -167,7 +179,10 @@ export class GlkvmInputTool implements ToolHandler {
     }
   }
 
-  private async executeType(args: Record<string, unknown>): Promise<ToolResult> {
+  private async executeType(
+    args: Record<string, unknown>,
+    context: ToolContext,
+  ): Promise<ToolResult> {
     if (typeof args.text !== "string") {
       throw new Error('The "text" argument is required for GLKVM text input');
     }
@@ -178,14 +193,16 @@ export class GlkvmInputTool implements ToolHandler {
       );
     }
 
-    const target = typeof args.target === "string" ? args.target : undefined;
     const sessionId =
       typeof args.sessionId === "string" ? args.sessionId : undefined;
     const fallback = getFallbackMode(args.fallback);
-    const resolved = await resolveGlkvmTab(target ? { target } : undefined);
+    const validated = await requireOwnedGlkvmTabForDirectControl(
+      directControlOptions(args),
+      context.sessionScope,
+    );
 
     try {
-      await pasteText({ tabId: resolved.tabId, text: args.text });
+      await pasteText({ tabId: validated.tabId, text: args.text });
       return json(true, {
         action: "type",
         method: "paste",
@@ -196,7 +213,7 @@ export class GlkvmInputTool implements ToolHandler {
 
       const steps = buildTextFallbackSteps(args.text);
       const session = await connect({
-        tabId: resolved.tabId,
+        tabId: validated.tabId,
         ...(sessionId ? { sessionId } : {}),
       });
 
@@ -227,14 +244,17 @@ export class GlkvmInputTool implements ToolHandler {
   private async executeMouse(
     args: Record<string, unknown>,
     action: MouseAction,
+    context: ToolContext,
   ): Promise<ToolResult> {
     let session: GlkvmSession | undefined;
     let cleanup: CleanupOutcome | undefined;
     try {
-      const target = typeof args.target === "string" ? args.target : undefined;
       const sessionId =
         typeof args.sessionId === "string" ? args.sessionId : undefined;
-      const resolved = await resolveGlkvmTab(target ? { target } : undefined);
+      const validated = await requireOwnedGlkvmTabForDirectControl(
+        directControlOptions(args),
+        context.sessionScope,
+      );
 
       let plan: MouseInputPlan;
 
@@ -254,7 +274,7 @@ export class GlkvmInputTool implements ToolHandler {
           args.amount === undefined ? 1 : getRequiredNumber(args, "amount");
         plan = buildMouseInputPlan({ action, direction, amount });
       } else {
-        const video = await getVideoMetadata(resolved.tabId);
+        const video = await getVideoMetadata(validated.tabId);
         const size = frameSize(video);
 
         if (action === "drag") {
@@ -285,7 +305,7 @@ export class GlkvmInputTool implements ToolHandler {
       }
 
       session = await connect({
-        tabId: resolved.tabId,
+        tabId: validated.tabId,
         ...(sessionId ? { sessionId } : {}),
       });
 

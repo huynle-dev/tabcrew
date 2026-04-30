@@ -5,6 +5,7 @@ const frameMock = vi.hoisted(() => ({
 }));
 
 const glkvmTabMock = vi.hoisted(() => ({
+  requireOwnedGlkvmTabForDirectControl: vi.fn(),
   validateOwnedGlkvmTab: vi.fn(),
 }));
 
@@ -24,9 +25,25 @@ function parseMetadata(
   return JSON.parse(block.text);
 }
 
+function parseErrorResult(
+  result: Awaited<
+    ReturnType<InstanceType<typeof GlkvmScreenshotTool>["execute"]>
+  >,
+) {
+  const block = result.content[0];
+  expect(block.type).toBe("text");
+  if (block.type !== "text") throw new Error("Expected text error block");
+  return JSON.parse(block.text);
+}
+
 describe("GlkvmScreenshotTool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockResolvedValue({
+      tabId: 42,
+      tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example.com/#/" },
+      ownership: { ok: true, tabId: 42, groupId: 101 },
+    });
     glkvmTabMock.validateOwnedGlkvmTab.mockResolvedValue({
       tabId: 42,
       tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example.com/#/" },
@@ -49,10 +66,11 @@ describe("GlkvmScreenshotTool", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(glkvmTabMock.validateOwnedGlkvmTab).toHaveBeenCalledWith(
-      42,
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { tabId: 42 },
       "scope-a",
     );
+    expect(glkvmTabMock.validateOwnedGlkvmTab).not.toHaveBeenCalled();
     expect(frameMock.captureGlkvmFrame).toHaveBeenCalledWith({
       tabId: 42,
       sessionScope: "scope-a",
@@ -179,31 +197,35 @@ describe("GlkvmScreenshotTool", () => {
   });
 
   it("rejects target-only direct control before frame capture", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error(
+        "Direct GLKVM control requires an OpenCode-owned tabId. Pass an integer tabId from discovery/open/attach. URL targets are only for discovery/open/attach and are deprecated for direct GLKVM control.\nAvailable GLKVM tabs:\n  (none)",
+      ),
+    );
+
     const result = await new GlkvmScreenshotTool().execute(
       { target: "example.com" },
       {},
     );
 
     expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { target: "example.com" },
+      undefined,
+    );
     expect(glkvmTabMock.validateOwnedGlkvmTab).not.toHaveBeenCalled();
     expect(frameMock.captureGlkvmFrame).not.toHaveBeenCalled();
-    expect(result.content[0]).toEqual({
-      type: "text",
-      text: JSON.stringify(
-        {
-          errorType: "capture_error",
-          error:
-            "Direct GLKVM control requires an OpenCode-owned tabId. Pass an integer tabId from discovery/open/attach. URL targets are only for discovery/open/attach and are deprecated for direct GLKVM control.",
-        },
-        null,
-        2,
-      ),
+    expect(parseErrorResult(result)).toEqual({
+      errorType: "capture_error",
+      error: expect.stringContaining("Available GLKVM tabs"),
     });
   });
 
-  it("fails clearly when the resolved GLKVM tab is missing", async () => {
-    glkvmTabMock.validateOwnedGlkvmTab.mockRejectedValue(
-      new Error("Tab 99 not found. The tab may have been closed."),
+  it("includes targeting diagnostics when the explicit GLKVM tab is missing", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error(
+        "Tab 99 was not found. The tab may have been closed.\nAvailable GLKVM tabs:\n  - tab 42: https://kvm.example.com/#/ (GLKVM)\nOpenCode-owned GLKVM tabs:\n  (none)",
+      ),
     );
 
     const result = await new GlkvmScreenshotTool().execute(
@@ -212,19 +234,32 @@ describe("GlkvmScreenshotTool", () => {
     );
 
     expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { tabId: 99 },
+      undefined,
+    );
+    expect(glkvmTabMock.validateOwnedGlkvmTab).not.toHaveBeenCalled();
     expect(result.content[0]).toEqual({
       type: "text",
-      text: expect.stringContaining("Tab 99 not found"),
+      text: expect.stringContaining("OpenCode-owned GLKVM tabs"),
     });
   });
 
   it("rejects non-integer tabIds before frame capture", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error("Direct GLKVM control requires an OpenCode-owned tabId. Pass an integer tabId"),
+    );
+
     const result = await new GlkvmScreenshotTool().execute(
       { tabId: "123" },
       {},
     );
 
     expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { tabId: "123" },
+      undefined,
+    );
     expect(glkvmTabMock.validateOwnedGlkvmTab).not.toHaveBeenCalled();
     expect(frameMock.captureGlkvmFrame).not.toHaveBeenCalled();
     expect(result.content[0]).toEqual({

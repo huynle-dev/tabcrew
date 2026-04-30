@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const glkvmTabMock = vi.hoisted(() => ({
   getVideoMetadata: vi.fn(),
   resolveGlkvmTab: vi.fn(),
+  requireOwnedGlkvmTabForDirectControl: vi.fn(),
 }));
 
 const transportMock = vi.hoisted(() => ({
@@ -97,7 +98,7 @@ describe("GlkvmInputTool keyboard input", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    glkvmTabMock.resolveGlkvmTab.mockResolvedValue({
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockResolvedValue({
       tabId: 42,
       tab: {
         tabId: 42,
@@ -128,11 +129,16 @@ describe("GlkvmInputTool keyboard input", () => {
 
   it("presses a single key as down then up", async () => {
     const result = await new GlkvmInputTool().execute(
-      { action: "key", key: "Enter", keyAction: "press" },
-      {},
+      { tabId: 42, action: "key", key: "Enter", keyAction: "press" },
+      { sessionScope: "scope-a" },
     );
 
     expect(result.success).toBe(true);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { tabId: 42 },
+      "scope-a",
+    );
+    expect(glkvmTabMock.resolveGlkvmTab).not.toHaveBeenCalled();
     expect(sentKeys()).toEqual([
       { down: true, key: "Enter" },
       { down: false, key: "Enter" },
@@ -152,11 +158,11 @@ describe("GlkvmInputTool keyboard input", () => {
 
   it("sends key down and key up actions without implicit extra events", async () => {
     await new GlkvmInputTool().execute(
-      { action: "key", key: "ShiftLeft", keyAction: "down" },
+      { tabId: 42, action: "key", key: "ShiftLeft", keyAction: "down" },
       {},
     );
     await new GlkvmInputTool().execute(
-      { action: "key", key: "ShiftLeft", keyAction: "up" },
+      { tabId: 42, action: "key", key: "ShiftLeft", keyAction: "up" },
       {},
     );
 
@@ -168,7 +174,7 @@ describe("GlkvmInputTool keyboard input", () => {
 
   it("presses hotkey chords in down order and releases in reverse order", async () => {
     await new GlkvmInputTool().execute(
-      { action: "key", key: "ctrl+alt+delete", keyAction: "hotkey" },
+      { tabId: 42, action: "key", key: "ctrl+alt+delete", keyAction: "hotkey" },
       {},
     );
 
@@ -188,7 +194,7 @@ describe("GlkvmInputTool keyboard input", () => {
       .mockRejectedValueOnce(new Error("send failed"));
 
     const result = await new GlkvmInputTool().execute(
-      { action: "key", key: "ctrl+a", keyAction: "hotkey" },
+      { tabId: 42, action: "key", key: "ctrl+a", keyAction: "hotkey" },
       {},
     );
 
@@ -218,7 +224,7 @@ describe("GlkvmInputTool keyboard input", () => {
     });
 
     const result = await new GlkvmInputTool().execute(
-      { action: "key", key: "Enter" },
+      { tabId: 42, action: "key", key: "Enter" },
       {},
     );
 
@@ -243,7 +249,7 @@ describe("GlkvmInputTool keyboard input", () => {
     });
 
     const result = await new GlkvmInputTool().execute(
-      { action: "key", key: "Enter" },
+      { tabId: 42, action: "key", key: "Enter" },
       {},
     );
 
@@ -257,11 +263,11 @@ describe("GlkvmInputTool keyboard input", () => {
 
   it("reuses an explicit GLKVM session for key input", async () => {
     await new GlkvmInputTool().execute(
-      { action: "key", key: "Escape", sessionId: "__oc_kvm_existing" },
+      { tabId: 42, action: "key", key: "Escape", sessionId: "__oc_kvm_existing" },
       {},
     );
 
-    expect(glkvmTabMock.resolveGlkvmTab).toHaveBeenCalledWith(undefined);
+    expect(glkvmTabMock.resolveGlkvmTab).not.toHaveBeenCalled();
     expect(transportMock.connect).toHaveBeenCalledWith({
       tabId: 42,
       sessionId: "__oc_kvm_existing",
@@ -270,7 +276,7 @@ describe("GlkvmInputTool keyboard input", () => {
 
   it("types text through the GLKVM paste-as-keys endpoint", async () => {
     const result = await new GlkvmInputTool().execute(
-      { action: "type", text: "hello world" },
+      { tabId: 42, action: "type", text: "hello world" },
       {},
     );
 
@@ -294,7 +300,7 @@ describe("GlkvmInputTool keyboard input", () => {
     );
 
     const result = await new GlkvmInputTool().execute(
-      { action: "type", text: "hello", fallback: "none" },
+      { tabId: 42, action: "type", text: "hello", fallback: "none" },
       {},
     );
 
@@ -312,7 +318,7 @@ describe("GlkvmInputTool keyboard input", () => {
     );
 
     const result = await new GlkvmInputTool().execute(
-      { action: "type", text: "ab 2" },
+      { tabId: 42, action: "type", text: "ab 2" },
       {},
     );
 
@@ -344,7 +350,7 @@ describe("GlkvmInputTool keyboard input", () => {
 
   it("clicks by mapping screenshot coordinates to GLKVM absolute HID coordinates", async () => {
     const result = await new GlkvmInputTool().execute(
-      { action: "click", x: 480, y: 270, button: "right" },
+      { tabId: 42, action: "click", x: 480, y: 270, button: "right" },
       {},
     );
 
@@ -373,7 +379,7 @@ describe("GlkvmInputTool keyboard input", () => {
 
   it("moves with bounds clamped to the signed absolute HID range", async () => {
     const result = await new GlkvmInputTool().execute(
-      { action: "move", x: -10, y: 999 },
+      { tabId: 42, action: "move", x: -10, y: 999 },
       {},
     );
 
@@ -389,6 +395,7 @@ describe("GlkvmInputTool keyboard input", () => {
     const result = await new GlkvmInputTool().execute(
       {
         action: "drag",
+        tabId: 42,
         startX: 0,
         startY: 0,
         endX: 960,
@@ -419,7 +426,7 @@ describe("GlkvmInputTool keyboard input", () => {
 
   it("scrolls with signed wheel deltas", async () => {
     const result = await new GlkvmInputTool().execute(
-      { action: "scroll", direction: "down", amount: 3 },
+      { tabId: 42, action: "scroll", direction: "down", amount: 3 },
       {},
     );
 
@@ -446,7 +453,7 @@ describe("GlkvmInputTool keyboard input", () => {
     });
 
     const result = await new GlkvmInputTool().execute(
-      { action: "click", x: 10, y: 10 },
+      { tabId: 42, action: "click", x: 10, y: 10 },
       {},
     );
 
@@ -457,5 +464,72 @@ describe("GlkvmInputTool keyboard input", () => {
       error:
         "GLKVM video metadata is stale or unavailable. Capture a fresh glkvm_screenshot before sending mouse input.",
     });
+  });
+
+  it("rejects missing tabId before keyboard side effects", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error("Direct GLKVM control requires an OpenCode-owned tabId. Available OpenCode-owned GLKVM tabs:\n  (none)"),
+    );
+
+    const result = await new GlkvmInputTool().execute(
+      { action: "key", key: "Enter" },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      {},
+      undefined,
+    );
+    expect(glkvmTabMock.resolveGlkvmTab).not.toHaveBeenCalled();
+    expect(transportMock.connect).not.toHaveBeenCalled();
+    expect(transportMock.send).not.toHaveBeenCalled();
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "input_error",
+      error: expect.stringContaining("requires an OpenCode-owned tabId"),
+    });
+  });
+
+  it("rejects non-integer tabId before text side effects", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error("Direct GLKVM control requires an OpenCode-owned tabId. Pass an integer tabId"),
+    );
+
+    const result = await new GlkvmInputTool().execute(
+      { tabId: 42.5, action: "type", text: "hello" },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { tabId: 42.5 },
+      undefined,
+    );
+    expect(transportMock.pasteText).not.toHaveBeenCalled();
+    expect(transportMock.connect).not.toHaveBeenCalled();
+    expect(parseJsonResult(result).error).toContain("integer tabId");
+  });
+
+  it("rejects target-only mouse control before metadata or HID side effects", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error("Direct GLKVM control requires an OpenCode-owned tabId. URL targets are only for discovery/open/attach."),
+    );
+
+    const result = await new GlkvmInputTool().execute(
+      { target: "kvm.example.com", action: "click", x: 10, y: 10 },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { target: "kvm.example.com" },
+      undefined,
+    );
+    expect(glkvmTabMock.resolveGlkvmTab).not.toHaveBeenCalled();
+    expect(glkvmTabMock.getVideoMetadata).not.toHaveBeenCalled();
+    expect(transportMock.connect).not.toHaveBeenCalled();
+    expect(parseJsonResult(result).error).toContain(
+      "URL targets are only for discovery/open/attach",
+    );
   });
 });

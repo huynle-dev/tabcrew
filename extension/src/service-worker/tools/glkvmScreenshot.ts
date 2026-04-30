@@ -4,7 +4,7 @@ import type {
   ToolHandler,
   ToolResult,
 } from "../../types/messages.js";
-import { validateOwnedGlkvmTab } from "../glkvmTab.js";
+import { requireOwnedGlkvmTabForDirectControl } from "../glkvmTab.js";
 import { captureGlkvmFrame, type GlkvmFrameCropOptions } from "./glkvmFrame.js";
 
 function jsonText(value: Record<string, unknown>): ContentBlock {
@@ -53,28 +53,19 @@ function optionalRegion(args: Record<string, unknown>): GlkvmFrameCropOptions | 
   };
 }
 
-function requiredOwnedTabId(args: Record<string, unknown>): number {
-  const tabId = args.tabId;
-  if (typeof tabId === "number" && Number.isInteger(tabId)) {
-    return tabId;
-  }
-
-  const targetGuidance = typeof args.target === "string"
-    ? " URL targets are only for discovery/open/attach and are deprecated for direct GLKVM control."
-    : "";
-  throw new Error(
-    `Direct GLKVM control requires an OpenCode-owned tabId. Pass an integer tabId from discovery/open/attach.${targetGuidance}`,
-  );
-}
-
 export class GlkvmScreenshotTool implements ToolHandler {
   async execute(
     args: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
     try {
-      const tabId = requiredOwnedTabId(args);
-      const validated = await validateOwnedGlkvmTab(tabId, context.sessionScope);
+      const validated = await requireOwnedGlkvmTabForDirectControl(
+        {
+          ...("tabId" in args ? { tabId: args.tabId } : {}),
+          ...(typeof args.target === "string" ? { target: args.target } : {}),
+        },
+        context.sessionScope,
+      );
       const crop = optionalRegion(args);
       const maxWidth = optionalPositiveNumber(args, "maxWidth");
       const maxHeight = optionalPositiveNumber(args, "maxHeight");

@@ -8,6 +8,7 @@ const cdpManagerMock = vi.hoisted(() => ({
 
 const glkvmTabMock = vi.hoisted(() => ({
   resolveGlkvmTab: vi.fn(),
+  requireOwnedGlkvmTabForDirectControl: vi.fn(),
   getVideoMetadata: vi.fn(),
 }));
 
@@ -33,7 +34,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   cdpManagerMock.isAttached.mockReturnValue(true);
   cdpManagerMock.attach.mockResolvedValue(undefined);
-  glkvmTabMock.resolveGlkvmTab.mockResolvedValue({
+  glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockResolvedValue({
     tabId: 42,
     tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example/#/" },
   });
@@ -66,7 +67,7 @@ describe("selectOcrPercent", () => {
 });
 
 describe("GlkvmOcrTool", () => {
-  it("resolves GLKVM metadata and returns OCR text from the optional wrapper", async () => {
+  it("validates explicit owned tabId and returns OCR text from the optional wrapper", async () => {
     cdpManagerMock.sendCommand
       .mockResolvedValueOnce(
         mockEvalResult({
@@ -88,7 +89,7 @@ describe("GlkvmOcrTool", () => {
 
     const result = await new GlkvmOcrTool().execute(
       {
-        target: "kvm.example",
+        tabId: 42,
         sessionId: "ses_ocr",
         language: "eng",
         region: { x: 100, y: 100, width: 220, height: 80 },
@@ -97,9 +98,11 @@ describe("GlkvmOcrTool", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(glkvmTabMock.resolveGlkvmTab).toHaveBeenCalledWith({
-      target: "kvm.example",
-    });
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { tabId: 42 },
+      undefined,
+    );
+    expect(glkvmTabMock.resolveGlkvmTab).not.toHaveBeenCalled();
     expect(glkvmTabMock.getVideoMetadata).toHaveBeenCalledWith(42);
     const text = result.content[0];
     expect(text.type).toBe("text");
@@ -117,6 +120,56 @@ describe("GlkvmOcrTool", () => {
     );
   });
 
+  it("rejects missing tabId before metadata or OCR side effects", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error("Direct GLKVM control requires an OpenCode-owned tabId. Available GLKVM tabs:\n  (none)"),
+    );
+
+    const result = await new GlkvmOcrTool().execute({ language: "eng" }, {});
+
+    expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      {},
+      undefined,
+    );
+    expect(glkvmTabMock.resolveGlkvmTab).not.toHaveBeenCalled();
+    expect(glkvmTabMock.getVideoMetadata).not.toHaveBeenCalled();
+    expect(cdpManagerMock.sendCommand).not.toHaveBeenCalled();
+    const text = result.content[0];
+    expect(text.type).toBe("text");
+    if (text.type !== "text") throw new Error("Expected text content");
+    expect(JSON.parse(text.text)).toMatchObject({
+      errorType: "OCR_ERROR",
+      error: expect.stringContaining("requires an OpenCode-owned tabId"),
+    });
+  });
+
+  it("rejects target-only OCR control before metadata or OCR side effects", async () => {
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockRejectedValue(
+      new Error("Direct GLKVM control requires an OpenCode-owned tabId. URL targets are only for discovery/open/attach."),
+    );
+
+    const result = await new GlkvmOcrTool().execute(
+      { target: "kvm.example", language: "eng" },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
+      { target: "kvm.example" },
+      undefined,
+    );
+    expect(glkvmTabMock.resolveGlkvmTab).not.toHaveBeenCalled();
+    expect(glkvmTabMock.getVideoMetadata).not.toHaveBeenCalled();
+    expect(cdpManagerMock.sendCommand).not.toHaveBeenCalled();
+    const text = result.content[0];
+    expect(text.type).toBe("text");
+    if (text.type !== "text") throw new Error("Expected text content");
+    expect(JSON.parse(text.text).error).toContain(
+      "URL targets are only for discovery/open/attach",
+    );
+  });
+
   it("returns clear structured errors when requested OCR language is unavailable", async () => {
     cdpManagerMock.sendCommand.mockResolvedValueOnce(
       mockEvalResult({
@@ -130,7 +183,7 @@ describe("GlkvmOcrTool", () => {
     );
 
     const result = await new GlkvmOcrTool().execute(
-      { target: "kvm.example", language: "deu" },
+      { tabId: 42, language: "deu" },
       {},
     );
 
