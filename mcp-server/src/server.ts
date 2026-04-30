@@ -431,7 +431,7 @@ const TOOL_SCHEMAS: Tool[] = [
       type: "object",
       properties: {
         tabId: {
-          type: "number",
+          type: "integer",
           description: "Existing Chrome tab ID to mark as an OpenCode-owned GLKVM tab",
         },
         timeout: {
@@ -450,7 +450,7 @@ const TOOL_SCHEMAS: Tool[] = [
       type: "object",
       properties: {
         tabId: {
-          type: "number",
+          type: "integer",
           description: "OpenCode-owned GLKVM tab ID to inspect",
         },
         sessionId: {
@@ -468,7 +468,7 @@ const TOOL_SCHEMAS: Tool[] = [
       type: "object",
       properties: {
         tabId: {
-          type: "number",
+          type: "integer",
           description: "OpenCode-owned GLKVM tab ID to capture from",
         },
         sessionId: {
@@ -509,7 +509,7 @@ const TOOL_SCHEMAS: Tool[] = [
       type: "object",
       properties: {
         tabId: {
-          type: "number",
+          type: "integer",
           description: "OpenCode-owned GLKVM tab ID to send input to",
         },
         sessionId: {
@@ -591,7 +591,7 @@ const TOOL_SCHEMAS: Tool[] = [
       type: "object",
       properties: {
         tabId: {
-          type: "number",
+          type: "integer",
           description: "OpenCode-owned GLKVM tab ID to poll for frame changes",
         },
         sessionId: {
@@ -618,7 +618,7 @@ const TOOL_SCHEMAS: Tool[] = [
       type: "object",
       properties: {
         tabId: {
-          type: "number",
+          type: "integer",
           description: "OpenCode-owned GLKVM tab ID to target for the sequence",
         },
         sessionId: {
@@ -733,7 +733,7 @@ const TOOL_SCHEMAS: Tool[] = [
       type: "object",
       properties: {
         tabId: {
-          type: "number",
+          type: "integer",
           description: "OpenCode-owned GLKVM tab ID to target for navigation",
         },
         sessionId: {
@@ -787,7 +787,7 @@ const TOOL_SCHEMAS: Tool[] = [
       type: "object",
       properties: {
         tabId: {
-          type: "number",
+          type: "integer",
           description: "OpenCode-owned GLKVM tab ID to read OCR from",
         },
         sessionId: {

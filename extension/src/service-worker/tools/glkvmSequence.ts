@@ -11,6 +11,7 @@ const MIN_TIMEOUT_MS = 100;
 const MAX_TIMEOUT_MS = 30_000;
 const MIN_POLL_INTERVAL_MS = 1;
 const MAX_POLL_INTERVAL_MS = 5_000;
+const DEFAULT_STABILITY_DURATION_MS = 1_000;
 
 type SequenceLogEntry = Record<string, unknown>;
 
@@ -37,8 +38,8 @@ function formatCleanup(outcome: CleanupOutcome | undefined): Record<string, unkn
   return { ok: outcome.ok, ...(outcome.cleanupFailed ? { cleanupFailed: outcome.cleanupFailed } : {}), ...(outcome.error ? { error: outcome.error } : {}), ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}), ...(outcome.releasedKeys !== undefined ? { releasedKeys: outcome.releasedKeys } : {}), ...(outcome.releasedButtons !== undefined ? { releasedButtons: outcome.releasedButtons } : {}) };
 }
 
-function frameMetadata(frame: GlkvmFrame): Record<string, unknown> {
-  return { tabId: frame.tabId, hash: frame.hash, ...(frame.width !== undefined ? { width: frame.width } : {}), ...(frame.height !== undefined ? { height: frame.height } : {}) };
+function frameMetadata(frame: GlkvmFrame, includeData = false): Record<string, unknown> {
+  return { tabId: frame.tabId, hash: frame.hash, ...(frame.width !== undefined ? { width: frame.width } : {}), ...(frame.height !== undefined ? { height: frame.height } : {}), ...(includeData ? { data: frame.data } : {}) };
 }
 
 function requireTabId(args: Record<string, unknown>): number {
@@ -77,7 +78,7 @@ async function sendPacketsInOrder(session: GlkvmSession, packets: Uint8Array[]):
   for (const packet of packets) await send({ session, packets: [packet] });
 }
 
-async function waitForFrameChange(tabId: number, step: Record<string, unknown>, sessionScope?: string): Promise<{ log: SequenceLogEntry; frame: GlkvmFrame }> {
+async function waitForFrameChange(tabId: number, step: Record<string, unknown>, actionLabel: string, sessionScope?: string): Promise<{ log: SequenceLogEntry; frame: GlkvmFrame }> {
   const timeoutMs = clampNumber(step.timeout, DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
   const pollIntervalMs = clampNumber(step.pollInterval, DEFAULT_POLL_INTERVAL_MS, MIN_POLL_INTERVAL_MS, MAX_POLL_INTERVAL_MS);
   const startedAt = Date.now();
@@ -91,9 +92,32 @@ async function waitForFrameChange(tabId: number, step: Record<string, unknown>, 
     await sleep(Math.min(pollIntervalMs, Math.max(0, remaining)));
     polls += 1;
     currentFrame = await captureGlkvmFrame(captureOptions);
-    if (currentFrame.hash !== initialFrame.hash) return { frame: currentFrame, log: { action: "wait", status: "ok", changed: true, timedOut: false, tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
+    if (currentFrame.hash !== initialFrame.hash) return { frame: currentFrame, log: { action: actionLabel, status: "ok", changed: true, timedOut: false, tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
   }
-  return { frame: currentFrame, log: { action: "wait", status: "timeout", changed: false, timedOut: true, reason: "timeout", tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
+  return { frame: currentFrame, log: { action: actionLabel, status: "timeout", changed: false, timedOut: true, reason: "timeout", tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
+}
+
+async function waitForFrameStable(tabId: number, step: Record<string, unknown>, sessionScope?: string): Promise<{ log: SequenceLogEntry; frame: GlkvmFrame }> {
+  const timeoutMs = clampNumber(step.timeout, DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
+  const pollIntervalMs = clampNumber(step.pollInterval, DEFAULT_POLL_INTERVAL_MS, MIN_POLL_INTERVAL_MS, MAX_POLL_INTERVAL_MS);
+  const stabilityDurationMs = clampNumber(step.stabilityDuration, DEFAULT_STABILITY_DURATION_MS, MIN_POLL_INTERVAL_MS, timeoutMs);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  const captureOptions = { tabId, sessionScope };
+  const initialFrame = await captureGlkvmFrame(captureOptions);
+  let currentFrame = initialFrame;
+  let stableSince = Date.now();
+  let polls = 0;
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    await sleep(Math.min(pollIntervalMs, Math.max(0, remaining)));
+    polls += 1;
+    const nextFrame = await captureGlkvmFrame(captureOptions);
+    if (nextFrame.hash !== currentFrame.hash) stableSince = Date.now();
+    currentFrame = nextFrame;
+    if (Date.now() - stableSince >= stabilityDurationMs) return { frame: currentFrame, log: { action: "waitFrameStable", status: "ok", stable: true, timedOut: false, tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs, stabilityDurationMs } };
+  }
+  return { frame: currentFrame, log: { action: "waitFrameStable", status: "timeout", stable: false, timedOut: true, reason: "timeout", tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs, stabilityDurationMs } };
 }
 
 async function buildMousePlan(tabId: number, step: Record<string, unknown>, action: MouseAction): Promise<MouseInputPlan> {
@@ -159,16 +183,24 @@ export class GlkvmSequenceTool implements ToolHandler {
             log.push({ index, ...plan.response, status: "ok", durationMs: elapsedSince(stepStartedAt), sent: plan.packets.length });
             continue;
           }
-          if (action === "wait") {
-            const wait = await waitForFrameChange(tabId, step, context.sessionScope);
+          if (action === "wait" || action === "waitFrameChange") {
+            const wait = await waitForFrameChange(tabId, step, action, context.sessionScope);
+            finalFrame = wait.frame;
+            log.push({ index, ...wait.log });
+            if (wait.log.timedOut) throw new SequenceWaitTimeout(index, wait.log.timeoutMs as number);
+            continue;
+          }
+          if (action === "waitFrameStable") {
+            const wait = await waitForFrameStable(tabId, step, context.sessionScope);
             finalFrame = wait.frame;
             log.push({ index, ...wait.log });
             if (wait.log.timedOut) throw new SequenceWaitTimeout(index, wait.log.timeoutMs as number);
             continue;
           }
           if (action === "capture") {
+            const includeData = step.includeData === true;
             finalFrame = await captureGlkvmFrame({ tabId, sessionScope: context.sessionScope });
-            log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), frame: frameMetadata(finalFrame) });
+            log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), frame: frameMetadata(finalFrame, includeData) });
             continue;
           }
           throw new Error(`Unsupported GLKVM sequence action: ${String(action)}`);
@@ -178,7 +210,7 @@ export class GlkvmSequenceTool implements ToolHandler {
         }
       }
       cleanup = session ? await cleanupSession(session, { releaseAll: true }) : undefined;
-      return json(true, { completed: true, tabId, ...(session ? { session: sessionMetadata(session) } : {}), log, cleanup: formatCleanup(cleanup), finalFrame: finalFrame ? frameMetadata(finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
+      return json(true, { completed: true, tabId, ...(session ? { session: sessionMetadata(session) } : {}), log, cleanup: formatCleanup(cleanup), finalFrame: finalFrame ? log.findLast((entry) => entry.action === "capture" && entry.status === "ok")?.frame ?? frameMetadata(finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
     } catch (error) {
       cleanup = session ? await cleanupSession(session, { releaseAll: true }) : undefined;
       return json(false, { completed: false, errorType: error instanceof SequenceWaitTimeout ? "sequence_wait_timeout" : "sequence_error", error: error instanceof Error ? error.message : String(error), tabId, ...(session ? { session: sessionMetadata(session) } : {}), cleanup: formatCleanup(cleanup), log, finalFrame: finalFrame ? frameMetadata(finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });

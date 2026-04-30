@@ -68,7 +68,9 @@ OpenCode may display MCP tools with the configured server name as a prefix, such
 
 ## GLKVM control
 
-The `glkvm_*` tools control the remote machine behind a GLKVM/KVMD web console. They do not click the Chrome page itself. Open and log in to the GLKVM web interface in Chrome first; the extension reuses that tab's cookies and `localStorage` token by running GLKVM API calls in the page context.
+The `glkvm_*` tools control the remote machine behind a GLKVM/KVMD web console. They are true KVM-only tools: they send keyboard HID, mouse HID, and scroll events to the remote machine; capture video frames from the GLKVM console; and call GLKVM/KVMD web APIs from the authenticated GLKVM page context. They do not automate the browser DOM/page, click Chrome UI, query page accessibility refs, or run arbitrary browser-page JavaScript. Use the browser tools such as `computer`, `read_page`, `find`, and `javascript_tool` for Chrome/page automation.
+
+Open and log in to the GLKVM web interface in Chrome first; the extension reuses that tab's cookies and `localStorage` token by running GLKVM API calls in the page context.
 
 Target selection is intentionally conservative. Use `glkvm_open` to open a GLKVM URL in an OpenCode-owned tab, or `glkvm_attach` to claim an existing logged-in GLKVM tab. Every direct-control tool then requires that returned OpenCode-owned `tabId`; URL/hostname `target` values are limited to discovery/open/attach flows and are rejected for target-only direct control. If targeting fails, errors list available GLKVM tabs and OpenCode-owned GLKVM tabs so callers can choose safely.
 

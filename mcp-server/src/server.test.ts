@@ -10,6 +10,28 @@ import { SocketClient } from "./socketClient.js";
 // ---------------------------------------------------------------------------
 
 describe("getToolSchemas", () => {
+  const PUBLIC_GLKVM_TOOLS = [
+    TOOL_NAMES.GLKVM_OPEN,
+    TOOL_NAMES.GLKVM_ATTACH,
+    TOOL_NAMES.GLKVM_STATUS,
+    TOOL_NAMES.GLKVM_SCREENSHOT,
+    TOOL_NAMES.GLKVM_INPUT,
+    TOOL_NAMES.GLKVM_WAIT,
+    TOOL_NAMES.GLKVM_SEQUENCE,
+    TOOL_NAMES.GLKVM_NAV,
+    TOOL_NAMES.GLKVM_OCR,
+  ] as const;
+
+  const DIRECT_CONTROL_GLKVM_TOOLS = [
+    TOOL_NAMES.GLKVM_STATUS,
+    TOOL_NAMES.GLKVM_SCREENSHOT,
+    TOOL_NAMES.GLKVM_INPUT,
+    TOOL_NAMES.GLKVM_WAIT,
+    TOOL_NAMES.GLKVM_SEQUENCE,
+    TOOL_NAMES.GLKVM_NAV,
+    TOOL_NAMES.GLKVM_OCR,
+  ] as const;
+
   const schemaFor = (name: string) => {
     const schema = getToolSchemas().find((s) => s.name === name);
     expect(schema).toBeDefined();
@@ -203,15 +225,15 @@ describe("getToolSchemas", () => {
   });
 
   it("registers the GLKVM tool schemas from shared constants", () => {
-    expect(schemaFor(TOOL_NAMES.GLKVM_OPEN).description).toContain("GLKVM");
-    expect(schemaFor(TOOL_NAMES.GLKVM_ATTACH).description).toContain("GLKVM");
-    expect(schemaFor(TOOL_NAMES.GLKVM_STATUS).description).toContain("GLKVM");
-    expect(schemaFor(TOOL_NAMES.GLKVM_SCREENSHOT).description).toContain("GLKVM");
-    expect(schemaFor(TOOL_NAMES.GLKVM_INPUT).description).toContain("GLKVM");
-    expect(schemaFor(TOOL_NAMES.GLKVM_WAIT).description).toContain("GLKVM");
-    expect(schemaFor(TOOL_NAMES.GLKVM_SEQUENCE).description).toContain("GLKVM");
-    expect(schemaFor(TOOL_NAMES.GLKVM_NAV).description).toContain("GLKVM");
-    expect(schemaFor(TOOL_NAMES.GLKVM_OCR).description).toContain("GLKVM");
+    const sharedGlkvmTools = ALL_TOOL_NAMES.filter((name) =>
+      name.startsWith("glkvm_"),
+    );
+
+    expect(sharedGlkvmTools).toEqual([...PUBLIC_GLKVM_TOOLS]);
+
+    for (const toolName of PUBLIC_GLKVM_TOOLS) {
+      expect(schemaFor(toolName).description).toContain("GLKVM");
+    }
   });
 
   it("advertises GLKVM OCR as an optional unavailable wrapper", () => {
@@ -220,7 +242,7 @@ describe("getToolSchemas", () => {
     expect(schema.description).toContain("optional");
     expect(schema.description).toContain("unavailable");
     expect(schema.inputSchema.properties).toMatchObject({
-      tabId: { type: "number" },
+      tabId: { type: "integer" },
       sessionId: { type: "string" },
       language: { type: "string" },
       region: { type: "object" },
@@ -229,21 +251,15 @@ describe("getToolSchemas", () => {
   });
 
   it("uses explicit OpenCode-owned tabId targeting for GLKVM tools", () => {
-    const glkvmTools = [
-      TOOL_NAMES.GLKVM_STATUS,
-      TOOL_NAMES.GLKVM_SCREENSHOT,
-      TOOL_NAMES.GLKVM_INPUT,
-      TOOL_NAMES.GLKVM_WAIT,
-      TOOL_NAMES.GLKVM_SEQUENCE,
-      TOOL_NAMES.GLKVM_NAV,
-      TOOL_NAMES.GLKVM_OCR,
-    ];
-
-    for (const toolName of glkvmTools) {
+    for (const toolName of DIRECT_CONTROL_GLKVM_TOOLS) {
       const schema = schemaFor(toolName);
-      expect(schema.inputSchema.properties).toHaveProperty("tabId");
+      expect(schema.inputSchema.properties.tabId).toMatchObject({
+        type: "integer",
+      });
       expect(schema.inputSchema.properties).toHaveProperty("sessionId");
       expect(schema.inputSchema.properties).not.toHaveProperty("target");
+      expect(schema.inputSchema.properties).not.toHaveProperty("hostname");
+      expect(schema.inputSchema.properties).not.toHaveProperty("url");
       expect(schema.inputSchema.required).toContain("tabId");
       expect(schema.inputSchema.properties.tabId.description).toContain(
         "OpenCode-owned",
@@ -263,6 +279,8 @@ describe("getToolSchemas", () => {
     );
     expect(openSchema.inputSchema.required).toContain("url");
     expect(openSchema.inputSchema.properties).not.toHaveProperty("tabId");
+    expect(openSchema.inputSchema.properties).not.toHaveProperty("target");
+    expect(openSchema.inputSchema.properties).not.toHaveProperty("hostname");
 
     const attachSchema = schemaFor(TOOL_NAMES.GLKVM_ATTACH);
     expect(attachSchema.description).toContain("OpenCode-owned");
@@ -272,7 +290,13 @@ describe("getToolSchemas", () => {
         timeout: expect.any(Object),
       })
     );
+    expect(attachSchema.inputSchema.properties.tabId).toMatchObject({
+      type: "integer",
+    });
     expect(attachSchema.inputSchema.required).toContain("tabId");
+    expect(attachSchema.inputSchema.properties).not.toHaveProperty("url");
+    expect(attachSchema.inputSchema.properties).not.toHaveProperty("target");
+    expect(attachSchema.inputSchema.properties).not.toHaveProperty("hostname");
     expect(attachSchema.inputSchema.properties.tabId.description).toContain(
       "OpenCode-owned",
     );
@@ -316,6 +340,26 @@ describe("getToolSchemas", () => {
     );
   });
 
+  it("advertises GLKVM frame-capture metadata options without browser-page targeting", () => {
+    const schema = schemaFor(TOOL_NAMES.GLKVM_SCREENSHOT);
+
+    expect(schema.description).toContain("OpenCode-owned");
+    expect(schema.description).toContain("GLKVM");
+    expect(schema.inputSchema.properties.region.description).toContain(
+      "intrinsic remote-frame pixels",
+    );
+    expect(schema.inputSchema.properties.maxWidth.description).toContain(
+      "downscale",
+    );
+    expect(schema.inputSchema.properties.maxHeight.description).toContain(
+      "downscale",
+    );
+    expect(schema.inputSchema.properties.includeOcr.description).toContain("OCR");
+    expect(schema.inputSchema.properties).not.toHaveProperty("x");
+    expect(schema.inputSchema.properties).not.toHaveProperty("y");
+    expect(schema.inputSchema.properties).not.toHaveProperty("ref");
+  });
+
   it("advertises GLKVM input argument shapes", () => {
     const inputSchema = schemaFor(TOOL_NAMES.GLKVM_INPUT);
     expect(inputSchema.inputSchema.properties).toMatchObject({
@@ -350,6 +394,7 @@ describe("getToolSchemas", () => {
 
   it("advertises GLKVM sequence frame waits", () => {
     const sequenceSchema = schemaFor(TOOL_NAMES.GLKVM_SEQUENCE);
+    const stepProperties = sequenceSchema.inputSchema.properties.steps.items.properties;
 
     expect(sequenceSchema.description).toContain("batched");
     expect(sequenceSchema.inputSchema.required).toEqual(
@@ -362,10 +407,10 @@ describe("getToolSchemas", () => {
         steps: expect.any(Object),
       })
     );
-    expect(sequenceSchema.inputSchema.properties.steps.items.properties.action.enum).toEqual(
+    expect(stepProperties.action.enum).toEqual(
       ["key", "type", "click", "move", "drag", "scroll", "wait", "waitFrameChange", "waitFrameStable", "capture"],
     );
-    expect(sequenceSchema.inputSchema.properties.steps.items.properties).toEqual(
+    expect(stepProperties).toEqual(
       expect.objectContaining({
         text: expect.any(Object),
         key: expect.any(Object),
@@ -376,6 +421,33 @@ describe("getToolSchemas", () => {
         includeData: expect.any(Object),
       })
     );
+    expect(stepProperties.keyAction.enum).toEqual(["press", "down", "up", "hotkey", "chord"]);
+    expect(stepProperties.button.enum).toEqual(["left", "middle", "right"]);
+    expect(stepProperties.direction.enum).toEqual(["up", "down"]);
+    expect(stepProperties).toEqual(
+      expect.objectContaining({
+        x: expect.any(Object),
+        y: expect.any(Object),
+        startX: expect.any(Object),
+        startY: expect.any(Object),
+        endX: expect.any(Object),
+        endY: expect.any(Object),
+        amount: expect.any(Object),
+      })
+    );
+    expect(sequenceSchema.inputSchema.properties.steps.items.required).toEqual(["action"]);
+  });
+
+  it("keeps GLKVM sequence aliases and capture options explicit", () => {
+    const stepProperties = schemaFor(TOOL_NAMES.GLKVM_SEQUENCE).inputSchema.properties.steps.items.properties;
+
+    expect(stepProperties.action.enum).toEqual(
+      expect.arrayContaining(["wait", "waitFrameChange", "waitFrameStable", "capture"]),
+    );
+    expect(stepProperties.timeout.description).toContain("frame waits");
+    expect(stepProperties.pollInterval.description).toContain("frame waits");
+    expect(stepProperties.stabilityDuration.description).toContain("waitFrameStable");
+    expect(stepProperties.includeData.description).toContain("JPEG frame data");
   });
 
   it("advertises GLKVM navigation macro arguments", () => {

@@ -12,15 +12,23 @@ describe("registerTools", () => {
     });
   });
 
-  it("registers the GLKVM screenshot tool exposed by the MCP schema", () => {
+  it("registers every public GLKVM handler exposed by the MCP schema", () => {
     const router = new MessageRouter();
 
     registerTools(router);
 
-    expect(router.getRegisteredTools()).toContain(TOOL_NAMES.GLKVM_OPEN);
-    expect(router.getRegisteredTools()).toContain(TOOL_NAMES.GLKVM_ATTACH);
-    expect(router.getRegisteredTools()).toContain(TOOL_NAMES.GLKVM_NAV);
-    expect(router.getRegisteredTools()).toContain(TOOL_NAMES.GLKVM_SCREENSHOT);
-    expect(router.getRegisteredTools()).toContain(TOOL_NAMES.GLKVM_SEQUENCE);
+    expect(router.getRegisteredTools()).toEqual(
+      expect.arrayContaining([
+        TOOL_NAMES.GLKVM_OPEN,
+        TOOL_NAMES.GLKVM_ATTACH,
+        TOOL_NAMES.GLKVM_STATUS,
+        TOOL_NAMES.GLKVM_SCREENSHOT,
+        TOOL_NAMES.GLKVM_INPUT,
+        TOOL_NAMES.GLKVM_WAIT,
+        TOOL_NAMES.GLKVM_SEQUENCE,
+        TOOL_NAMES.GLKVM_NAV,
+        TOOL_NAMES.GLKVM_OCR,
+      ]),
+    );
   });
 });

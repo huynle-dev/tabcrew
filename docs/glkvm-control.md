@@ -2,6 +2,15 @@
 
 The GLKVM tools expose remote KVM control through the Chrome tab that is already logged in to a GLKVM/KVMD web interface. They are separate from the browser `computer` tool: `computer` controls Chrome, while `glkvm_*` tools control the remote machine connected to the KVM hardware.
 
+The `glkvm_*` tools are true KVM-only tools. They use only:
+
+- Keyboard HID events sent through GLKVM/KVMD.
+- Mouse HID events, including absolute pointer moves, clicks, drags, and wheel input.
+- Video frame capture from the GLKVM remote console.
+- GLKVM/KVMD web APIs executed from the authenticated GLKVM page context.
+
+They do not automate the browser DOM/page. They do not click Chrome UI, query accessibility refs, fill HTML forms, inspect arbitrary page text, or run arbitrary page JavaScript outside the GLKVM/KVMD control flow. Use the browser tools (`computer`, `read_page`, `find`, `form_input`, `javascript_tool`, and related tab tools) when you need browser/page automation instead of remote-machine KVM control.
+
 ## Registered Tool Names
 
 | MCP tool | OpenCode display example | Purpose |
@@ -41,19 +50,29 @@ Selection rules:
 - URL or hostname `target` values are only for discovery/open/attach flows. Direct-control schemas do not expose `target`, and target-only direct control is rejected.
 - When targeting fails, errors include both available GLKVM tabs and OpenCode-owned GLKVM tabs so callers can choose safely.
 
-Recommended pattern:
+Recommended `glkvm_open` pattern for a new OpenCode-owned GLKVM tab:
 
 ```json
 { "url": "https://kvm.example.com/#/" }
 ```
 
-Then use the returned `tabId`:
+Then use the returned `tabId` for direct control:
 
 ```json
 { "tabId": 42 }
 ```
 
-Use `tabs_context` if you need to inspect currently open browser tabs before attaching one with `glkvm_attach`.
+Recommended `glkvm_attach` pattern for an existing logged-in GLKVM tab:
+
+1. Use `tabs_context` to inspect currently open browser tabs.
+2. Choose the integer `tabId` for the logged-in GLKVM tab.
+3. Attach it before any direct KVM control:
+
+```json
+{ "tabId": 42 }
+```
+
+`glkvm_attach` does not log in for you; it only marks a suitable existing GLKVM tab as OpenCode-owned. If the tab is not a GLKVM page or is not authenticated enough for GLKVM/KVMD APIs, later tools return structured auth/targeting errors instead of selecting another tab.
 
 ## Coordinate Systems
 
@@ -172,6 +191,85 @@ Example text input:
   "tabId": 42,
   "language": "eng",
   "region": { "x": 0, "y": 0, "width": 800, "height": 200 }
+}
+```
+
+## Sequence Execution
+
+`glkvm_sequence` runs multiple KVM operations over one OpenCode-owned GLKVM tab. It is useful when a remote UI flow needs tightly ordered HID input, frame-change waits, and captures without repeatedly re-resolving the tab or HID session. Sequence steps are still true KVM operations: key/type/click/move/drag/scroll input goes to the remote machine, capture reads the remote video frame, and waits poll GLKVM frames.
+
+Example: open a Linux application launcher, type a command, wait for the remote frame to change, and capture the result:
+
+```json
+{
+  "tabId": 42,
+  "steps": [
+    { "action": "key", "key": "Meta", "keyAction": "press" },
+    { "action": "type", "text": "terminal" },
+    { "action": "key", "key": "Enter", "keyAction": "press" },
+    { "action": "waitFrameChange", "timeout": 5000, "pollInterval": 250 },
+    { "action": "capture", "includeData": true }
+  ]
+}
+```
+
+Example: click a screenshot-space point, wait until frames are stable for one second, then capture a downscaled frame without embedding JPEG data in intermediate logs:
+
+```json
+{
+  "tabId": 42,
+  "sessionId": "optional-existing-hid-session",
+  "steps": [
+    { "action": "click", "x": 640, "y": 360, "button": "left" },
+    { "action": "waitFrameStable", "timeout": 8000, "pollInterval": 250, "stabilityDuration": 1000 },
+    { "action": "capture", "includeData": false }
+  ]
+}
+```
+
+Use the same coordinate rules as `glkvm_input`: mouse coordinates are measured in GLKVM screenshot space, not browser page pixels and not HID absolute coordinates.
+
+## Navigation Macros
+
+`glkvm_nav` expands a small set of OS-aware navigation macros into GLKVM HID sequence steps. It does not discover or manipulate browser DOM elements; it sends keyboard input to the remote OS and optionally waits for remote video-frame changes.
+
+Supported macros are `app_switch`, `app_switch_n`, `open_launcher`, `open_app`, `confirm`, `escape`, `next_field`, and `previous_field`. Set `os` to `macos`, `windows`, `linux`, or `unknown` so shortcuts can be chosen for the remote operating system.
+
+Example: open an app on a Linux remote using the launcher:
+
+```json
+{
+  "tabId": 42,
+  "macro": "open_app",
+  "os": "linux",
+  "app": "Terminal",
+  "timeout": 5000,
+  "pollInterval": 250
+}
+```
+
+Example: switch to the next application on a Windows remote:
+
+```json
+{
+  "tabId": 42,
+  "macro": "app_switch",
+  "os": "windows",
+  "timeout": 3000,
+  "pollInterval": 250
+}
+```
+
+Example: switch three applications forward on a macOS remote:
+
+```json
+{
+  "tabId": 42,
+  "macro": "app_switch_n",
+  "os": "macos",
+  "count": 3,
+  "timeout": 5000,
+  "pollInterval": 250
 }
 ```
 

@@ -4,6 +4,8 @@
 > Validated against live GLKVM V1.9.0 release1 (RM1) at `kvm.huynle.com`.
 > KVMD API version: 4.82
 
+> **Historical note:** This document records the original protocol spike. The packet formats, authentication findings, and GLKVM/KVMD API observations remain useful background. Current product behavior is documented in `docs/glkvm-control.md` and uses an OpenCode-owned, explicit-`tabId`, fail-closed targeting model. Historical recommendations below that suggested auto-selecting a single GLKVM tab, exposing `glkvm_print`, or using older file names have been replaced with current behavior notes so this plan no longer conflicts with the implemented API.
+
 ## 1. Authentication & Session Model
 
 ### Token Storage
@@ -181,14 +183,17 @@ For the extension tools, OCR will need to be client-side (via the existing `glkv
 
 ## 5. Tab Targeting & Session Semantics
 
-### Recommendation
+### Current Behavior
+
+Direct control is explicit and fail-closed. GLKVM tools never silently select a tab by URL/hostname for HID control, even when only one GLKVM tab exists.
 
 | Scenario | Behavior |
 |---|---|
-| **Zero GLKVM tabs** | Return error: "No GLKVM tab found. Open and log in to your GLKVM device first." |
-| **One GLKVM tab** | Auto-select. Store `tabId` for session. |
-| **Multiple GLKVM tabs** | Require explicit `tabId` parameter. Use `tabs_context` to discover. |
-| **Session isolation** | Each GLKVM tab controls a different remote machine. Never auto-merge. |
+| **Zero OpenCode-owned GLKVM tabs** | Return a structured targeting error. Use `glkvm_open` to open a GLKVM URL in an OpenCode-owned tab, or `glkvm_attach` to claim an existing logged-in GLKVM tab. |
+| **One GLKVM tab exists but is not OpenCode-owned** | Do not auto-select. Require `glkvm_attach` with the tab's integer `tabId` before direct control. |
+| **One OpenCode-owned GLKVM tab** | Direct-control tools still require its explicit integer `tabId`. |
+| **Multiple GLKVM tabs** | Require explicit OpenCode-owned `tabId`. Targeting failures list available GLKVM tabs and OpenCode-owned GLKVM tabs for safe selection. |
+| **Session isolation** | Each GLKVM tab controls a different remote machine. Never auto-merge, infer, or fall back to another tab. |
 
 ### Detection
 
@@ -200,17 +205,25 @@ A GLKVM tab can be detected by:
 
 The existing `computer` tool (CDP-based) operates on browser tabs. GLKVM tools operate on the *remote machine behind the KVM*. These are fundamentally different targets and must use separate tool names to avoid confusion.
 
-## 6. Recommended Tool Names
+Current GLKVM tools are true KVM-only tools. They use keyboard HID, mouse HID, video frame capture, and GLKVM/KVMD web APIs from the authenticated GLKVM page context. They do not automate the browser DOM/page, click Chrome UI, query accessibility refs, fill HTML forms, inspect arbitrary page text, or run arbitrary page JavaScript outside the GLKVM control flow.
 
-Following existing `snake_case` convention and avoiding collision with existing `computer` tool:
+## 6. Current Tool Names
+
+Following existing `snake_case` convention and avoiding collision with existing `computer` tool, the implemented public tools are:
 
 | Tool | Purpose |
 |---|---|
-| `glkvm_status` | Check connection, auth, HID state, streamer info |
-| `glkvm_screenshot` | Capture current KVM frame via `/api/streamer/snapshot` |
-| `glkvm_input` | Send keyboard/mouse/scroll events via WebSocket HID |
-| `glkvm_print` | Type text via `/api/hid/print` |
-| `glkvm_wait` | Wait for OCR text or visual condition (uses screenshot + Tesseract.js) |
+| `glkvm_open` | Open a GLKVM URL in an OpenCode-owned tab and return its `tabId`. |
+| `glkvm_attach` | Mark an existing logged-in GLKVM tab as OpenCode-owned and return its `tabId`. |
+| `glkvm_status` | Validate an OpenCode-owned GLKVM `tabId`, report video stream state, and inspect an optional HID session. |
+| `glkvm_screenshot` | Capture the current GLKVM video frame, optionally crop/downscale it, and return hash/dimension metadata. |
+| `glkvm_input` | Send keyboard, text, mouse, drag, and scroll input through GLKVM HID. |
+| `glkvm_wait` | Poll captured GLKVM frames until the remote display changes or a timeout expires. |
+| `glkvm_sequence` | Run batched input, capture, and frame-wait steps over one OpenCode-owned GLKVM tab. |
+| `glkvm_nav` | Run OS-aware navigation macros through GLKVM HID. |
+| `glkvm_ocr` | Read optional OCR text from a remote-frame region when the device exposes OCR support. |
+
+Historical note: the spike recommended a separate `glkvm_print` tool. Current behavior folds text entry into `glkvm_input` with `action: "type"`, and into `glkvm_sequence` `type` steps, using GLKVM paste-as-keys when available with key-event fallback controls.
 
 ### Why Not Reuse Existing Tools
 
@@ -233,14 +246,19 @@ All GLKVM API calls should be executed via CDP `Runtime.evaluate` in the GLKVM t
 
 | File | Purpose |
 |---|---|
-| `shared/src/tools.ts` | Add `glkvm_status`, `glkvm_screenshot`, `glkvm_input`, `glkvm_print`, `glkvm_wait` constants |
-| `mcp-server/src/server.ts` | Add MCP tool schemas |
-| `extension/src/service-worker/tools/glkvmStatus.ts` | Status/discovery tool |
-| `extension/src/service-worker/tools/glkvmScreenshot.ts` | Screenshot capture |
-| `extension/src/service-worker/tools/glkvmInput.ts` | HID input (keyboard/mouse/scroll) |
-| `extension/src/service-worker/tools/glkvmPrint.ts` | Text paste |
-| `extension/src/service-worker/tools/glkvmWait.ts` | Visual wait/OCR |
-| `extension/src/service-worker/tools/index.ts` | Register new handlers |
+| `shared/src/tools.ts` | GLKVM tool name constants for the implemented public `glkvm_*` tools. |
+| `mcp-server/src/server.ts` | MCP tool schemas for OpenCode-owned `tabId` targeting, frame capture, input, sequence, nav, and OCR arguments. |
+| `extension/src/service-worker/glkvmTab.ts` | GLKVM tab discovery and OpenCode-owned tab validation. |
+| `extension/src/service-worker/tools/glkvmOpen.ts` | Open GLKVM URLs in OpenCode-owned tabs. |
+| `extension/src/service-worker/tools/glkvmAttach.ts` | Attach existing logged-in GLKVM tabs to the OpenCode-owned model. |
+| `extension/src/service-worker/tools/kvmStatus.ts` | Status, auth, video, and optional HID session inspection. |
+| `extension/src/service-worker/tools/glkvmScreenshot.ts` and frame helpers | Video frame capture, crop/downscale, metadata, and hashes. |
+| `extension/src/service-worker/tools/kvmInput.ts` | HID keyboard, text, mouse, drag, and scroll input. |
+| `extension/src/service-worker/tools/glkvmWait.ts` | Frame-change polling. |
+| `extension/src/service-worker/tools/glkvmSequence.ts` | Batched input, capture, and frame-wait step execution. |
+| `extension/src/service-worker/tools/glkvmNav.ts` | OS-aware navigation macro expansion through HID sequence steps. |
+| `extension/src/service-worker/tools/kvmOcr.ts` | Optional OCR status/result handling. |
+| `extension/src/service-worker/tools/index.ts` | Register GLKVM handlers. |
 
 ### Key Constraints
 

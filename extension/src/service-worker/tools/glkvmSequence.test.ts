@@ -120,4 +120,45 @@ describe("GlkvmSequenceTool", () => {
       { index: 1, action: "capture", status: "error", error: "tab capture failed" },
     ] });
   });
+
+  it("reuses forwarded sessionId and supports schema-advertised waitFrameChange and capture includeData options", async () => {
+    frameMock.captureGlkvmFrame
+      .mockResolvedValueOnce({ tabId: 42, hash: "before", data: "before-jpeg", width: 1280, height: 720 })
+      .mockResolvedValueOnce({ tabId: 42, hash: "after", data: "after-jpeg", width: 1280, height: 720 })
+      .mockResolvedValueOnce({ tabId: 42, hash: "capture", data: "capture-jpeg", width: 1280, height: 720 });
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, sessionId: "existing-session", steps: [
+      { action: "key", key: "A" },
+      { action: "waitFrameChange", timeout: 1000, pollInterval: 1 },
+      { action: "capture", includeData: true },
+    ] }, { sessionScope: "scope-a" });
+
+    expect(result.success).toBe(true);
+    expect(transportMock.connect).toHaveBeenCalledWith({ tabId: 42, sessionId: "existing-session" });
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(1, { tabId: 42, sessionScope: "scope-a" });
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(2, { tabId: 42, sessionScope: "scope-a" });
+    expect(frameMock.captureGlkvmFrame).toHaveBeenNthCalledWith(3, { tabId: 42, sessionScope: "scope-a" });
+    expect(parseJsonResult(result)).toMatchObject({ completed: true, tabId: 42, session: { sessionId: "session-1", tabId: 42 }, finalFrame: { tabId: 42, hash: "capture", width: 1280, height: 720, data: "capture-jpeg" }, log: [
+      { index: 0, action: "key", status: "ok", key: "A", sent: 2 },
+      { index: 1, action: "waitFrameChange", status: "ok", changed: true, timedOut: false, initialHash: "before", currentHash: "after", polls: 1 },
+      { index: 2, action: "capture", status: "ok", frame: { hash: "capture", width: 1280, height: 720, data: "capture-jpeg" } },
+    ] });
+  });
+
+  it("supports waitFrameStable by waiting until the frame hash remains unchanged for the requested stability duration", async () => {
+    frameMock.captureGlkvmFrame
+      .mockResolvedValueOnce({ tabId: 42, hash: "initial", data: "aaa" })
+      .mockResolvedValueOnce({ tabId: 42, hash: "changed", data: "bbb" })
+      .mockResolvedValueOnce({ tabId: 42, hash: "changed", data: "bbb" });
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [
+      { action: "waitFrameStable", timeout: 1000, pollInterval: 1, stabilityDuration: 1 },
+    ] }, { sessionScope: "scope-a" });
+
+    expect(result.success).toBe(true);
+    expect(frameMock.captureGlkvmFrame).toHaveBeenCalledTimes(3);
+    expect(parseJsonResult(result)).toMatchObject({ completed: true, log: [
+      { index: 0, action: "waitFrameStable", status: "ok", stable: true, timedOut: false, initialHash: "initial", currentHash: "changed" },
+    ], finalFrame: { tabId: 42, hash: "changed" } });
+  });
 });
