@@ -79,4 +79,53 @@ describe("GlkvmOpenTool", () => {
       error: expect.stringContaining("valid http(s) GLKVM URL"),
     });
   });
+
+  it("returns a clear missing-tab error when Chrome creates no tab ID", async () => {
+    chromeStub.tabs.create.mockResolvedValueOnce({
+      url: "https://kvm.example.com/#/",
+      title: "GLKVM",
+      windowId: 7,
+      active: true,
+    });
+
+    const result = await new GlkvmOpenTool().execute(
+      { url: "https://kvm.example.com/#/" },
+      { sessionScope: "scope-a" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(addTabToGroupMock).not.toHaveBeenCalled();
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "tab_not_found",
+      error: expect.stringContaining("Chrome did not return a tab ID"),
+    });
+  });
+
+  it("returns a clear group API error when ownership assignment fails", async () => {
+    chromeStub.tabs.create.mockResolvedValueOnce({
+      id: 42,
+      url: "https://kvm.example.com/#/",
+      title: "GLKVM",
+      windowId: 7,
+      active: true,
+    });
+    addTabToGroupMock.mockRejectedValueOnce(new Error("group failed"));
+
+    const result = await new GlkvmOpenTool().execute(
+      { url: "https://kvm.example.com/#/" },
+      { sessionScope: "scope-a" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "group_api_error",
+      error: expect.stringContaining("Failed to move tab 42 into OpenCode group"),
+      groupError: "group failed",
+      tab: {
+        tabId: 42,
+        url: "https://kvm.example.com/#/",
+        title: "GLKVM",
+      },
+    });
+  });
 });

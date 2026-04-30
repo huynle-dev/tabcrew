@@ -35,12 +35,32 @@ export class GlkvmOpenTool implements ToolHandler {
       const active = typeof args.active === "boolean" ? args.active : true;
 
       const tab = await chrome.tabs.create({ url, active });
-      if (tab.id === undefined) throw new Error("Chrome returned no tab ID");
+      if (tab.id === undefined) {
+        return json(false, {
+          errorType: "tab_not_found",
+          error: "Chrome did not return a tab ID for the newly opened GLKVM tab.",
+        });
+      }
 
-      const groupId = await tabGroupManager.addTabToGroup(
-        tab.id,
-        context.sessionScope,
-      );
+      let groupId: number;
+      try {
+        groupId = await tabGroupManager.addTabToGroup(
+          tab.id,
+          context.sessionScope,
+        );
+      } catch (groupError) {
+        return json(false, {
+          errorType: "group_api_error",
+          error: `Failed to move tab ${tab.id} into OpenCode group.`,
+          groupError:
+            groupError instanceof Error ? groupError.message : String(groupError),
+          tab: {
+            tabId: tab.id,
+            title: tab.title ?? "",
+            url: tab.url ?? tab.pendingUrl ?? url,
+          },
+        });
+      }
 
       return json(true, {
         tabId: tab.id,
