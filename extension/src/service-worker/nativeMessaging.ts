@@ -124,20 +124,17 @@ export class NativeMessagingConnection {
   /**
    * Send a tool execution result back to the native host.
    */
-  sendToolResponse(result: ToolResult, requestId?: string): void {
-    const requestMetadata =
-      requestId === undefined ? {} : { request_id: requestId };
-
+  sendToolResponse(result: ToolResult, requestId: string): void {
     if (result.success) {
       this.sendMessage({
         type: "tool_response",
-        ...requestMetadata,
+        request_id: requestId,
         result: { content: result.content },
       });
     } else {
       this.sendMessage({
         type: "tool_response",
-        ...requestMetadata,
+        request_id: requestId,
         error: { content: result.content },
       });
     }

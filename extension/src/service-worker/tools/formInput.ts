@@ -162,7 +162,7 @@ export class FormInputTool implements ToolHandler {
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
-          files: ["content-scripts/accessibilityTree.js"],
+          files: ["dist/content-scripts/accessibilityTree.js"],
         });
         await new Promise((resolve) => setTimeout(resolve, 50));
       } catch {

@@ -148,7 +148,7 @@ export class ReadPageTool implements ToolHandler {
       // Inject the content script
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ["content-scripts/accessibilityTree.js"],
+        files: ["dist/content-scripts/accessibilityTree.js"],
       });
 
       // Small delay to let the script initialize
