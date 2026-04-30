@@ -57,7 +57,7 @@ is foregrounded.
 | `glkvm_open` | URL discovery/open; no `tabId` input | Open a GLKVM URL in an OpenCode-owned tab and return its `tabId` |
 | `glkvm_attach` | requires existing `tabId` | Mark an existing logged-in GLKVM tab as OpenCode-owned |
 | `glkvm_status` | requires OpenCode-owned `tabId`; optional `sessionId` | Inspect a logged-in GLKVM tab, video stream state, and optional HID session state |
-| `glkvm_screenshot` | requires OpenCode-owned `tabId`; optional `sessionId` | Capture the current GLKVM video frame; optional intrinsic-region crop, max-dimension downscale, OCR metadata request, and frame hash/dimension metadata |
+| `glkvm_screenshot` | requires OpenCode-owned `tabId`; optional `sessionId` | Capture the current GLKVM video frame; optional intrinsic-region crop, max-dimension downscale, and frame hash/dimension/readiness metadata |
 | `glkvm_input` | requires OpenCode-owned `tabId`; optional `sessionId` | Send remote keyboard, text, mouse, drag, and scroll input through GLKVM HID |
 | `glkvm_wait` | requires OpenCode-owned `tabId`; optional `sessionId` | Poll GLKVM frames until the remote display changes or the timeout expires |
 | `glkvm_sequence` | requires OpenCode-owned `tabId`; optional `sessionId` | Run batched input, capture, and frame-wait steps over one GLKVM tab |
@@ -74,9 +74,11 @@ Open and log in to the GLKVM web interface in Chrome first; the extension reuses
 
 Target selection is intentionally conservative. Use `glkvm_open` to open a GLKVM URL in an OpenCode-owned tab, or `glkvm_attach` to claim an existing logged-in GLKVM tab. Every direct-control tool then requires that returned OpenCode-owned `tabId`; URL/hostname `target` values are limited to discovery/open/attach flows and are rejected for target-only direct control. If targeting fails, errors list available GLKVM tabs and OpenCode-owned GLKVM tabs so callers can choose safely.
 
-Mouse coordinates for `glkvm_input` use GLKVM screenshot space. Use `glkvm_screenshot` first, then pass `x`, `y`, `startX`, `startY`, `endX`, and `endY` measured against the returned video-frame image. The tool maps those screenshot-space points to KVMD absolute HID coordinates internally and returns both the original screenshot coordinates and diagnostic absolute coordinates. Do not pass browser page coordinates or the returned HID absolute values back as mouse input.
+Mouse coordinates for `glkvm_input` use one of three public spaces: `glkvm_screenshot_pixels` (default), `intrinsic_remote_frame_pixels`, or `normalized_remote_frame`. Use `glkvm_screenshot` first, then pass `x`, `y`, `startX`, `startY`, `endX`, and `endY` measured against the returned video-frame image with its `frameId` when using screenshot pixels. The tool maps screenshot/crop/downscale-relative points to intrinsic remote-frame pixels and then to KVMD absolute HID coordinates internally. Do not pass browser page coordinates or the returned HID absolute values back as mouse input.
 
-`glkvm_screenshot.region` crops in intrinsic remote-frame pixels before optional `maxWidth` / `maxHeight` downscaling. Result metadata reports the source intrinsic dimensions, applied region/crop, final output dimensions in `glkvm_screenshot_pixels`, and a frame hash (`hash` plus `hashAlgorithm`) for change/stability detection.
+`glkvm_screenshot.region` crops in intrinsic remote-frame pixels before optional `maxWidth` / `maxHeight` downscaling. Downscaling preserves aspect ratio and never upscales. Result metadata reports `frameId`, timestamps, source intrinsic dimensions, applied region/crop, final output dimensions in `glkvm_screenshot_pixels`, scale, readiness, and a frame hash (`hash` plus `hashAlgorithm`) for change/stability detection. Recent frame descriptors are cached per tab for frame-referenced input: 20 descriptors per tab, 60 second TTL, metadata only. Unknown or stale `frameId` values fail before HID input and ask the caller to capture a fresh screenshot.
+
+Coordinate conversion summary: normalized coordinates multiply by `source.width` / `source.height`; intrinsic coordinates use native remote-frame pixels directly; screenshot pixels with a `frameId` map through `crop` and `output` metadata as `intrinsicX = crop.x + x * (crop.width / output.width)` and `intrinsicY = crop.y + y * (crop.height / output.height)`. `glkvm_status` stream states are `hidden`, `no_frame`, and `ready`; frame readiness reasons include `video_hidden`, `frame_dimensions_unavailable`, and `frame_ready`. Use `glkvm_ocr` for OCR; `glkvm_screenshot` does not return OCR text.
 
 Examples:
 
@@ -89,15 +91,23 @@ Examples:
 ```
 
 ```json
+{ "tabId": 42, "region": { "x": 480, "y": 270, "width": 960, "height": 540 }, "maxWidth": 480, "maxHeight": 270 }
+```
+
+```json
 { "tabId": 42, "action": "key", "key": "ctrl+alt+delete", "keyAction": "hotkey" }
 ```
 
 ```json
-{ "tabId": 42, "action": "click", "x": 640, "y": 360, "button": "left" }
+{ "tabId": 42, "action": "click", "x": 120, "y": 80, "coordinateSpace": "glkvm_screenshot_pixels", "frameId": "glkvm-frame-...", "button": "left" }
 ```
 
 ```json
 { "tabId": 42, "timeout": 5000, "pollInterval": 250 }
+```
+
+```json
+{ "tabId": 42, "steps": [{ "action": "waitFrameStable", "timeout": 5000, "pollInterval": 250, "stabilityDuration": 1000 }, { "action": "capture", "includeData": false }] }
 ```
 
 Operational guardrails:
@@ -107,6 +117,7 @@ Operational guardrails:
 - `tabs_close` releases and closes tracked GLKVM HID sessions before closing a tab.
 - Offline devices, missing tokens, rejected WebSockets, stale sessions, hidden video streams, and unavailable OCR return structured errors instead of silently sending input elsewhere.
 - `glkvm_ocr.region` uses intrinsic remote-frame pixels; OCR can report unavailable when the GLKVM device disables OCR or does not expose text results.
+- The rpi-lab SSH oracle is test-only; runtime GLKVM control uses the authenticated GLKVM page context, video capture, and KVM HID APIs rather than SSH.
 
 See `docs/glkvm-control.md` for the detailed safety model and argument reference.
 

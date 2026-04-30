@@ -4,6 +4,7 @@ import type {
   ToolContext,
 } from "../../types/messages.js";
 import { getVideoMetadata, requireOwnedGlkvmTabForDirectControl } from "../glkvmTab.js";
+import { getLatestGlkvmFrameMetadata } from "./glkvmFrame.js";
 import { getSessionStatus, type GlkvmSession } from "./kvmHidTransport.js";
 
 function readyStateLabel(readyState: number | null): string {
@@ -39,6 +40,56 @@ function streamStatus(video: {
   return { available: true, status: "ready" };
 }
 
+function readinessStatus(video: {
+  videoWidth: number;
+  videoHeight: number;
+  visible: boolean;
+}): {
+  page_ready: boolean;
+  video_element_visible: boolean;
+  frame_ready: boolean;
+  reason: string;
+} {
+  if (!video.visible) {
+    return {
+      page_ready: true,
+      video_element_visible: false,
+      frame_ready: false,
+      reason: "video_hidden",
+    };
+  }
+
+  if (video.videoWidth <= 0 || video.videoHeight <= 0) {
+    return {
+      page_ready: true,
+      video_element_visible: true,
+      frame_ready: false,
+      reason: "no_frame",
+    };
+  }
+
+  return {
+    page_ready: true,
+    video_element_visible: true,
+    frame_ready: true,
+    reason: "ready",
+  };
+}
+
+function missingVideoStatus(): {
+  page_ready: boolean;
+  video_element_visible: boolean;
+  frame_ready: boolean;
+  reason: string;
+} {
+  return {
+    page_ready: true,
+    video_element_visible: false,
+    frame_ready: false,
+    reason: "video_not_found",
+  };
+}
+
 export class GlkvmStatusTool implements ToolHandler {
   async execute(
     args: Record<string, unknown>,
@@ -56,13 +107,30 @@ export class GlkvmStatusTool implements ToolHandler {
         },
         _context.sessionScope,
       );
-      const video = await getVideoMetadata(validated.tabId);
+      let video: Awaited<ReturnType<typeof getVideoMetadata>> | null = null;
+      let videoReadError: Error | undefined;
+      try {
+        video = await getVideoMetadata(validated.tabId);
+      } catch (error) {
+        if (
+          error instanceof Error
+          && error.message.includes("No <video> element found")
+        ) {
+          videoReadError = error;
+        } else {
+          throw error;
+        }
+      }
+      const readiness = video ? readinessStatus(video) : missingVideoStatus();
 
       const response: Record<string, unknown> = {
         ...(target ? { target } : {}),
         tab: validated.tab,
         video,
-        stream: streamStatus(video),
+        stream: video ? streamStatus(video) : { available: false, status: "no_video" },
+        readiness,
+        latestFrame: getLatestGlkvmFrameMetadata(validated.tabId) ?? null,
+        ...(videoReadError ? { videoError: videoReadError.message } : {}),
       };
 
       if (sessionId) {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const frameMock = vi.hoisted(() => ({
   captureGlkvmFrame: vi.fn(),
+  formatGlkvmFrameMetadata: vi.fn(),
 }));
 
 const glkvmTabMock = vi.hoisted(() => ({
@@ -22,6 +23,43 @@ function parseJsonResult(
   return JSON.parse(block.text);
 }
 
+function makeFrame(hash: string) {
+  return {
+    frameId: `frame-${hash}`,
+    timestamp: `2026-04-30T00:00:00.${hash.length}00Z`,
+    capturedAt: `2026-04-30T00:00:00.${hash.length}00Z`,
+    tabId: 42,
+    hash,
+    hashAlgorithm: "fnv1a-32",
+    data: `${hash}-jpeg`,
+    width: 640,
+    height: 360,
+    source: { width: 1280, height: 720, coordinateSpace: "intrinsic_remote_frame_pixels" },
+    crop: null,
+    output: { width: 640, height: 360, coordinateSpace: "glkvm_screenshot_pixels" },
+    scale: { x: 0.5, y: 0.5 },
+  };
+}
+
+function expectedMetadata(frame: ReturnType<typeof makeFrame>) {
+  return {
+    frameId: frame.frameId,
+    timestamp: frame.timestamp,
+    capturedAt: frame.capturedAt,
+    tabId: frame.tabId,
+    hash: frame.hash,
+    hashAlgorithm: frame.hashAlgorithm,
+    hashMetadata: { value: frame.hash, algorithm: frame.hashAlgorithm },
+    width: frame.width,
+    height: frame.height,
+    source: frame.source,
+    region: frame.crop,
+    crop: frame.crop,
+    output: frame.output,
+    scale: frame.scale,
+  };
+}
+
 describe("GlkvmWaitTool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -31,13 +69,16 @@ describe("GlkvmWaitTool", () => {
       tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example.com/#/" },
       ownership: { ok: true, tabId: 42, groupId: 101 },
     });
+    frameMock.formatGlkvmFrameMetadata.mockImplementation((frame: ReturnType<typeof makeFrame>) => expectedMetadata(frame));
   });
 
   it("validates explicit owned tabId before polling KVM frames until the frame hash changes", async () => {
+    const before = makeFrame("before");
+    const after = makeFrame("after");
     frameMock.captureGlkvmFrame
-      .mockResolvedValueOnce({ tabId: 42, hash: "before", data: "aaa" })
-      .mockResolvedValueOnce({ tabId: 42, hash: "before", data: "aaa" })
-      .mockResolvedValueOnce({ tabId: 42, hash: "after", data: "bbb" });
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(after);
 
     const result = await new GlkvmWaitTool().execute(
       { tabId: 42, timeout: 1000, pollInterval: 1 },
@@ -66,16 +107,15 @@ describe("GlkvmWaitTool", () => {
       changed: true,
       initialHash: "before",
       currentHash: "after",
+      initialFrame: expectedMetadata(before),
+      currentFrame: expectedMetadata(after),
       polls: 2,
     });
   });
 
   it("returns a distinct timeout result when the frame stays unchanged", async () => {
-    frameMock.captureGlkvmFrame.mockResolvedValue({
-      tabId: 42,
-      hash: "same",
-      data: "aaa",
-    });
+    const same = makeFrame("same");
+    frameMock.captureGlkvmFrame.mockResolvedValue(same);
 
     const result = await new GlkvmWaitTool().execute(
       { tabId: 42, timeout: 100, pollInterval: 50 },
@@ -89,6 +129,8 @@ describe("GlkvmWaitTool", () => {
       reason: "timeout",
       initialHash: "same",
       currentHash: "same",
+      initialFrame: expectedMetadata(same),
+      currentFrame: expectedMetadata(same),
     });
   });
 

@@ -85,21 +85,32 @@ The rpi-lab SSH oracle is test-only. It may be used by automated tests or lab va
 
 ## Coordinate Systems
 
-GLKVM control uses three coordinate spaces. Use the right one for each tool.
+GLKVM control uses three public mouse coordinate spaces. Use the right one for each tool and do not mix them with browser page pixels.
 
 | Coordinate space | Where it appears | Meaning |
 |---|---|---|
 | Browser page pixels | Browser `computer` tool only | Chrome window/screenshot coordinates. Do not use these for GLKVM HID input. |
 | Intrinsic remote-frame pixels | `glkvm_screenshot.region`, `glkvm_ocr.region`, frame `source` metadata | Native KVM video pixels from the GLKVM `<video>` element (`videoWidth` / `videoHeight`). |
-| GLKVM screenshot space | `glkvm_input` mouse arguments | Pixels in the captured GLKVM video-frame image returned by `glkvm_screenshot`. |
+| GLKVM screenshot pixels (`glkvm_screenshot_pixels`) | Default `glkvm_input` mouse coordinate space; frame `output` metadata | Pixels in the returned GLKVM screenshot image, after any intrinsic crop and max-dimension downscale. |
+| Normalized remote-frame coordinates (`normalized_remote_frame`) | `glkvm_input.coordinateSpace` | Unit coordinates over the full intrinsic remote frame: `x=0,y=0` is top-left and `x=1,y=1` is bottom-right. |
 | Remote HID absolute space | Diagnostic `absolute` response fields | KVMD absolute mouse range generated internally for HID packets. Do not pass these values as input. |
 
-Mouse input workflow:
+`glkvm_input.coordinateSpace` accepts `glkvm_screenshot_pixels` (default), `intrinsic_remote_frame_pixels`, or `normalized_remote_frame`. `glkvm_sequence` supports mouse steps in the public schema, but the MCP schema does not expose `coordinateSpace` or `frameId` for sequence steps; use direct `glkvm_input` for frame-referenced mouse input.
+
+Conversion rules:
+
+- Intrinsic → normalized: `normalizedX = intrinsicX / source.width`, `normalizedY = intrinsicY / source.height`.
+- Normalized → intrinsic: `intrinsicX = normalizedX * source.width`, `intrinsicY = normalizedY * source.height`.
+- Screenshot pixels without a `frameId` are interpreted against the current visible video size.
+- Screenshot pixels with a `frameId` are mapped through that captured frame's metadata: `intrinsicX = crop.x + screenshotX * (crop.width / output.width)`, `intrinsicY = crop.y + screenshotY * (crop.height / output.height)`. If the frame was not cropped, `crop` is the full intrinsic frame.
+- Intrinsic coordinates are clamped to the remote-frame bounds before HID absolute conversion; diagnostics report any clamping.
+
+Frame-referenced mouse input workflow:
 
 1. Capture a fresh GLKVM frame with `glkvm_screenshot`.
 2. Measure `x` and `y` within that returned frame image.
-3. Pass those screenshot-space coordinates to `glkvm_input`.
-4. For drag, pass `startX`, `startY`, `endX`, and `endY` in the same screenshot-space frame.
+3. Pass those screenshot-space coordinates to `glkvm_input` with `coordinateSpace: "glkvm_screenshot_pixels"` and the returned `frameId`.
+4. For drag, pass `startX`, `startY`, `endX`, and `endY` in the same screenshot-space frame, with the same `frameId`.
 
 Example click:
 
@@ -109,8 +120,33 @@ Example click:
   "action": "click",
   "x": 640,
   "y": 360,
+  "coordinateSpace": "glkvm_screenshot_pixels",
   "button": "left"
 }
+```
+
+Example frame-referenced click after a cropped/downscaled screenshot:
+
+```json
+{
+  "tabId": 42,
+  "action": "click",
+  "x": 120,
+  "y": 80,
+  "coordinateSpace": "glkvm_screenshot_pixels",
+  "frameId": "glkvm-frame-...",
+  "button": "left"
+}
+```
+
+Example intrinsic and normalized clicks:
+
+```json
+{ "tabId": 42, "action": "click", "x": 960, "y": 540, "coordinateSpace": "intrinsic_remote_frame_pixels" }
+```
+
+```json
+{ "tabId": 42, "action": "click", "x": 0.5, "y": 0.5, "coordinateSpace": "normalized_remote_frame" }
 ```
 
 Example drag:
@@ -144,8 +180,32 @@ Example drag:
 
 - `region` crops the GLKVM frame in intrinsic remote-frame pixels before any downscaling.
 - `maxWidth` and `maxHeight` downscale the returned JPEG while preserving aspect ratio; they never upscale the capture.
-- The image block contains the final JPEG. The metadata block reports `source` intrinsic dimensions, applied `region` / `crop`, final `output` dimensions in `glkvm_screenshot_pixels`, `hash`, and `hashAlgorithm`.
+- The image block contains the final JPEG. The metadata block reports `frameId`, `timestamp`, `capturedAt`, `tabId`, `source` intrinsic dimensions, applied `region` / `crop`, final `output` dimensions in `glkvm_screenshot_pixels`, `scale`, `hash`, `hashAlgorithm`, and `readiness`.
 - The frame hash is computed from the final returned JPEG data and is suitable for visual change/stability detection.
+- `includeOcr` is accepted by the MCP schema for `glkvm_screenshot`, but screenshot capture does not return OCR text; use `glkvm_ocr` for OCR.
+
+Frame descriptor cache behavior:
+
+- Each screenshot gets a `frameId` and stores a descriptor for coordinate mapping. The cache stores metadata descriptors only, not image data.
+- The cache is bounded to 20 descriptors per tab with a 60 second TTL.
+- Passing an unknown or expired `frameId` to `glkvm_input` fails before opening/sending HID input with guidance to capture a fresh `glkvm_screenshot`.
+
+Example no-input observe/capture:
+
+```json
+{ "tabId": 42 }
+```
+
+Example crop and downscale:
+
+```json
+{
+  "tabId": 42,
+  "region": { "x": 480, "y": 270, "width": 960, "height": 540 },
+  "maxWidth": 480,
+  "maxHeight": 270
+}
+```
 
 ## Input Actions
 
@@ -193,6 +253,20 @@ Example text input:
 }
 ```
 
+`glkvm_wait` only detects frame hash changes. It does not infer semantic UI readiness, OCR text, or remote OS state.
+
+For no-input stability checks, use `glkvm_sequence` with `waitFrameStable` (default `stabilityDuration` is 1000 ms):
+
+```json
+{
+  "tabId": 42,
+  "steps": [
+    { "action": "waitFrameStable", "timeout": 5000, "pollInterval": 250, "stabilityDuration": 1000 },
+    { "action": "capture", "includeData": false }
+  ]
+}
+```
+
 `glkvm_ocr` is optional and depends on device-reported OCR support. It can fail with explicit unavailable errors when OCR is disabled, the requested language is unavailable, or the device accepts the snapshot request but does not expose text output.
 
 ```json
@@ -222,7 +296,7 @@ Example: open a Linux application launcher, type a command, wait for the remote 
 }
 ```
 
-Example: click a screenshot-space point, wait until frames are stable for one second, then capture a downscaled frame without embedding JPEG data in intermediate logs:
+Example: click a screenshot-space point, wait until frames are stable for one second, then capture a frame without embedding JPEG data in intermediate logs:
 
 ```json
 {
@@ -236,7 +310,7 @@ Example: click a screenshot-space point, wait until frames are stable for one se
 }
 ```
 
-Use the same coordinate rules as `glkvm_input`: mouse coordinates are measured in GLKVM screenshot space, not browser page pixels and not HID absolute coordinates.
+For the public MCP schema, sequence mouse coordinates are screenshot-space coordinates. Use direct `glkvm_input` when you need `coordinateSpace` or frame-referenced `frameId` mapping.
 
 ## Navigation Macros
 
@@ -312,6 +386,8 @@ Video and coordinate guardrails:
 - Mouse input requires current GLKVM video metadata.
 - Hidden, zero-size, or unavailable video streams fail with a message to capture a fresh `glkvm_screenshot` before mouse input.
 - Screenshot-space mouse input is mapped to remote HID absolute coordinates internally; callers should not supply browser coordinates or HID absolute values.
+- Readiness metadata uses explicit reasons. Page readiness reasons are `tab_not_found`, `page_loading`, and `page_ready`; video visibility reasons are `video_hidden` and `video_visible`; frame readiness reasons are `video_hidden`, `frame_dimensions_unavailable`, and `frame_ready`.
+- `glkvm_status` stream states are `hidden`, `no_frame`, and `ready`.
 
 Session cleanup behavior:
 

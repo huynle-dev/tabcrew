@@ -149,9 +149,9 @@ async function waitForFrameChange(tabId: number, step: Record<string, unknown>, 
     await sleep(Math.min(pollIntervalMs, Math.max(0, remaining)));
     polls += 1;
     currentFrame = await captureGlkvmFrame(captureOptions);
-    if (currentFrame.hash !== initialFrame.hash) return { frame: currentFrame, log: { action: actionLabel, status: "ok", changed: true, timedOut: false, tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
+    if (currentFrame.hash !== initialFrame.hash) return { frame: currentFrame, log: { action: actionLabel, status: "ok", changed: true, timedOut: false, tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, initialFrame: frameMetadata(initialFrame), currentFrame: frameMetadata(currentFrame), polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
   }
-  return { frame: currentFrame, log: { action: actionLabel, status: "timeout", changed: false, timedOut: true, reason: "timeout", tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
+  return { frame: currentFrame, log: { action: actionLabel, status: "timeout", changed: false, timedOut: true, reason: "timeout", tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, initialFrame: frameMetadata(initialFrame), currentFrame: frameMetadata(currentFrame), polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs } };
 }
 
 async function waitForFrameStable(tabId: number, step: Record<string, unknown>, sessionScope?: string): Promise<{ log: SequenceLogEntry; frame: GlkvmFrame }> {
@@ -172,9 +172,9 @@ async function waitForFrameStable(tabId: number, step: Record<string, unknown>, 
     const nextFrame = await captureGlkvmFrame(captureOptions);
     if (nextFrame.hash !== currentFrame.hash) stableSince = Date.now();
     currentFrame = nextFrame;
-    if (Date.now() - stableSince >= stabilityDurationMs) return { frame: currentFrame, log: { action: "waitFrameStable", status: "ok", stable: true, timedOut: false, tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs, stabilityDurationMs } };
+    if (Date.now() - stableSince >= stabilityDurationMs) return { frame: currentFrame, log: { action: "waitFrameStable", status: "ok", stable: true, timedOut: false, tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, initialFrame: frameMetadata(initialFrame), currentFrame: frameMetadata(currentFrame), polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs, stabilityDurationMs } };
   }
-  return { frame: currentFrame, log: { action: "waitFrameStable", status: "timeout", stable: false, timedOut: true, reason: "timeout", tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs, stabilityDurationMs } };
+  return { frame: currentFrame, log: { action: "waitFrameStable", status: "timeout", stable: false, timedOut: true, reason: "timeout", tabId: currentFrame.tabId, initialHash: initialFrame.hash, currentHash: currentFrame.hash, initialFrame: frameMetadata(initialFrame), currentFrame: frameMetadata(currentFrame), polls, durationMs: elapsedSince(startedAt), timeoutMs, pollIntervalMs, stabilityDurationMs } };
 }
 
 async function buildMousePlan(tabId: number, step: Record<string, unknown>, action: MouseAction): Promise<MouseInputPlan> {

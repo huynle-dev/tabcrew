@@ -4,7 +4,7 @@ import type {
   ToolResult,
 } from "../../types/messages.js";
 import { requireOwnedGlkvmTabForDirectControl } from "../glkvmTab.js";
-import { captureGlkvmFrame } from "./glkvmFrame.js";
+import { captureGlkvmFrame, formatGlkvmFrameMetadata } from "./glkvmFrame.js";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
@@ -61,6 +61,7 @@ export class GlkvmWaitTool implements ToolHandler {
         sessionScope: context.sessionScope,
       };
       const initialFrame = await captureGlkvmFrame(captureOptions);
+      let currentFrame = initialFrame;
       let polls = 0;
 
       while (Date.now() < deadline) {
@@ -68,7 +69,7 @@ export class GlkvmWaitTool implements ToolHandler {
         await sleep(Math.min(pollIntervalMs, Math.max(0, remaining)));
         polls += 1;
 
-        const currentFrame = await captureGlkvmFrame(captureOptions);
+        currentFrame = await captureGlkvmFrame(captureOptions);
         if (currentFrame.hash !== initialFrame.hash) {
           return this.json(true, {
             changed: true,
@@ -76,6 +77,8 @@ export class GlkvmWaitTool implements ToolHandler {
             tabId: currentFrame.tabId,
             initialHash: initialFrame.hash,
             currentHash: currentFrame.hash,
+            initialFrame: formatGlkvmFrameMetadata(initialFrame),
+            currentFrame: formatGlkvmFrameMetadata(currentFrame),
             polls,
             elapsedMs: Date.now() - startedAt,
           });
@@ -86,9 +89,11 @@ export class GlkvmWaitTool implements ToolHandler {
         changed: false,
         timedOut: true,
         reason: "timeout",
-        tabId: initialFrame.tabId,
+        tabId: currentFrame.tabId,
         initialHash: initialFrame.hash,
-        currentHash: initialFrame.hash,
+        currentHash: currentFrame.hash,
+        initialFrame: formatGlkvmFrameMetadata(initialFrame),
+        currentFrame: formatGlkvmFrameMetadata(currentFrame),
         polls,
         elapsedMs: Date.now() - startedAt,
         timeoutMs,

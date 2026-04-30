@@ -358,6 +358,33 @@ describe("GlkvmSequenceTool", () => {
     expect(body.finalFrame).toMatchObject({ ...expectedFrameMetadata(captured), data: "capture-jpeg" });
   });
 
+  it("returns canonical frame metadata for sequence wait outputs", async () => {
+    const initial = makeFrame("frame-1", "before", "before-jpeg");
+    const current = makeFrame("frame-2", "after", "after-jpeg");
+    frameMock.captureGlkvmFrame
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(current);
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [
+      { action: "waitFrameChange", timeout: 1000, pollInterval: 1 },
+    ] }, { sessionScope: "scope-a" });
+
+    expect(result.success).toBe(true);
+    expect(parseJsonResult(result)).toMatchObject({ completed: true, log: [
+      {
+        index: 0,
+        action: "waitFrameChange",
+        status: "ok",
+        changed: true,
+        timedOut: false,
+        initialHash: "before",
+        currentHash: "after",
+        initialFrame: expectedFrameMetadata(initial),
+        currentFrame: expectedFrameMetadata(current),
+      },
+    ], finalFrame: expectedFrameMetadata(current) });
+  });
+
   it("maps sequence screenshot coordinates through frameId crop and downscale metadata before HID input", async () => {
     frameMock.resolveCachedGlkvmFrameDescriptor.mockReturnValueOnce({
       frameId: "frame-crop",
