@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const cdpManagerMock = vi.hoisted(() => ({
   isAttached: vi.fn(),
@@ -19,7 +19,11 @@ vi.mock("../cdp.js", () => ({
 vi.mock("../glkvmTab.js", () => glkvmTabMock);
 
 const {
+  GLKVM_FRAME_CACHE_TTL_MS,
   captureGlkvmFrame,
+  checkGlkvmFrameReady,
+  checkGlkvmPageReady,
+  checkGlkvmVideoVisible,
   clearGlkvmFrameCacheForTests,
   formatGlkvmFrameMetadata,
   getLatestGlkvmFrameMetadata,
@@ -48,6 +52,11 @@ function mockVideoMetadata() {
   });
 }
 
+async function captureLabeledFrame(tabId: number, label: string) {
+  mockCanvasCapture(`${label}-jpeg`, 1920, 1080);
+  return captureGlkvmFrame({ tabId });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   clearGlkvmFrameCacheForTests();
@@ -57,12 +66,20 @@ beforeEach(() => {
     tabId: 42,
     tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example/#/" },
   });
-  glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockResolvedValue({
-    tabId: 42,
-    tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example/#/" },
-    ownership: { ok: true, tabId: 42, groupId: 101 },
+  glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockImplementation((options) => {
+    const tabId = typeof options?.tabId === "number" ? options.tabId : 42;
+    return Promise.resolve({
+      tabId,
+      tab: { tabId, title: "GLKVM", url: `https://kvm-${tabId}.example/#/` },
+      ownership: { ok: true, tabId, groupId: 101 },
+    });
   });
   mockVideoMetadata();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("captureGlkvmFrame", () => {
@@ -90,6 +107,7 @@ describe("captureGlkvmFrame", () => {
 
     expect(frame).toMatchObject({
       frameId: expect.stringMatching(/^glkvm-frame-/),
+      timestamp: expect.any(String),
       capturedAt: expect.any(String),
       tabId: 42,
       data: "full-frame-jpeg",
@@ -111,15 +129,24 @@ describe("captureGlkvmFrame", () => {
         y: 1,
       },
       hashAlgorithm: "fnv1a-32",
+      readiness: {
+        pageReady: true,
+        videoVisible: true,
+        frameReady: true,
+        reason: "frame_ready",
+      },
     });
     expect(frame.hash).toMatch(/^[0-9a-f]{8}$/);
     expect(resolveCachedGlkvmFrameDescriptor(frame.frameId)).toMatchObject({
       frameId: frame.frameId,
+      timestamp: frame.timestamp,
       capturedAt: frame.capturedAt,
       tabId: 42,
+      hash: frame.hash,
       source: frame.source,
       crop: null,
       output: frame.output,
+      readiness: frame.readiness,
     });
     expect(glkvmTabMock.requireOwnedGlkvmTabForDirectControl).toHaveBeenCalledWith(
       { tabId: 42 },
@@ -282,8 +309,99 @@ describe("captureGlkvmFrame", () => {
         x: 0.5,
         y: 0.5,
       },
+      readiness: {
+        pageReady: true,
+        videoVisible: true,
+        frameReady: true,
+        reason: "frame_ready",
+      },
     });
     expect(getLatestGlkvmFrameMetadata(42)).toEqual(metadata);
+  });
+
+  it("creates opaque frame IDs without embedding the capture timestamp", async () => {
+    const timestamp = new Date("2026-04-30T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(timestamp);
+    vi.stubGlobal("crypto", {
+      randomUUID: vi.fn(() => "11111111-1111-4111-8111-111111111111"),
+    });
+    mockCanvasCapture("opaque-id-jpeg", 1920, 1080);
+
+    const frame = await captureGlkvmFrame({ tabId: 42 });
+
+    expect(frame.frameId).toBe(
+      "glkvm-frame-11111111-1111-4111-8111-111111111111",
+    );
+    expect(frame.frameId).not.toContain(timestamp.getTime().toString(36));
+    expect(frame.frameId).not.toContain("42");
+  });
+
+  it("keeps the recent-frame cache bounded per tab without cross-tab eviction", async () => {
+    const otherTabFrame = await captureLabeledFrame(7, "tab-7-first");
+    const firstTabFrame = await captureLabeledFrame(42, "tab-42-first");
+
+    for (let index = 0; index < 20; index += 1) {
+      await captureLabeledFrame(42, `tab-42-${index}`);
+    }
+
+    expect(resolveCachedGlkvmFrameDescriptor(firstTabFrame.frameId)).toBeUndefined();
+    expect(resolveCachedGlkvmFrameDescriptor(otherTabFrame.frameId)).toMatchObject({
+      frameId: otherTabFrame.frameId,
+      tabId: 7,
+    });
+  });
+
+  it("expires stale frame descriptors after the cache TTL", async () => {
+    expect(GLKVM_FRAME_CACHE_TTL_MS).toBeGreaterThan(0);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-30T00:00:00.000Z"));
+    const frame = await captureLabeledFrame(42, "ttl-frame");
+
+    expect(resolveCachedGlkvmFrameDescriptor(frame.frameId)).toMatchObject({
+      frameId: frame.frameId,
+    });
+
+    vi.setSystemTime(
+      new Date(Date.now() + GLKVM_FRAME_CACHE_TTL_MS + 1),
+    );
+
+    expect(resolveCachedGlkvmFrameDescriptor(frame.frameId)).toBeUndefined();
+  });
+
+  it("exposes page, video, and frame readiness helper states", () => {
+    expect(checkGlkvmPageReady({ status: "loading" })).toEqual({
+      ready: false,
+      reason: "page_loading",
+    });
+    expect(checkGlkvmPageReady({ status: "complete" })).toEqual({
+      ready: true,
+      reason: "page_ready",
+    });
+    expect(checkGlkvmVideoVisible({
+      videoWidth: 1920,
+      videoHeight: 1080,
+      displayRect: { width: 0, height: 540 },
+      visible: true,
+    })).toEqual({ ready: false, reason: "video_hidden" });
+    expect(checkGlkvmVideoVisible({
+      videoWidth: 1920,
+      videoHeight: 1080,
+      displayRect: { width: 960, height: 540 },
+      visible: true,
+    })).toEqual({ ready: true, reason: "video_visible" });
+    expect(checkGlkvmFrameReady({
+      videoWidth: 0,
+      videoHeight: 1080,
+      displayRect: { width: 960, height: 540 },
+      visible: true,
+    })).toEqual({ ready: false, reason: "frame_dimensions_unavailable" });
+    expect(checkGlkvmFrameReady({
+      videoWidth: 1920,
+      videoHeight: 1080,
+      displayRect: { width: 960, height: 540 },
+      visible: true,
+    })).toEqual({ ready: true, reason: "frame_ready" });
   });
 
   it("returns stable FNV-1a hashes for identical frame data and different hashes for changed frames", async () => {

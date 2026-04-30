@@ -2,14 +2,15 @@ import { cdpManager } from "../cdp.js";
 import {
   getVideoMetadata,
   requireOwnedGlkvmTabForDirectControl,
+  type GlkvmVideoMetadata,
 } from "../glkvmTab.js";
 
 const INTRINSIC_REMOTE_FRAME_COORDINATE_SPACE =
   "intrinsic_remote_frame_pixels" as const;
 const GLKVM_SCREENSHOT_COORDINATE_SPACE = "glkvm_screenshot_pixels" as const;
 const HASH_ALGORITHM = "fnv1a-32" as const;
-const FRAME_CACHE_LIMIT = 20;
-let nextFrameSequence = 0;
+export const GLKVM_FRAME_CACHE_LIMIT_PER_TAB = 20;
+export const GLKVM_FRAME_CACHE_TTL_MS = 60_000;
 
 export interface GlkvmFrameCropOptions {
   readonly x: number;
@@ -35,8 +36,66 @@ export interface GlkvmFrameScale {
   readonly y: number;
 }
 
+export type GlkvmPageReadyReason =
+  | "tab_not_found"
+  | "page_loading"
+  | "page_ready";
+
+export type GlkvmVideoVisibleReason = "video_hidden" | "video_visible";
+
+export type GlkvmFrameReadyReason =
+  | "video_hidden"
+  | "frame_dimensions_unavailable"
+  | "frame_ready";
+
+export type GlkvmReadinessReason =
+  | GlkvmPageReadyReason
+  | GlkvmVideoVisibleReason
+  | GlkvmFrameReadyReason;
+
+export interface GlkvmReadinessCheck<
+  Reason extends GlkvmReadinessReason = GlkvmReadinessReason,
+> {
+  readonly ready: boolean;
+  readonly reason: Reason;
+}
+
+export interface GlkvmFrameReadiness {
+  readonly pageReady: boolean;
+  readonly videoVisible: boolean;
+  readonly frameReady: boolean;
+  readonly reason: GlkvmFrameReadyReason;
+}
+
+export interface GlkvmVideoReadinessInput {
+  readonly videoWidth: number;
+  readonly videoHeight: number;
+  readonly displayRect: Pick<
+    GlkvmVideoMetadata["displayRect"],
+    "width" | "height"
+  >;
+  readonly visible: boolean;
+}
+
+export interface GlkvmFrameMetadata {
+  readonly frameId: string;
+  readonly timestamp: string;
+  readonly capturedAt: string;
+  readonly tabId: number;
+  readonly hash: string;
+  readonly hashAlgorithm?: typeof HASH_ALGORITHM;
+  readonly width?: number;
+  readonly height?: number;
+  readonly source?: GlkvmFrameDimensions;
+  readonly crop?: GlkvmFrameCrop | null;
+  readonly output?: GlkvmFrameDimensions;
+  readonly scale?: GlkvmFrameScale;
+  readonly readiness: GlkvmFrameReadiness;
+}
+
 export interface GlkvmFrame {
   readonly frameId: string;
+  readonly timestamp: string;
   readonly capturedAt: string;
   readonly tabId: number;
   readonly hash: string;
@@ -48,14 +107,36 @@ export interface GlkvmFrame {
   readonly output?: GlkvmFrameDimensions;
   readonly scale?: GlkvmFrameScale;
   readonly hashAlgorithm?: typeof HASH_ALGORITHM;
+  readonly readiness: GlkvmFrameReadiness;
 }
 
 export type GlkvmFrameDescriptor = Pick<
-  GlkvmFrame,
-  "frameId" | "capturedAt" | "tabId" | "source" | "crop" | "output" | "width" | "height"
->;
+  GlkvmFrameMetadata,
+  | "frameId"
+  | "capturedAt"
+  | "tabId"
+  | "source"
+  | "crop"
+  | "output"
+  | "width"
+  | "height"
+> &
+  Partial<
+    Pick<
+      GlkvmFrameMetadata,
+      "timestamp" | "hash" | "hashAlgorithm" | "scale" | "readiness"
+    >
+  >;
 
-const recentFrames = new Map<string, GlkvmFrameDescriptor>();
+interface CachedGlkvmFrameDescriptor {
+  readonly descriptor: GlkvmFrameDescriptor;
+  readonly expiresAtMs: number;
+}
+
+const recentFramesByTab = new Map<
+  number,
+  Map<string, CachedGlkvmFrameDescriptor>
+>();
 const latestFrameMetadataByTab = new Map<number, Record<string, unknown>>();
 
 export class GlkvmFrameCaptureError extends Error {
@@ -78,26 +159,129 @@ function hashFrameData(data: string): string {
 }
 
 function createFrameId(): string {
-  nextFrameSequence = (nextFrameSequence + 1) % Number.MAX_SAFE_INTEGER;
-  return `glkvm-frame-${Date.now().toString(36)}-${nextFrameSequence.toString(36)}`;
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) {
+    return `glkvm-frame-${uuid}`;
+  }
+
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+    const encoded = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    return `glkvm-frame-${encoded}`;
+  }
+
+  const fallback = `${Math.random().toString(36).slice(2)}${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  return `glkvm-frame-${fallback}`;
+}
+
+export function checkGlkvmPageReady(
+  tab: { readonly status?: string } | undefined,
+): GlkvmReadinessCheck<GlkvmPageReadyReason> {
+  if (tab === undefined) {
+    return { ready: false, reason: "tab_not_found" };
+  }
+
+  if (tab.status !== "complete") {
+    return { ready: false, reason: "page_loading" };
+  }
+
+  return { ready: true, reason: "page_ready" };
+}
+
+export function checkGlkvmVideoVisible(
+  video: GlkvmVideoReadinessInput,
+): GlkvmReadinessCheck<GlkvmVideoVisibleReason> {
+  if (
+    !video.visible
+    || video.displayRect.width <= 0
+    || video.displayRect.height <= 0
+  ) {
+    return { ready: false, reason: "video_hidden" };
+  }
+
+  return { ready: true, reason: "video_visible" };
+}
+
+export function checkGlkvmFrameReady(
+  video: GlkvmVideoReadinessInput,
+): GlkvmReadinessCheck<GlkvmFrameReadyReason> {
+  const visible = checkGlkvmVideoVisible(video);
+  if (!visible.ready) {
+    return { ready: false, reason: "video_hidden" };
+  }
+
+  if (video.videoWidth <= 0 || video.videoHeight <= 0) {
+    return { ready: false, reason: "frame_dimensions_unavailable" };
+  }
+
+  return { ready: true, reason: "frame_ready" };
+}
+
+function buildFrameReadiness(
+  video: GlkvmVideoReadinessInput,
+): GlkvmFrameReadiness {
+  const videoVisible = checkGlkvmVideoVisible(video);
+  const frameReady = checkGlkvmFrameReady(video);
+
+  return {
+    pageReady: true,
+    videoVisible: videoVisible.ready,
+    frameReady: frameReady.ready,
+    reason: frameReady.reason,
+  };
+}
+
+function evictExpiredFrames(nowMs = Date.now()): void {
+  for (const [tabId, tabFrames] of recentFramesByTab) {
+    for (const [frameId, cached] of tabFrames) {
+      if (cached.expiresAtMs <= nowMs) {
+        tabFrames.delete(frameId);
+      }
+    }
+    if (tabFrames.size === 0) {
+      recentFramesByTab.delete(tabId);
+    }
+  }
 }
 
 function rememberFrameDescriptor(frame: GlkvmFrame): void {
+  const nowMs = Date.now();
   const descriptor: GlkvmFrameDescriptor = {
     frameId: frame.frameId,
+    timestamp: frame.timestamp,
     capturedAt: frame.capturedAt,
     tabId: frame.tabId,
+    hash: frame.hash,
+    hashAlgorithm: frame.hashAlgorithm,
     source: frame.source,
     crop: frame.crop,
     output: frame.output,
+    scale: frame.scale,
     width: frame.width,
     height: frame.height,
+    readiness: frame.readiness,
   };
-  recentFrames.set(frame.frameId, descriptor);
-  while (recentFrames.size > FRAME_CACHE_LIMIT) {
-    const oldest = recentFrames.keys().next().value;
+
+  evictExpiredFrames(nowMs);
+  let tabFrames = recentFramesByTab.get(frame.tabId);
+  if (tabFrames === undefined) {
+    tabFrames = new Map<string, CachedGlkvmFrameDescriptor>();
+    recentFramesByTab.set(frame.tabId, tabFrames);
+  }
+  tabFrames.set(frame.frameId, {
+    descriptor,
+    expiresAtMs: nowMs + GLKVM_FRAME_CACHE_TTL_MS,
+  });
+
+  while (tabFrames.size > GLKVM_FRAME_CACHE_LIMIT_PER_TAB) {
+    const oldest = tabFrames.keys().next().value;
     if (oldest === undefined) break;
-    recentFrames.delete(oldest);
+    tabFrames.delete(oldest);
   }
 }
 
@@ -105,22 +289,29 @@ export function resolveCachedGlkvmFrameDescriptor(
   frameId: string | undefined,
 ): GlkvmFrameDescriptor | undefined {
   if (!frameId) return undefined;
-  return recentFrames.get(frameId);
+  evictExpiredFrames();
+  for (const tabFrames of recentFramesByTab.values()) {
+    const cached = tabFrames.get(frameId);
+    if (cached !== undefined) {
+      return cached.descriptor;
+    }
+  }
+  return undefined;
 }
 
 export function clearGlkvmFrameCacheForTests(): void {
-  recentFrames.clear();
+  recentFramesByTab.clear();
   latestFrameMetadataByTab.clear();
-  nextFrameSequence = 0;
 }
 
 export function formatGlkvmFrameMetadata(
   frame: GlkvmFrame,
   options?: { mimeType?: string },
 ): Record<string, unknown> {
+  const timestamp = frame.timestamp ?? frame.capturedAt;
   const metadata: Record<string, unknown> = {
     frameId: frame.frameId,
-    timestamp: frame.capturedAt,
+    timestamp,
     capturedAt: frame.capturedAt,
     tabId: frame.tabId,
     ...(options?.mimeType !== undefined ? { mimeType: options.mimeType } : {}),
@@ -142,6 +333,7 @@ export function formatGlkvmFrameMetadata(
   }
   if (frame.output !== undefined) metadata.output = frame.output;
   if (frame.scale !== undefined) metadata.scale = frame.scale;
+  if (frame.readiness !== undefined) metadata.readiness = frame.readiness;
   return metadata;
 }
 
@@ -166,8 +358,9 @@ export async function captureGlkvmFrame(options?: {
   );
   const tabId = validated.tabId;
   const video = await getVideoMetadata(tabId);
+  const readiness = buildFrameReadiness(video);
 
-  if (!video.visible || video.videoWidth <= 0 || video.videoHeight <= 0) {
+  if (!readiness.frameReady) {
     throw new GlkvmFrameCaptureError(
       "GLKVM video stream is not ready for frame capture.",
     );
@@ -251,9 +444,11 @@ export async function captureGlkvmFrame(options?: {
     y: output.height / captureSource.height,
   } satisfies GlkvmFrameScale;
 
+  const capturedAt = new Date().toISOString();
   const frame: GlkvmFrame = {
     frameId: createFrameId(),
-    capturedAt: new Date().toISOString(),
+    timestamp: capturedAt,
+    capturedAt,
     tabId,
     data: value.data,
     hash: hashFrameData(value.data),
@@ -264,6 +459,7 @@ export async function captureGlkvmFrame(options?: {
     output,
     scale,
     hashAlgorithm: HASH_ALGORITHM,
+    readiness,
   };
   rememberFrameDescriptor(frame);
   latestFrameMetadataByTab.set(
