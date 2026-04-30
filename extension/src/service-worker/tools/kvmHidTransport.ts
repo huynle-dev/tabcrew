@@ -50,11 +50,17 @@ export type GlkvmTransportErrorCode =
 /** Structured error from the GLKVM transport layer */
 export class GlkvmTransportError extends Error {
   readonly code: GlkvmTransportErrorCode;
+  readonly reconnect?: GlkvmReconnectDiagnostics;
 
-  constructor(code: GlkvmTransportErrorCode, message: string) {
+  constructor(
+    code: GlkvmTransportErrorCode,
+    message: string,
+    reconnect?: GlkvmReconnectDiagnostics,
+  ) {
     super(message);
     this.name = "GlkvmTransportError";
     this.code = code;
+    this.reconnect = reconnect;
   }
 }
 
@@ -83,6 +89,19 @@ export interface GlkvmSession {
   readonly tabId: number;
   /** When the session was created */
   readonly createdAt: number;
+  /** Diagnostics for requested-session reuse/reconnect decisions, when applicable */
+  readonly reconnect?: GlkvmReconnectDiagnostics;
+}
+
+/** Diagnostics for connect({ sessionId }) reuse and reconnect decisions. */
+export interface GlkvmReconnectDiagnostics {
+  requestedSessionId: string;
+  action: "reused" | "missing" | "closed" | "unavailable";
+  readyState?: number;
+  error?: string;
+  errorCode?: GlkvmTransportErrorCode;
+  reconnected?: boolean;
+  replacementSessionId?: string;
 }
 
 /** Options for establishing a connection */
@@ -155,6 +174,7 @@ const TOKEN_KEY_MULTI = "gl-kvm-token-keys";
 const TOKEN_KEY_SINGLE = "gl-kvm-token-key";
 
 const sessionsByTabId = new Map<number, Map<string, GlkvmSession>>();
+const hidOperationQueuesByTabId = new Map<number, Promise<void>>();
 let tabRemovalCleanupInitialized = false;
 
 function trackSession(session: GlkvmSession): void {
@@ -540,6 +560,40 @@ export function getHidSessionsForTab(tabId: number): GlkvmSession[] {
 }
 
 /**
+ * Serialize HID-affecting operations per browser tab.
+ *
+ * Same-tab operations run FIFO so key/button packets from independent callers
+ * cannot interleave. Different tabs use independent queues. Failures release the
+ * queue so later cleanup or input operations can still run.
+ */
+export function withTabHidOperationLock<T>(
+  tabId: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = hidOperationQueuesByTabId.get(tabId);
+  let run: Promise<T>;
+  if (previous) {
+    run = previous.catch(() => undefined).then(operation);
+  } else {
+    try {
+      run = Promise.resolve(operation());
+    } catch (err) {
+      run = Promise.reject(err);
+    }
+  }
+  const tail = run
+    .catch(() => undefined)
+    .then(() => undefined)
+    .finally(() => {
+      if (hidOperationQueuesByTabId.get(tabId) === tail) {
+        hidOperationQueuesByTabId.delete(tabId);
+      }
+    });
+  hidOperationQueuesByTabId.set(tabId, tail);
+  return run;
+}
+
+/**
  * Register the service-worker tab-removal hook that forgets tracked HID sessions.
  * Once a tab is gone, page-context release packets are no longer possible; the
  * explicit tabs_close path performs release-all before removal.
@@ -560,16 +614,18 @@ export async function cleanupSessionsForTab(
   tabId: number,
   options: CleanupOptions = { releaseAll: true, close: true },
 ): Promise<SessionCleanupOutcome[]> {
-  const sessions = getHidSessionsForTab(tabId);
-  const outcomes: SessionCleanupOutcome[] = [];
+  return withTabHidOperationLock(tabId, async () => {
+    const sessions = getHidSessionsForTab(tabId);
+    const outcomes: SessionCleanupOutcome[] = [];
 
-  for (const session of sessions) {
-    const outcome = await cleanupSession(session, options);
-    if (options.close && outcome.ok) untrackSession(session);
-    outcomes.push({ ...outcome, tabId, sessionId: session.sessionId });
-  }
+    for (const session of sessions) {
+      const outcome = await cleanupSession(session, options);
+      if (options.close && outcome.ok) untrackSession(session);
+      outcomes.push({ ...outcome, tabId, sessionId: session.sessionId });
+    }
 
-  return outcomes;
+    return outcomes;
+  });
 }
 
 /**
@@ -585,6 +641,7 @@ export async function cleanupSessionsForTab(
  */
 export async function connect(options: ConnectOptions): Promise<GlkvmSession> {
   const { tabId, timeout = DEFAULT_CONNECT_TIMEOUT_MS } = options;
+  let reconnect: GlkvmReconnectDiagnostics | undefined;
 
   // --- Reuse existing session if requested ---
   if (options.sessionId) {
@@ -599,10 +656,22 @@ export async function connect(options: ConnectOptions): Promise<GlkvmSession> {
         sessionId: options.sessionId,
         tabId,
         createdAt: Date.now(),
+        reconnect: {
+          requestedSessionId: options.sessionId,
+          action: "reused" as const,
+          readyState: result.readyState,
+        },
       };
       trackSession(session);
       return session;
     }
+    reconnect = {
+      requestedSessionId: options.sessionId,
+      action: result.ok ? "closed" : "missing",
+      readyState: result.readyState,
+      error: result.error,
+      errorCode: result.errorCode,
+    };
     // Session is gone or not open — fall through to create new one
   }
 
@@ -618,13 +687,18 @@ export async function connect(options: ConnectOptions): Promise<GlkvmSession> {
     throw new GlkvmTransportError(
       result.errorCode ?? "CONNECTION_FAILED",
       result.error ?? "Failed to establish WebSocket connection",
+      reconnect ? { ...reconnect, reconnected: false } : undefined,
     );
   }
 
+  const resolvedReconnect = reconnect
+    ? { ...reconnect, reconnected: true, replacementSessionId: sessionId }
+    : undefined;
   const session = {
     sessionId,
     tabId,
     createdAt: Date.now(),
+    reconnect: resolvedReconnect,
   };
   trackSession(session);
   return session;

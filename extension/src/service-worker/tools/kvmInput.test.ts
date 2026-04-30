@@ -17,6 +17,7 @@ const transportMock = vi.hoisted(() => ({
   connect: vi.fn(),
   pasteText: vi.fn(),
   send: vi.fn(),
+  withTabHidOperationLock: vi.fn(),
 }));
 
 vi.mock("../cdp.js", () => ({
@@ -92,6 +93,31 @@ function parseJsonResult(
   return JSON.parse((result.content[0] as { type: "text"; text: string }).text);
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function installPerTabLockMock(): void {
+  const queues = new Map<number, Promise<void>>();
+  transportMock.withTabHidOperationLock.mockImplementation(
+    (tabId: number, operation: () => Promise<unknown>) => {
+      const previous = queues.get(tabId) ?? Promise.resolve();
+      const run = previous.catch(() => undefined).then(operation);
+      queues.set(
+        tabId,
+        run.catch(() => undefined).then(() => undefined),
+      );
+      return run;
+    },
+  );
+}
+
 describe("resolveKvmdKeyName", () => {
   it("maps printable keys to KVMD KeyboardEvent.code names", () => {
     expect(resolveKvmdKeyName("a")).toBe("KeyA");
@@ -148,6 +174,93 @@ describe("GlkvmInputTool keyboard input", () => {
       releasedKeys: 0,
       releasedButtons: 0,
     });
+    transportMock.withTabHidOperationLock.mockImplementation(
+      (_tabId: number, operation: () => Promise<unknown>) => operation(),
+    );
+  });
+
+  it("serializes concurrent same-tab direct HID operations through the tab lock", async () => {
+    installPerTabLockMock();
+    const releaseFirstSend = deferred();
+    const events: string[] = [];
+    let connectCount = 0;
+
+    transportMock.connect.mockImplementation(async ({ tabId }: { tabId: number }) => {
+      connectCount += 1;
+      const sessionId = `__oc_kvm_${connectCount}`;
+      events.push(`connect:${tabId}:${sessionId}`);
+      return { tabId, sessionId, createdAt: connectCount };
+    });
+    transportMock.send.mockImplementation(async ({ session, packets }) => {
+      const key = decodeKeyPacket(packets[0]).key;
+      events.push(`send:${session.sessionId}:${key}`);
+      if (session.sessionId === "__oc_kvm_1" && key === "KeyA") {
+        await releaseFirstSend.promise;
+      }
+    });
+    transportMock.cleanupSession.mockImplementation(async (session) => {
+      events.push(`cleanup:${session.sessionId}`);
+      return { ok: true, releasedKeys: 0, releasedButtons: 0 };
+    });
+
+    const tool = new GlkvmInputTool();
+    const first = tool.execute({ tabId: 42, action: "key", key: "a" }, {});
+    await vi.waitFor(() => expect(events).toContain("send:__oc_kvm_1:KeyA"));
+
+    const second = tool.execute({ tabId: 42, action: "key", key: "b" }, {});
+    await Promise.resolve();
+
+    expect(transportMock.withTabHidOperationLock).toHaveBeenCalledWith(
+      42,
+      expect.any(Function),
+    );
+    expect(transportMock.connect).toHaveBeenCalledTimes(1);
+    expect(events).not.toContain("connect:42:__oc_kvm_2");
+
+    releaseFirstSend.resolve();
+    await first;
+    await vi.waitFor(() => expect(events).toContain("send:__oc_kvm_2:KeyB"));
+    await second;
+
+    expect(events.indexOf("cleanup:__oc_kvm_1")).toBeLessThan(
+      events.indexOf("connect:42:__oc_kvm_2"),
+    );
+  });
+
+  it("allows concurrent direct HID operations for different tabs to proceed independently", async () => {
+    installPerTabLockMock();
+    glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockImplementation(
+      async ({ tabId }: { tabId: number }) => ({
+        tabId,
+        tab: { tabId, title: "GLKVM", url: "https://kvm.example.com/#/" },
+      }),
+    );
+    const releaseTab42 = deferred();
+    const events: string[] = [];
+
+    transportMock.connect.mockImplementation(async ({ tabId }: { tabId: number }) => ({
+      tabId,
+      sessionId: `__oc_kvm_${tabId}`,
+      createdAt: tabId,
+    }));
+    transportMock.send.mockImplementation(async ({ session, packets }) => {
+      const key = decodeKeyPacket(packets[0]).key;
+      events.push(`send:${session.tabId}:${key}`);
+      if (session.tabId === 42 && key === "KeyA") await releaseTab42.promise;
+    });
+
+    const tool = new GlkvmInputTool();
+    const first = tool.execute({ tabId: 42, action: "key", key: "a" }, {});
+    await vi.waitFor(() => expect(events).toContain("send:42:KeyA"));
+
+    const second = tool.execute({ tabId: 43, action: "key", key: "b" }, {});
+    await vi.waitFor(() => expect(events).toContain("send:43:KeyB"));
+
+    releaseTab42.resolve();
+    await Promise.all([first, second]);
+
+    expect(transportMock.withTabHidOperationLock).toHaveBeenCalledWith(42, expect.any(Function));
+    expect(transportMock.withTabHidOperationLock).toHaveBeenCalledWith(43, expect.any(Function));
   });
 
   it("presses a single key as down then up", async () => {
@@ -297,6 +410,63 @@ describe("GlkvmInputTool keyboard input", () => {
     });
   });
 
+  it("includes reconnect diagnostics when requested session reconnect fails", async () => {
+    const reconnect = {
+      requestedSessionId: "__oc_kvm_stale",
+      action: "closed",
+      readyState: 3,
+      error: "WebSocket is closed",
+      errorCode: "PROTOCOL_ERROR",
+      reconnected: false,
+    };
+    const error = new Error("WebSocket connection failed. The GLKVM device may be offline or unreachable.");
+    Object.assign(error, { reconnect });
+    transportMock.connect.mockRejectedValueOnce(error);
+
+    const result = await new GlkvmInputTool().execute(
+      { tabId: 42, action: "key", key: "Enter", sessionId: "__oc_kvm_stale" },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "input_error",
+      error: expect.stringContaining("WebSocket connection failed"),
+      reconnect,
+    });
+  });
+
+  it("includes reconnect diagnostics in successful fallback key output", async () => {
+    const reconnect = {
+      requestedSessionId: "__oc_kvm_stale",
+      action: "missing",
+      error: "Session not found",
+      errorCode: "PROTOCOL_ERROR",
+      reconnected: true,
+      replacementSessionId: "__oc_kvm_replacement",
+    };
+    transportMock.pasteText.mockRejectedValueOnce(new Error("paste unavailable"));
+    transportMock.connect.mockResolvedValueOnce({
+      tabId: 42,
+      sessionId: "__oc_kvm_replacement",
+      createdAt: 123,
+      reconnect,
+    });
+
+    const result = await new GlkvmInputTool().execute(
+      { tabId: 42, action: "type", text: "a", sessionId: "__oc_kvm_stale" },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+    expect(parseJsonResult(result)).toMatchObject({
+      action: "type",
+      method: "key_fallback",
+      sessionId: "__oc_kvm_replacement",
+      reconnect,
+    });
+  });
+
   it("types text through the GLKVM paste-as-keys endpoint", async () => {
     const result = await new GlkvmInputTool().execute(
       { tabId: 42, action: "type", text: "hello world" },
@@ -369,6 +539,27 @@ describe("GlkvmInputTool keyboard input", () => {
       expect.objectContaining({ sessionId: "__oc_kvm_test" }),
       { releaseAll: true },
     );
+  });
+
+  it("runs release-all cleanup when type fallback send fails", async () => {
+    transportMock.pasteText.mockRejectedValueOnce(new Error("paste unavailable"));
+    transportMock.send.mockRejectedValueOnce(new Error("fallback send failed"));
+
+    const result = await new GlkvmInputTool().execute(
+      { tabId: 42, action: "type", text: "a" },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(transportMock.cleanupSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "__oc_kvm_test" }),
+      { releaseAll: true },
+    );
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "input_error",
+      error: expect.stringContaining("GLKVM text fallback failed: fallback send failed"),
+      cleanup: { ok: true },
+    });
   });
 
   it("clicks by mapping screenshot coordinates to GLKVM absolute HID coordinates", async () => {
@@ -578,6 +769,37 @@ describe("GlkvmInputTool keyboard input", () => {
       action: "drag",
       button: "left",
       sent: 4,
+    });
+  });
+
+  it("runs release-all cleanup when drag send fails with button held", async () => {
+    transportMock.send
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("drag move failed"));
+
+    const result = await new GlkvmInputTool().execute(
+      {
+        action: "drag",
+        tabId: 42,
+        startX: 0,
+        startY: 0,
+        endX: 960,
+        endY: 540,
+        button: "left",
+      },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(transportMock.cleanupSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "__oc_kvm_test" }),
+      { releaseAll: true },
+    );
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "input_error",
+      error: "drag move failed",
+      cleanup: { ok: true },
     });
   });
 

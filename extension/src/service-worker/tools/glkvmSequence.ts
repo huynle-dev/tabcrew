@@ -3,7 +3,7 @@ import { getVideoMetadata, validateOwnedGlkvmTab } from "../glkvmTab.js";
 import { captureGlkvmFrame, formatGlkvmFrameMetadata, type GlkvmFrame } from "./glkvmFrame.js";
 import { encodeKeyEvent } from "./kvmHidEncoder.js";
 import { buildKeySteps, buildMouseInputPlan, buildTextFallbackSteps, frameSize, type KeyAction, type MouseAction, type MouseCoordinateSpace, type MouseInputPlan } from "./kvmInputHidSteps.js";
-import { cleanupSession, connect, send, type CleanupOutcome, type GlkvmSession } from "./kvmHidTransport.js";
+import { cleanupSession, connect, send, withTabHidOperationLock, type CleanupOutcome, type GlkvmReconnectDiagnostics, type GlkvmSession } from "./kvmHidTransport.js";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
@@ -36,6 +36,16 @@ function sleep(ms: number): Promise<void> { return new Promise((resolve) => setT
 function formatCleanup(outcome: CleanupOutcome | undefined): Record<string, unknown> | undefined {
   if (!outcome) return undefined;
   return { ok: outcome.ok, ...(outcome.cleanupFailed ? { cleanupFailed: outcome.cleanupFailed } : {}), ...(outcome.error ? { error: outcome.error } : {}), ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}), ...(outcome.releasedKeys !== undefined ? { releasedKeys: outcome.releasedKeys } : {}), ...(outcome.releasedButtons !== undefined ? { releasedButtons: outcome.releasedButtons } : {}) };
+}
+
+function formatReconnect(reconnect: GlkvmReconnectDiagnostics | undefined): Record<string, unknown> | undefined {
+  if (!reconnect) return undefined;
+  return { requestedSessionId: reconnect.requestedSessionId, action: reconnect.action, ...(reconnect.readyState !== undefined ? { readyState: reconnect.readyState } : {}), ...(reconnect.error ? { error: reconnect.error } : {}), ...(reconnect.errorCode ? { errorCode: reconnect.errorCode } : {}), ...(reconnect.reconnected !== undefined ? { reconnected: reconnect.reconnected } : {}), ...(reconnect.replacementSessionId ? { replacementSessionId: reconnect.replacementSessionId } : {}) };
+}
+
+function errorReconnect(error: unknown): Record<string, unknown> | undefined {
+  const reconnect = (error as { reconnect?: GlkvmReconnectDiagnostics } | undefined)?.reconnect;
+  return formatReconnect(reconnect);
 }
 
 function frameMetadata(frame: GlkvmFrame, includeData = false): Record<string, unknown> {
@@ -182,8 +192,9 @@ async function buildMousePlan(tabId: number, step: Record<string, unknown>, acti
   return buildMouseInputPlan({ action, point: { x: requiredNumber(step, "x"), y: requiredNumber(step, "y") }, size, coordinateSpace: space, frameId: cachedFrameId, button: step.button });
 }
 
-function sessionMetadata(session: GlkvmSession): Record<string, unknown> {
-  return { tabId: session.tabId, sessionId: session.sessionId, createdAt: session.createdAt };
+function sessionMetadata(session: GlkvmSession | undefined, reconnect?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!session) return reconnect ? { reconnect } : undefined;
+  return { tabId: session.tabId, sessionId: session.sessionId, createdAt: session.createdAt, ...(formatReconnect(session.reconnect) ? { reconnect: formatReconnect(session.reconnect) } : {}) };
 }
 
 export class GlkvmSequenceTool implements ToolHandler {
@@ -203,67 +214,79 @@ export class GlkvmSequenceTool implements ToolHandler {
     try {
       tabId = requireTabId(args);
       if (!Array.isArray(args.steps)) throw new Error('The "steps" argument is required for GLKVM sequence');
+      const sequenceTabId = tabId;
+      const steps = args.steps;
       await validateOwnedGlkvmTab(tabId, context.sessionScope);
-      for (let index = 0; index < args.steps.length; index += 1) {
-        const rawStep = args.steps[index];
-        if (!rawStep || typeof rawStep !== "object" || Array.isArray(rawStep)) throw new Error(`GLKVM sequence step ${index} must be an object`);
-        const step = rawStep as Record<string, unknown>;
-        const action = step.action;
-        const stepStartedAt = Date.now();
+      return await withTabHidOperationLock(sequenceTabId, async () => {
         try {
-          if (action === "key") {
-            const key = requiredString(step, "key");
-            const actionType = keyAction(step.keyAction);
-            const packets = buildKeySteps(key, actionType).map((keyStep) => encodeKeyEvent(keyStep.key, keyStep.down));
-            await sendPacketsInOrder(await ensureSession(), packets);
-            log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), key, keyAction: actionType, sent: packets.length });
-            continue;
+          for (let index = 0; index < steps.length; index += 1) {
+            const rawStep = steps[index];
+            if (!rawStep || typeof rawStep !== "object" || Array.isArray(rawStep)) throw new Error(`GLKVM sequence step ${index} must be an object`);
+            const step = rawStep as Record<string, unknown>;
+            const action = step.action;
+            const stepStartedAt = Date.now();
+            try {
+              if (action === "key") {
+                const key = requiredString(step, "key");
+                const actionType = keyAction(step.keyAction);
+                const packets = buildKeySteps(key, actionType).map((keyStep) => encodeKeyEvent(keyStep.key, keyStep.down));
+                await sendPacketsInOrder(await ensureSession(), packets);
+                log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), key, keyAction: actionType, sent: packets.length });
+                continue;
+              }
+              if (action === "type") {
+                const text = requiredString(step, "text");
+                const packets = buildTextFallbackSteps(text).map((keyStep) => encodeKeyEvent(keyStep.key, keyStep.down));
+                await sendPacketsInOrder(await ensureSession(), packets);
+                log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), method: "key_fallback", textLength: text.length, sent: packets.length });
+                continue;
+              }
+              const maybeMouseAction = mouseAction(action);
+              if (maybeMouseAction) {
+                const plan = await buildMousePlan(sequenceTabId, step, maybeMouseAction);
+                await sendPacketsInOrder(await ensureSession(), plan.packets);
+                log.push({ index, ...plan.response, status: "ok", durationMs: elapsedSince(stepStartedAt), sent: plan.packets.length });
+                continue;
+              }
+              if (action === "wait" || action === "waitFrameChange") {
+                const wait = await waitForFrameChange(sequenceTabId, step, action, context.sessionScope);
+                finalFrame = wait.frame;
+                log.push({ index, ...wait.log });
+                if (wait.log.timedOut) throw new SequenceWaitTimeout(index, wait.log.timeoutMs as number);
+                continue;
+              }
+              if (action === "waitFrameStable") {
+                const wait = await waitForFrameStable(sequenceTabId, step, context.sessionScope);
+                finalFrame = wait.frame;
+                log.push({ index, ...wait.log });
+                if (wait.log.timedOut) throw new SequenceWaitTimeout(index, wait.log.timeoutMs as number);
+                continue;
+              }
+              if (action === "capture") {
+                const includeData = step.includeData === true;
+                finalFrame = await captureGlkvmFrame({ tabId: sequenceTabId, sessionScope: context.sessionScope });
+                log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), frame: frameMetadata(finalFrame, includeData) });
+                continue;
+              }
+              throw new Error(`Unsupported GLKVM sequence action: ${String(action)}`);
+            } catch (error) {
+              if (!(error instanceof SequenceWaitTimeout)) log.push(stepErrorLog(index, action, stepStartedAt, error));
+              throw error;
+            }
           }
-          if (action === "type") {
-            const text = requiredString(step, "text");
-            const packets = buildTextFallbackSteps(text).map((keyStep) => encodeKeyEvent(keyStep.key, keyStep.down));
-            await sendPacketsInOrder(await ensureSession(), packets);
-            log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), method: "key_fallback", textLength: text.length, sent: packets.length });
-            continue;
-          }
-          const maybeMouseAction = mouseAction(action);
-          if (maybeMouseAction) {
-            const plan = await buildMousePlan(tabId, step, maybeMouseAction);
-            await sendPacketsInOrder(await ensureSession(), plan.packets);
-            log.push({ index, ...plan.response, status: "ok", durationMs: elapsedSince(stepStartedAt), sent: plan.packets.length });
-            continue;
-          }
-          if (action === "wait" || action === "waitFrameChange") {
-            const wait = await waitForFrameChange(tabId, step, action, context.sessionScope);
-            finalFrame = wait.frame;
-            log.push({ index, ...wait.log });
-            if (wait.log.timedOut) throw new SequenceWaitTimeout(index, wait.log.timeoutMs as number);
-            continue;
-          }
-          if (action === "waitFrameStable") {
-            const wait = await waitForFrameStable(tabId, step, context.sessionScope);
-            finalFrame = wait.frame;
-            log.push({ index, ...wait.log });
-            if (wait.log.timedOut) throw new SequenceWaitTimeout(index, wait.log.timeoutMs as number);
-            continue;
-          }
-          if (action === "capture") {
-            const includeData = step.includeData === true;
-            finalFrame = await captureGlkvmFrame({ tabId, sessionScope: context.sessionScope });
-            log.push({ index, action, status: "ok", durationMs: elapsedSince(stepStartedAt), frame: frameMetadata(finalFrame, includeData) });
-            continue;
-          }
-          throw new Error(`Unsupported GLKVM sequence action: ${String(action)}`);
+          cleanup = session ? await cleanupSession(session, { releaseAll: true }) : undefined;
+          return json(true, { completed: true, tabId, ...(sessionMetadata(session) ? { session: sessionMetadata(session) } : {}), log, cleanup: formatCleanup(cleanup), finalFrame: finalFrame ? finalFrameMetadata(log, finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
         } catch (error) {
-          if (!(error instanceof SequenceWaitTimeout)) log.push(stepErrorLog(index, action, stepStartedAt, error));
-          throw error;
+          cleanup = session ? await cleanupSession(session, { releaseAll: true }) : undefined;
+          const reconnect = errorReconnect(error);
+          const metadata = sessionMetadata(session, reconnect);
+          return json(false, { completed: false, errorType: error instanceof SequenceWaitTimeout ? "sequence_wait_timeout" : "sequence_error", error: error instanceof Error ? error.message : String(error), tabId, ...(metadata ? { session: metadata } : {}), cleanup: formatCleanup(cleanup), log, finalFrame: finalFrame ? frameMetadata(finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
         }
-      }
-      cleanup = session ? await cleanupSession(session, { releaseAll: true }) : undefined;
-      return json(true, { completed: true, tabId, ...(session ? { session: sessionMetadata(session) } : {}), log, cleanup: formatCleanup(cleanup), finalFrame: finalFrame ? finalFrameMetadata(log, finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
+      });
     } catch (error) {
-      cleanup = session ? await cleanupSession(session, { releaseAll: true }) : undefined;
-      return json(false, { completed: false, errorType: error instanceof SequenceWaitTimeout ? "sequence_wait_timeout" : "sequence_error", error: error instanceof Error ? error.message : String(error), tabId, ...(session ? { session: sessionMetadata(session) } : {}), cleanup: formatCleanup(cleanup), log, finalFrame: finalFrame ? frameMetadata(finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
+      const reconnect = errorReconnect(error);
+      const metadata = sessionMetadata(session, reconnect);
+      return json(false, { completed: false, errorType: error instanceof SequenceWaitTimeout ? "sequence_wait_timeout" : "sequence_error", error: error instanceof Error ? error.message : String(error), tabId, ...(metadata ? { session: metadata } : {}), cleanup: formatCleanup(cleanup), log, finalFrame: finalFrame ? frameMetadata(finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
     }
   }
 }

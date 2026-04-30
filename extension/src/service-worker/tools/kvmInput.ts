@@ -21,7 +21,9 @@ import {
   connect,
   pasteText,
   send,
+  withTabHidOperationLock,
   type CleanupOutcome,
+  type GlkvmReconnectDiagnostics,
   type GlkvmSession,
 } from "./kvmHidTransport.js";
 
@@ -138,6 +140,26 @@ function formatCleanup(outcome: CleanupOutcome | undefined): Record<string, unkn
   };
 }
 
+function formatReconnect(
+  reconnect: GlkvmReconnectDiagnostics | undefined,
+): Record<string, unknown> | undefined {
+  if (!reconnect) return undefined;
+  return {
+    requestedSessionId: reconnect.requestedSessionId,
+    action: reconnect.action,
+    ...(reconnect.readyState !== undefined ? { readyState: reconnect.readyState } : {}),
+    ...(reconnect.error ? { error: reconnect.error } : {}),
+    ...(reconnect.errorCode ? { errorCode: reconnect.errorCode } : {}),
+    ...(reconnect.reconnected !== undefined ? { reconnected: reconnect.reconnected } : {}),
+    ...(reconnect.replacementSessionId ? { replacementSessionId: reconnect.replacementSessionId } : {}),
+  };
+}
+
+function errorReconnect(error: unknown): Record<string, unknown> | undefined {
+  const reconnect = (error as { reconnect?: GlkvmReconnectDiagnostics } | undefined)?.reconnect;
+  return formatReconnect(reconnect);
+}
+
 function cleanupFailureResult(cleanup: CleanupOutcome): ToolResult {
   return json(false, {
     errorType: "cleanup_error",
@@ -168,8 +190,6 @@ export class GlkvmInputTool implements ToolHandler {
     args: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    let session: GlkvmSession | undefined;
-    let cleanup: CleanupOutcome | undefined;
     try {
       if (args.action !== "key") {
         if (args.action !== "type") {
@@ -195,31 +215,45 @@ export class GlkvmInputTool implements ToolHandler {
         directControlOptions(args),
         context.sessionScope,
       );
-      session = await connect({
-        tabId: validated.tabId,
-        ...(sessionId ? { sessionId } : {}),
-      });
+      return await withTabHidOperationLock(validated.tabId, async () => {
+        let session: GlkvmSession | undefined;
+        let cleanup: CleanupOutcome | undefined;
+        try {
+          session = await connect({
+            tabId: validated.tabId,
+            ...(sessionId ? { sessionId } : {}),
+          });
 
-      await sendKeySteps(session, steps);
-      cleanup = await cleanupSession(session, { releaseAll: true });
-      if (!cleanup.ok) return cleanupFailureResult(cleanup);
+          await sendKeySteps(session, steps);
+          cleanup = await cleanupSession(session, { releaseAll: true });
+          if (!cleanup.ok) return cleanupFailureResult(cleanup);
 
-      return json(true, {
-        action: "key",
-        keyAction,
-        key: args.key,
-        sessionId: session.sessionId,
-        sent: steps.length,
-        cleanup: formatCleanup(cleanup),
+          return json(true, {
+            action: "key",
+            keyAction,
+            key: args.key,
+            sessionId: session.sessionId,
+            sent: steps.length,
+            cleanup: formatCleanup(cleanup),
+            reconnect: formatReconnect(session.reconnect),
+          });
+        } catch (error) {
+          if (session) {
+            cleanup = await cleanupSession(session, { releaseAll: true });
+          }
+          return json(false, {
+            errorType: "input_error",
+            error: error instanceof Error ? error.message : String(error),
+            cleanup: formatCleanup(cleanup),
+            reconnect: errorReconnect(error),
+          });
+        }
       });
     } catch (error) {
-      if (session) {
-        cleanup = await cleanupSession(session, { releaseAll: true });
-      }
       return json(false, {
         errorType: "input_error",
         error: error instanceof Error ? error.message : String(error),
-        cleanup: formatCleanup(cleanup),
+        reconnect: errorReconnect(error),
       });
     }
   }
@@ -231,10 +265,11 @@ export class GlkvmInputTool implements ToolHandler {
     if (typeof args.text !== "string") {
       throw new Error('The "text" argument is required for GLKVM text input');
     }
+    const text = args.text;
 
-    if (args.text.length > MAX_PASTE_TEXT_LENGTH) {
+    if (text.length > MAX_PASTE_TEXT_LENGTH) {
       throw new Error(
-        `GLKVM text input is limited to ${MAX_PASTE_TEXT_LENGTH} characters; received ${args.text.length}`,
+        `GLKVM text input is limited to ${MAX_PASTE_TEXT_LENGTH} characters; received ${text.length}`,
       );
     }
 
@@ -246,44 +281,64 @@ export class GlkvmInputTool implements ToolHandler {
       context.sessionScope,
     );
 
-    try {
-      await pasteText({ tabId: validated.tabId, text: args.text });
-      return json(true, {
-        action: "type",
-        method: "paste",
-        textLength: args.text.length,
-      });
-    } catch (error) {
-      if (fallback === "none") throw error;
-
-      const steps = buildTextFallbackSteps(args.text);
-      const session = await connect({
-        tabId: validated.tabId,
-        ...(sessionId ? { sessionId } : {}),
-      });
-
+    return await withTabHidOperationLock(validated.tabId, async () => {
       try {
-        await sendKeySteps(session, steps);
-      } catch (fallbackError) {
-        const cleanup = await cleanupSession(session, { releaseAll: true });
-        throw new Error(
-          `GLKVM text fallback failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}${cleanup.ok ? "" : `; release-all cleanup failed: ${cleanup.error ?? "unknown error"}`}`,
-        );
+        await pasteText({ tabId: validated.tabId, text });
+        return json(true, {
+          action: "type",
+          method: "paste",
+          textLength: text.length,
+        });
+      } catch (error) {
+        if (fallback === "none") throw error;
+
+        const steps = buildTextFallbackSteps(text);
+        let session: GlkvmSession | undefined;
+        let cleanup: CleanupOutcome | undefined;
+        try {
+          session = await connect({
+            tabId: validated.tabId,
+            ...(sessionId ? { sessionId } : {}),
+          });
+
+          try {
+            await sendKeySteps(session, steps);
+          } catch (fallbackError) {
+            cleanup = await cleanupSession(session, { releaseAll: true });
+            return json(false, {
+              errorType: "input_error",
+              error: `GLKVM text fallback failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}${cleanup.ok ? "" : `; release-all cleanup failed: ${cleanup.error ?? "unknown error"}`}`,
+              cleanup: formatCleanup(cleanup),
+              reconnect: formatReconnect(session.reconnect),
+            });
+          }
+
+          cleanup = await cleanupSession(session, { releaseAll: true });
+          if (!cleanup.ok) return cleanupFailureResult(cleanup);
+
+          return json(true, {
+            action: "type",
+            method: "key_fallback",
+            textLength: text.length,
+            sessionId: session.sessionId,
+            sent: steps.length,
+            pasteError: error instanceof Error ? error.message : String(error),
+            cleanup: formatCleanup(cleanup),
+            reconnect: formatReconnect(session.reconnect),
+          });
+        } catch (fallbackError) {
+          if (session) {
+            cleanup = await cleanupSession(session, { releaseAll: true });
+          }
+          return json(false, {
+            errorType: "input_error",
+            error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+            cleanup: formatCleanup(cleanup),
+            reconnect: errorReconnect(fallbackError),
+          });
+        }
       }
-
-      const cleanup = await cleanupSession(session, { releaseAll: true });
-      if (!cleanup.ok) return cleanupFailureResult(cleanup);
-
-      return json(true, {
-        action: "type",
-        method: "key_fallback",
-        textLength: args.text.length,
-        sessionId: session.sessionId,
-        sent: steps.length,
-        pasteError: error instanceof Error ? error.message : String(error),
-        cleanup: formatCleanup(cleanup),
-      });
-    }
+    });
   }
 
   private async executeMouse(
@@ -291,8 +346,6 @@ export class GlkvmInputTool implements ToolHandler {
     action: MouseAction,
     context: ToolContext,
   ): Promise<ToolResult> {
-    let session: GlkvmSession | undefined;
-    let cleanup: CleanupOutcome | undefined;
     try {
       const sessionId =
         typeof args.sessionId === "string" ? args.sessionId : undefined;
@@ -355,32 +408,46 @@ export class GlkvmInputTool implements ToolHandler {
         }
       }
 
-      session = await connect({
-        tabId: validated.tabId,
-        ...(sessionId ? { sessionId } : {}),
-      });
+      return await withTabHidOperationLock(validated.tabId, async () => {
+        let session: GlkvmSession | undefined;
+        let cleanup: CleanupOutcome | undefined;
+        try {
+          session = await connect({
+            tabId: validated.tabId,
+            ...(sessionId ? { sessionId } : {}),
+          });
 
-      for (const packet of plan.packets) {
-        await send({ session, packets: [packet] });
-      }
+          for (const packet of plan.packets) {
+            await send({ session, packets: [packet] });
+          }
 
-      cleanup = await cleanupSession(session, { releaseAll: true });
-      if (!cleanup.ok) return cleanupFailureResult(cleanup);
+          cleanup = await cleanupSession(session, { releaseAll: true });
+          if (!cleanup.ok) return cleanupFailureResult(cleanup);
 
-      return json(true, {
-        ...plan.response,
-        sessionId: session.sessionId,
-        sent: plan.packets.length,
-        cleanup: formatCleanup(cleanup),
+          return json(true, {
+            ...plan.response,
+            sessionId: session.sessionId,
+            sent: plan.packets.length,
+            cleanup: formatCleanup(cleanup),
+            reconnect: formatReconnect(session.reconnect),
+          });
+        } catch (error) {
+          if (session) {
+            cleanup = await cleanupSession(session, { releaseAll: true });
+          }
+          return json(false, {
+            errorType: "input_error",
+            error: error instanceof Error ? error.message : String(error),
+            cleanup: formatCleanup(cleanup),
+            reconnect: errorReconnect(error),
+          });
+        }
       });
     } catch (error) {
-      if (session) {
-        cleanup = await cleanupSession(session, { releaseAll: true });
-      }
       return json(false, {
         errorType: "input_error",
         error: error instanceof Error ? error.message : String(error),
-        cleanup: formatCleanup(cleanup),
+        reconnect: errorReconnect(error),
       });
     }
   }

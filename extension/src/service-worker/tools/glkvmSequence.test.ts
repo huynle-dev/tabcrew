@@ -6,7 +6,7 @@ const tabMock = vi.hoisted(() => ({
   resolveGlkvmTab: vi.fn(),
   validateOwnedGlkvmTab: vi.fn(),
 }));
-const transportMock = vi.hoisted(() => ({ cleanupSession: vi.fn(), connect: vi.fn(), send: vi.fn() }));
+const transportMock = vi.hoisted(() => ({ cleanupSession: vi.fn(), connect: vi.fn(), send: vi.fn(), withTabHidOperationLock: vi.fn() }));
 
 vi.mock("./glkvmFrame.js", () => frameMock);
 vi.mock("../glkvmTab.js", () => tabMock);
@@ -70,6 +70,7 @@ describe("GlkvmSequenceTool", () => {
     transportMock.connect.mockResolvedValue({ tabId: 42, sessionId: "session-1", createdAt: 123 });
     transportMock.cleanupSession.mockResolvedValue({ ok: true, releasedKeys: 0, releasedButtons: 0 });
     transportMock.send.mockResolvedValue(undefined);
+    transportMock.withTabHidOperationLock.mockImplementation(async (_tabId: number, operation: () => Promise<unknown>) => operation());
     frameMock.formatGlkvmFrameMetadata.mockImplementation((frame: ReturnType<typeof makeFrame>) => expectedFrameMetadata(frame));
     frameMock.resolveCachedGlkvmFrameDescriptor.mockReturnValue(undefined);
   });
@@ -128,6 +129,110 @@ describe("GlkvmSequenceTool", () => {
     expect(parseJsonResult(result)).toMatchObject({ completed: false, errorType: "sequence_error", error: "Tab 42 is not owned by this session", tabId: 42, log: [] });
   });
 
+  it("serializes whole same-tab sequences before HID packets are sent", async () => {
+    let releaseLock: (() => void) | undefined;
+    const enteredLock = new Promise<void>((resolve) => {
+      transportMock.withTabHidOperationLock.mockImplementationOnce(async (_tabId: number, operation: () => Promise<unknown>) => {
+        resolve();
+        await new Promise<void>((release) => { releaseLock = release; });
+        return operation();
+      });
+    });
+
+    const pending = new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "key", key: "A" }] }, {});
+    await enteredLock;
+
+    expect(transportMock.withTabHidOperationLock).toHaveBeenCalledWith(42, expect.any(Function));
+    expect(tabMock.validateOwnedGlkvmTab).toHaveBeenCalledWith(42, undefined);
+    expect(transportMock.connect).not.toHaveBeenCalled();
+    expect(transportMock.send).not.toHaveBeenCalled();
+    expect(transportMock.cleanupSession).not.toHaveBeenCalled();
+
+    releaseLock?.();
+    const result = await pending;
+
+    expect(result.success).toBe(true);
+    expect(transportMock.connect).toHaveBeenCalledTimes(1);
+    expect(transportMock.send).toHaveBeenCalledTimes(2);
+    expect(transportMock.cleanupSession).toHaveBeenCalledWith({ tabId: 42, sessionId: "session-1", createdAt: 123 }, { releaseAll: true });
+  });
+
+  it("releases the same-tab sequence queue after a sequence failure", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const order: string[] = [];
+    let queue: Promise<unknown> = Promise.resolve();
+    transportMock.withTabHidOperationLock.mockImplementation((tabId: number, operation: () => Promise<unknown>) => {
+      const run = queue.then(async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        order.push(`start-${tabId}`);
+        try {
+          return await operation();
+        } finally {
+          order.push(`end-${tabId}`);
+          active -= 1;
+        }
+      });
+      queue = run.catch(() => undefined);
+      return run;
+    });
+    transportMock.send.mockRejectedValueOnce(new Error("socket closed"));
+
+    const first = new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "key", key: "A" }] }, {});
+    const second = new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "key", key: "B" }] }, {});
+
+    expect((await first).success).toBe(false);
+    expect((await second).success).toBe(true);
+    expect(maxActive).toBe(1);
+    expect(order).toEqual(["start-42", "end-42", "start-42", "end-42"]);
+    expect(transportMock.cleanupSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("includes reconnect diagnostics in successful sequence session metadata", async () => {
+    const reconnect = {
+      requestedSessionId: "__oc_kvm_stale",
+      action: "closed" as const,
+      readyState: 3,
+      reconnected: true,
+      replacementSessionId: "session-2",
+    };
+    transportMock.connect.mockResolvedValueOnce({ tabId: 42, sessionId: "session-2", createdAt: 456, reconnect });
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, sessionId: "__oc_kvm_stale", steps: [{ action: "key", key: "A" }] }, {});
+
+    expect(result.success).toBe(true);
+    expect(parseJsonResult(result)).toMatchObject({
+      completed: true,
+      session: { tabId: 42, sessionId: "session-2", createdAt: 456, reconnect },
+    });
+  });
+
+  it("includes reconnect diagnostics when requested sequence session reconnect fails", async () => {
+    const reconnect = {
+      requestedSessionId: "__oc_kvm_stale",
+      action: "missing" as const,
+      error: "Unable to open GLKVM HID WebSocket for replacement session",
+      errorCode: "CONNECTION_FAILED" as const,
+      reconnected: false,
+    };
+    const error = new Error("Unable to reconnect requested GLKVM HID session __oc_kvm_stale");
+    Object.assign(error, { reconnect });
+    transportMock.connect.mockRejectedValueOnce(error);
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, sessionId: "__oc_kvm_stale", steps: [{ action: "key", key: "A" }] }, {});
+
+    expect(result.success).toBe(false);
+    expect(transportMock.cleanupSession).not.toHaveBeenCalled();
+    expect(parseJsonResult(result)).toMatchObject({
+      completed: false,
+      errorType: "sequence_error",
+      error: "Unable to reconnect requested GLKVM HID session __oc_kvm_stale",
+      session: { reconnect },
+      log: [{ index: 0, action: "key", status: "error", error: "Unable to reconnect requested GLKVM HID session __oc_kvm_stale" }],
+    });
+  });
+
   it("releases held inputs and returns a clear error when a sequence wait times out", async () => {
     frameMock.captureGlkvmFrame.mockResolvedValue({ tabId: 42, hash: "same", data: "aaa" });
     const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "key", key: "Shift", keyAction: "down" }, { action: "wait", timeout: 100, pollInterval: 50 }] }, {});
@@ -145,6 +250,40 @@ describe("GlkvmSequenceTool", () => {
     expect(result.success).toBe(false);
     expect(transportMock.cleanupSession).toHaveBeenCalledWith({ tabId: 42, sessionId: "session-1", createdAt: 123 }, { releaseAll: true });
     expect(parseJsonResult(result)).toMatchObject({ completed: false, errorType: "sequence_error", error: "socket closed", log: [{ index: 0, action: "key", status: "error", error: "socket closed" }] });
+  });
+
+  it("cleans up after a drag send error to release pressed mouse buttons", async () => {
+    transportMock.send.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("drag interrupted"));
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "drag", startX: 10, startY: 20, endX: 30, endY: 40, button: "left" }] }, {});
+
+    expect(result.success).toBe(false);
+    expect(transportMock.send).toHaveBeenCalledTimes(3);
+    expect(transportMock.cleanupSession).toHaveBeenCalledWith({ tabId: 42, sessionId: "session-1", createdAt: 123 }, { releaseAll: true });
+    expect(parseJsonResult(result)).toMatchObject({
+      completed: false,
+      errorType: "sequence_error",
+      error: "drag interrupted",
+      cleanup: { ok: true, releasedKeys: 0, releasedButtons: 0 },
+      log: [{ index: 0, action: "drag", status: "error", error: "drag interrupted" }],
+    });
+  });
+
+  it("cleans up after a type fallback send error to release pressed keys", async () => {
+    transportMock.send.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("type interrupted"));
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [{ action: "type", text: "a" }] }, {});
+
+    expect(result.success).toBe(false);
+    expect(transportMock.send).toHaveBeenCalledTimes(2);
+    expect(transportMock.cleanupSession).toHaveBeenCalledWith({ tabId: 42, sessionId: "session-1", createdAt: 123 }, { releaseAll: true });
+    expect(parseJsonResult(result)).toMatchObject({
+      completed: false,
+      errorType: "sequence_error",
+      error: "type interrupted",
+      cleanup: { ok: true, releasedKeys: 0, releasedButtons: 0 },
+      log: [{ index: 0, action: "type", status: "error", error: "type interrupted" }],
+    });
   });
 
   it("cleans up an established HID session when a later capture step fails", async () => {

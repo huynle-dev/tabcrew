@@ -30,6 +30,7 @@ const {
   getSessionStatus,
   generateSessionId,
   initKvmHidCleanup,
+  withTabHidOperationLock,
   GlkvmTransportError,
 } = await import("./kvmHidTransport.js");
 
@@ -53,6 +54,16 @@ function mockEvalException(text: string) {
       exception: { description: text },
     },
   };
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +142,11 @@ describe("connect", () => {
     });
 
     expect(session.sessionId).toBe("__oc_kvm_existing");
+    expect(session.reconnect).toMatchObject({
+      requestedSessionId: "__oc_kvm_existing",
+      action: "reused",
+      readyState: 1,
+    });
     // Only one sendCommand call (the check), no new connection
     expect(cdpManagerMock.sendCommand).toHaveBeenCalledTimes(1);
   });
@@ -152,6 +168,12 @@ describe("connect", () => {
 
     // Should have gotten a new session ID, not the old one
     expect(session.sessionId).not.toBe("__oc_kvm_old");
+    expect(session.reconnect).toMatchObject({
+      requestedSessionId: "__oc_kvm_old",
+      action: "closed",
+      readyState: 3,
+      reconnected: true,
+    });
     expect(cdpManagerMock.sendCommand).toHaveBeenCalledTimes(2);
   });
 
@@ -171,7 +193,45 @@ describe("connect", () => {
     });
 
     expect(session.sessionId).not.toBe("__oc_kvm_gone");
+    expect(session.reconnect).toMatchObject({
+      requestedSessionId: "__oc_kvm_gone",
+      action: "missing",
+      error: "Session not found",
+      errorCode: "PROTOCOL_ERROR",
+      reconnected: true,
+    });
     expect(cdpManagerMock.sendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("includes requested-session diagnostics when reconnecting after a missing session fails", async () => {
+    cdpManagerMock.sendCommand
+      .mockResolvedValueOnce(
+        mockEvalResult({
+          ok: false,
+          error: "Session not found",
+          errorCode: "PROTOCOL_ERROR",
+        }),
+      )
+      .mockResolvedValueOnce(
+        mockEvalResult({
+          ok: false,
+          error: "WebSocket connection failed. The GLKVM device may be offline or unreachable.",
+          errorCode: "CONNECTION_FAILED",
+        }),
+      );
+
+    await expect(
+      connect({ tabId: 42, sessionId: "__oc_kvm_gone" }),
+    ).rejects.toMatchObject({
+      code: "CONNECTION_FAILED",
+      reconnect: {
+        requestedSessionId: "__oc_kvm_gone",
+        action: "missing",
+        error: "Session not found",
+        errorCode: "PROTOCOL_ERROR",
+        reconnected: false,
+      },
+    });
   });
 
   // --- Error cases ---
@@ -275,6 +335,83 @@ describe("connect", () => {
     const callArgs = cdpManagerMock.sendCommand.mock.calls[0];
     const expression = callArgs[2].expression as string;
     expect(expression).toContain("5000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withTabHidOperationLock
+// ---------------------------------------------------------------------------
+
+describe("withTabHidOperationLock", () => {
+  it("serializes same-tab operations in FIFO order", async () => {
+    const firstMayFinish = deferred();
+    const events: string[] = [];
+
+    const first = withTabHidOperationLock(11, async () => {
+      events.push("first:start");
+      await firstMayFinish.promise;
+      events.push("first:end");
+      return "first";
+    });
+    const second = withTabHidOperationLock(11, async () => {
+      events.push("second:start");
+      events.push("second:end");
+      return "second";
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(["first:start"]);
+
+    firstMayFinish.resolve();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      "first",
+      "second",
+    ]);
+    expect(events).toEqual([
+      "first:start",
+      "first:end",
+      "second:start",
+      "second:end",
+    ]);
+  });
+
+  it("releases the same-tab queue after an operation fails", async () => {
+    const events: string[] = [];
+
+    const first = withTabHidOperationLock(12, async () => {
+      events.push("first:start");
+      throw new Error("boom");
+    });
+    const second = withTabHidOperationLock(12, async () => {
+      events.push("second:start");
+      return "second";
+    });
+
+    await expect(first).rejects.toThrow("boom");
+    await expect(second).resolves.toBe("second");
+    expect(events).toEqual(["first:start", "second:start"]);
+  });
+
+  it("allows different tabs to run concurrently", async () => {
+    const firstMayFinish = deferred();
+    const events: string[] = [];
+
+    const first = withTabHidOperationLock(21, async () => {
+      events.push("tab21:start");
+      await firstMayFinish.promise;
+      events.push("tab21:end");
+      return "tab21";
+    });
+    const second = withTabHidOperationLock(22, async () => {
+      events.push("tab22:start");
+      return "tab22";
+    });
+
+    await expect(second).resolves.toBe("tab22");
+    expect(events).toEqual(["tab21:start", "tab22:start"]);
+
+    firstMayFinish.resolve();
+    await expect(first).resolves.toBe("tab21");
   });
 });
 
@@ -512,6 +649,39 @@ describe("cleanupSession", () => {
       }),
     ]);
     expect(getHidSessionsForTab(900)).toEqual([]);
+  });
+
+  it("serializes explicit tab cleanup behind active same-tab HID operations", async () => {
+    cdpManagerMock.sendCommand
+      .mockResolvedValueOnce(mockEvalResult({ ok: true, readyState: 1 }))
+      .mockResolvedValueOnce(mockEvalResult({ ok: true, releasedKeys: 1 }));
+
+    const tracked = await connect({ tabId: 902 });
+    const activeMayFinish = deferred();
+    const events: string[] = [];
+
+    const active = withTabHidOperationLock(902, async () => {
+      events.push("active:start");
+      await activeMayFinish.promise;
+      events.push("active:end");
+    });
+    const cleanup = cleanupSessionsForTab(902, {
+      releaseAll: true,
+      close: true,
+    }).then((outcomes) => {
+      events.push("cleanup");
+      return outcomes;
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(["active:start"]);
+
+    activeMayFinish.resolve();
+    await active;
+    await expect(cleanup).resolves.toEqual([
+      expect.objectContaining({ tabId: 902, sessionId: tracked.sessionId, ok: true }),
+    ]);
+    expect(events).toEqual(["active:start", "active:end", "cleanup"]);
   });
 
   it("forgets tracked HID sessions when Chrome reports a tab removal", async () => {
