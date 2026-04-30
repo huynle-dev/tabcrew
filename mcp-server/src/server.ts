@@ -735,17 +735,6 @@ const TOOL_SCHEMAS: Tool[] = [
                 type: "number",
                 description: "Y coordinate in the selected GLKVM mouse coordinate space",
               },
-              coordinateSpace: {
-                type: "string",
-                enum: ["glkvm_screenshot_pixels", "intrinsic_remote_frame_pixels", "normalized_remote_frame"],
-                description:
-                  "Coordinate space for sequence mouse steps: GLKVM screenshot-output pixels (default), intrinsic remote-frame pixels, or normalized remote-frame coordinates.",
-              },
-              frameId: {
-                type: "string",
-                description:
-                  "Frame identifier from glkvm_screenshot for screenshot-output mouse coordinates; enables crop/downscale-aware mapping.",
-              },
               button: {
                 type: "string",
                 enum: ["left", "middle", "right"],

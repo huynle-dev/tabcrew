@@ -10,6 +10,12 @@ import { SocketClient } from "./socketClient.js";
 // ---------------------------------------------------------------------------
 
 describe("getToolSchemas", () => {
+  const GLKVM_INPUT_COORDINATE_SPACES = [
+    "glkvm_screenshot_pixels",
+    "intrinsic_remote_frame_pixels",
+    "normalized_remote_frame",
+  ] as const;
+
   const PUBLIC_GLKVM_TOOLS = [
     TOOL_NAMES.GLKVM_OPEN,
     TOOL_NAMES.GLKVM_ATTACH,
@@ -415,11 +421,15 @@ describe("getToolSchemas", () => {
       fallback: { enum: ["keys", "none"] },
       button: { enum: ["left", "middle", "right"] },
       direction: { enum: ["up", "down"] },
-      coordinateSpace: { enum: ["glkvm_screenshot_pixels", "intrinsic_remote_frame_pixels", "normalized_remote_frame"] },
+      coordinateSpace: { enum: GLKVM_INPUT_COORDINATE_SPACES },
       frameId: { type: "string" },
     });
-    expect(inputSchema.inputSchema.properties.coordinateSpace.description).toContain("GLKVM screenshot");
-    expect(inputSchema.inputSchema.properties.frameId.description).toContain("screenshot-output");
+    expect(
+      inputSchema.inputSchema.properties.coordinateSpace.description,
+    ).toContain("GLKVM screenshot");
+    expect(inputSchema.inputSchema.properties.frameId.description).toContain(
+      "screenshot-output",
+    );
     expect(inputSchema.inputSchema.required).toContain("action");
   });
 
@@ -456,9 +466,18 @@ describe("getToolSchemas", () => {
         steps: expect.any(Object),
       })
     );
-    expect(stepProperties.action.enum).toEqual(
-      ["key", "type", "click", "move", "drag", "scroll", "wait", "waitFrameChange", "waitFrameStable", "capture"],
-    );
+    expect(stepProperties.action.enum).toEqual([
+      "key",
+      "type",
+      "click",
+      "move",
+      "drag",
+      "scroll",
+      "wait",
+      "waitFrameChange",
+      "waitFrameStable",
+      "capture",
+    ]);
     expect(stepProperties).toEqual(
       expect.objectContaining({
         text: expect.any(Object),
@@ -468,16 +487,19 @@ describe("getToolSchemas", () => {
         pollInterval: expect.any(Object),
         stabilityDuration: expect.any(Object),
         includeData: expect.any(Object),
-        coordinateSpace: expect.any(Object),
-        frameId: expect.any(Object),
       })
     );
-    expect(stepProperties.keyAction.enum).toEqual(["press", "down", "up", "hotkey", "chord"]);
+    expect(stepProperties.keyAction.enum).toEqual([
+      "press",
+      "down",
+      "up",
+      "hotkey",
+      "chord",
+    ]);
     expect(stepProperties.button.enum).toEqual(["left", "middle", "right"]);
     expect(stepProperties.direction.enum).toEqual(["up", "down"]);
-    expect(stepProperties.coordinateSpace.enum).toEqual(["glkvm_screenshot_pixels", "intrinsic_remote_frame_pixels", "normalized_remote_frame"]);
-    expect(stepProperties.coordinateSpace.description).toContain("mouse");
-    expect(stepProperties.frameId.description).toContain("screenshot-output");
+    expect(stepProperties).not.toHaveProperty("coordinateSpace");
+    expect(stepProperties).not.toHaveProperty("frameId");
     expect(stepProperties).toEqual(
       expect.objectContaining({
         x: expect.any(Object),
@@ -633,6 +655,30 @@ describe("createMcpServer", () => {
       tabId: 42,
       maxWidth: 960,
       maxHeight: 540,
+    });
+  });
+
+  it.each([
+    ["partial synthetic-looking region", { x: 0, y: 0, width: 0 }],
+    ["real invalid zero-width crop", { x: 10, y: 20, width: 0, height: 30 }],
+  ])("forwards %s unchanged for extension-side validation", async (_label, region) => {
+    const sendSpy = vi.spyOn(mockSocketClient, "sendToolRequest").mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+    });
+
+    await client.callTool({
+      name: TOOL_NAMES.GLKVM_SCREENSHOT,
+      arguments: {
+        tabId: 42,
+        region,
+        maxWidth: 960,
+      },
+    });
+
+    expect(sendSpy).toHaveBeenCalledWith(TOOL_NAMES.GLKVM_SCREENSHOT, {
+      tabId: 42,
+      region,
+      maxWidth: 960,
     });
   });
 

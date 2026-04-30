@@ -1,4 +1,4 @@
-import { TOOL_NAMES } from "@opencode-chrome/shared";
+import { ALL_TOOL_NAMES } from "@opencode-chrome/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageRouter } from "../messageRouter.js";
 import { registerTools } from "./index.js";
@@ -12,24 +12,13 @@ describe("registerTools", () => {
     });
   });
 
-  it("registers every public GLKVM handler exposed by the MCP schema", () => {
+  it("registers exactly every public shared tool", () => {
     const router = new MessageRouter();
 
     registerTools(router);
 
-    expect(router.getRegisteredTools()).toEqual(
-      expect.arrayContaining([
-        TOOL_NAMES.GLKVM_OPEN,
-        TOOL_NAMES.GLKVM_ATTACH,
-        TOOL_NAMES.GLKVM_STATUS,
-        TOOL_NAMES.GLKVM_SCREENSHOT,
-        TOOL_NAMES.GLKVM_INPUT,
-        TOOL_NAMES.GLKVM_WAIT,
-        TOOL_NAMES.GLKVM_SEQUENCE,
-        TOOL_NAMES.GLKVM_NAV,
-        TOOL_NAMES.GLKVM_OCR,
-        TOOL_NAMES.GLKVM_SMOKE_TEST,
-      ]),
+    expect([...router.getRegisteredTools()].sort()).toEqual(
+      [...ALL_TOOL_NAMES].sort(),
     );
   });
 });
