@@ -82,29 +82,43 @@ Coordinate conversion summary: normalized coordinates multiply by `source.width`
 
 Examples:
 
+Open or attach, then pass the returned `tabId` to direct-control tools:
+
 ```json
 { "url": "https://kvm.example.com/#/" }
 ```
+
+No-input observe/capture:
 
 ```json
 { "tabId": 42 }
 ```
 
+Crop and downscale the remote frame before perception:
+
 ```json
 { "tabId": 42, "region": { "x": 480, "y": 270, "width": 960, "height": 540 }, "maxWidth": 480, "maxHeight": 270 }
 ```
+
+Send a remote hotkey through HID:
 
 ```json
 { "tabId": 42, "action": "key", "key": "ctrl+alt+delete", "keyAction": "hotkey" }
 ```
 
+Click coordinates measured in the exact screenshot identified by `frameId`:
+
 ```json
 { "tabId": 42, "action": "click", "x": 120, "y": 80, "coordinateSpace": "glkvm_screenshot_pixels", "frameId": "glkvm-frame-...", "button": "left" }
 ```
 
+Wait for a frame change after input:
+
 ```json
 { "tabId": 42, "timeout": 5000, "pollInterval": 250 }
 ```
+
+Wait until frames are stable, then capture without embedding JPEG data:
 
 ```json
 { "tabId": 42, "steps": [{ "action": "waitFrameStable", "timeout": 5000, "pollInterval": 250, "stabilityDuration": 1000 }, { "action": "capture", "includeData": false }] }

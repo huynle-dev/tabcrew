@@ -188,6 +188,7 @@ Frame descriptor cache behavior:
 
 - Each screenshot gets a `frameId` and stores a descriptor for coordinate mapping. The cache stores metadata descriptors only, not image data.
 - The cache is bounded to 20 descriptors per tab with a 60 second TTL.
+- A `frameId` is only valid for coordinates measured in that exact returned screenshot image, including its crop and downscale settings. Do not reuse it across tabs or with coordinates from a different capture.
 - Passing an unknown or expired `frameId` to `glkvm_input` fails before opening/sending HID input with guidance to capture a fresh `glkvm_screenshot`.
 
 Example no-input observe/capture:
