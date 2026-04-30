@@ -5,10 +5,19 @@ import type {
   ToolResult,
 } from "../../types/messages.js";
 import { requireOwnedGlkvmTabForDirectControl } from "../glkvmTab.js";
-import { captureGlkvmFrame, type GlkvmFrameCropOptions } from "./glkvmFrame.js";
+import {
+  captureGlkvmFrame,
+  formatGlkvmFrameMetadata,
+  type GlkvmFrame,
+  type GlkvmFrameCropOptions,
+} from "./glkvmFrame.js";
 
 function jsonText(value: Record<string, unknown>): ContentBlock {
   return { type: "text", text: JSON.stringify(value, null, 2) };
+}
+
+function frameMetadata(frame: GlkvmFrame): Record<string, unknown> {
+  return formatGlkvmFrameMetadata(frame, { mimeType: "image/jpeg" });
 }
 
 function optionalPositiveNumber(args: Record<string, unknown>, name: string) {
@@ -38,6 +47,7 @@ function optionalRegion(args: Record<string, unknown>): GlkvmFrameCropOptions | 
   if ((region.x as number) < 0 || (region.y as number) < 0) {
     throw new Error("Invalid region: x and y must be non-negative intrinsic remote-frame pixels.");
   }
+  if (names.every((name) => region[name] === 0)) return undefined;
   if ((region.width as number) <= 0) {
     throw new Error("Invalid region.width: expected a positive intrinsic remote-frame pixel dimension.");
   }
@@ -77,20 +87,7 @@ export class GlkvmScreenshotTool implements ToolHandler {
         ...(maxHeight !== undefined ? { maxHeight } : {}),
       });
 
-      const metadata: Record<string, unknown> = {
-        tabId: frame.tabId,
-        mimeType: "image/jpeg",
-        hash: frame.hash,
-      };
-      if (frame.hashAlgorithm !== undefined) metadata.hashAlgorithm = frame.hashAlgorithm;
-      if (frame.width !== undefined) metadata.width = frame.width;
-      if (frame.height !== undefined) metadata.height = frame.height;
-      if (frame.source !== undefined) metadata.source = frame.source;
-      if (frame.crop !== undefined) {
-        metadata.region = frame.crop;
-        metadata.crop = frame.crop;
-      }
-      if (frame.output !== undefined) metadata.output = frame.output;
+      const metadata = frameMetadata(frame);
 
       return {
         success: true,

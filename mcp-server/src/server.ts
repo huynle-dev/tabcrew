@@ -597,11 +597,22 @@ const TOOL_SCHEMAS: Tool[] = [
         },
         x: {
           type: "number",
-          description: "X coordinate in GLKVM screenshot pixel space",
+          description: "X coordinate in the selected GLKVM mouse coordinate space",
         },
         y: {
           type: "number",
-          description: "Y coordinate in GLKVM screenshot pixel space",
+          description: "Y coordinate in the selected GLKVM mouse coordinate space",
+        },
+        coordinateSpace: {
+          type: "string",
+          enum: ["glkvm_screenshot_pixels", "intrinsic_remote_frame_pixels", "normalized_remote_frame"],
+          description:
+            "Coordinate space for mouse input: GLKVM screenshot-output pixels (default), intrinsic remote-frame pixels, or normalized remote-frame coordinates.",
+        },
+        frameId: {
+          type: "string",
+          description:
+            "Frame identifier from glkvm_screenshot when using screenshot-output coordinates; used to map crop/downscale-relative pixels safely.",
         },
         button: {
           type: "string",
@@ -718,11 +729,22 @@ const TOOL_SCHEMAS: Tool[] = [
               },
               x: {
                 type: "number",
-                description: "X coordinate in GLKVM screenshot pixel space",
+                description: "X coordinate in the selected GLKVM mouse coordinate space",
               },
               y: {
                 type: "number",
-                description: "Y coordinate in GLKVM screenshot pixel space",
+                description: "Y coordinate in the selected GLKVM mouse coordinate space",
+              },
+              coordinateSpace: {
+                type: "string",
+                enum: ["glkvm_screenshot_pixels", "intrinsic_remote_frame_pixels", "normalized_remote_frame"],
+                description:
+                  "Coordinate space for sequence mouse steps: GLKVM screenshot-output pixels (default), intrinsic remote-frame pixels, or normalized remote-frame coordinates.",
+              },
+              frameId: {
+                type: "string",
+                description:
+                  "Frame identifier from glkvm_screenshot for screenshot-output mouse coordinates; enables crop/downscale-aware mapping.",
               },
               button: {
                 type: "string",
@@ -869,6 +891,24 @@ const TOOL_SCHEMAS: Tool[] = [
   },
 ];
 
+function isSyntheticZeroRegion(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const region = value as Record<string, unknown>;
+  return ["x", "y", "width", "height"].every((name) => region[name] === 0);
+}
+
+function normalizeToolArguments(
+  name: string,
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  if (name !== TOOL_NAMES.GLKVM_SCREENSHOT || !isSyntheticZeroRegion(args.region)) {
+    return args;
+  }
+
+  const { region: _region, ...rest } = args;
+  return rest;
+}
+
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
@@ -938,7 +978,7 @@ export async function createMcpServer(
     try {
       const result = await client.sendToolRequest(
         name,
-        (args ?? {}) as Record<string, unknown>
+        normalizeToolArguments(name, (args ?? {}) as Record<string, unknown>)
       );
       return result;
     } catch (err) {

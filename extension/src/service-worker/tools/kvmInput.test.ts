@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const cdpManagerMock = vi.hoisted(() => ({
+  isAttached: vi.fn(),
+  attach: vi.fn(),
+  sendCommand: vi.fn(),
+}));
+
 const glkvmTabMock = vi.hoisted(() => ({
   getVideoMetadata: vi.fn(),
   resolveGlkvmTab: vi.fn(),
@@ -13,10 +19,24 @@ const transportMock = vi.hoisted(() => ({
   send: vi.fn(),
 }));
 
+vi.mock("../cdp.js", () => ({
+  cdpManager: cdpManagerMock,
+}));
+
 vi.mock("../glkvmTab.js", () => glkvmTabMock);
 vi.mock("./kvmHidTransport.js", () => transportMock);
 
 const { GlkvmInputTool, resolveKvmdKeyName } = await import("./kvmInput.js");
+const { captureGlkvmFrame, clearGlkvmFrameCacheForTests } = await import("./glkvmFrame.js");
+
+function mockCanvasCapture(data: string, width: number, height: number) {
+  cdpManagerMock.sendCommand.mockResolvedValueOnce({
+    result: {
+      type: "object",
+      value: { data, width, height },
+    },
+  });
+}
 
 function decodeKeyPacket(packet: Uint8Array): { down: boolean; key: string } {
   return {
@@ -97,6 +117,9 @@ describe("resolveKvmdKeyName", () => {
 describe("GlkvmInputTool keyboard input", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearGlkvmFrameCacheForTests();
+    cdpManagerMock.isAttached.mockReturnValue(true);
+    cdpManagerMock.attach.mockResolvedValue(undefined);
 
     glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockResolvedValue({
       tabId: 42,
@@ -374,6 +397,140 @@ describe("GlkvmInputTool keyboard input", () => {
       },
       sent: 3,
       cleanup: { ok: true },
+    });
+  });
+
+  it("maps screenshot-output coordinates with frameId through crop and downscale before direct click HID", async () => {
+    mockCanvasCapture("cropped-downscaled", 400, 225);
+    const frame = await captureGlkvmFrame({
+      tabId: 42,
+      crop: { x: 100, y: 50, width: 800, height: 450 },
+      maxWidth: 400,
+      maxHeight: 225,
+    });
+    transportMock.send.mockClear();
+
+    const result = await new GlkvmInputTool().execute(
+      {
+        tabId: 42,
+        action: "click",
+        x: 200,
+        y: 112.5,
+        coordinateSpace: "glkvm_screenshot_pixels",
+        frameId: frame.frameId,
+      },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+    expect(sentMouseMove(sentPackets()[0])).toEqual({ x: -15702, y: -16081 });
+    expect(parseJsonResult(result)).toMatchObject({
+      action: "click",
+      coordinates: {
+        input: {
+          coordinateSpace: "glkvm_screenshot_pixels",
+          point: { x: 200, y: 112.5 },
+          frameId: frame.frameId,
+        },
+        screenshot: { x: 200, y: 112.5, width: 400, height: 225 },
+        intrinsic: { x: 500, y: 275, width: 1920, height: 1080 },
+        diagnostics: expect.arrayContaining([
+          expect.objectContaining({
+            code: "mapped_from_screenshot_output",
+            frameId: frame.frameId,
+          }),
+        ]),
+      },
+    });
+  });
+
+  it("rejects unknown screenshot frameId before direct mouse HID side effects", async () => {
+    const result = await new GlkvmInputTool().execute(
+      {
+        tabId: 42,
+        action: "move",
+        x: 10,
+        y: 10,
+        coordinateSpace: "glkvm_screenshot_pixels",
+        frameId: "missing-frame",
+      },
+      {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(transportMock.connect).not.toHaveBeenCalled();
+    expect(transportMock.send).not.toHaveBeenCalled();
+    expect(parseJsonResult(result)).toMatchObject({
+      errorType: "input_error",
+      error: expect.stringContaining("Unknown or stale GLKVM frameId missing-frame"),
+    });
+  });
+
+  it("maps normalized remote-frame boundary coordinates for direct move", async () => {
+    const result = await new GlkvmInputTool().execute(
+      {
+        tabId: 42,
+        action: "move",
+        x: 1,
+        y: 0,
+        coordinateSpace: "normalized_remote_frame",
+      },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+    expect(sentMouseMove(sentPackets()[0])).toEqual({ x: 32767, y: -32768 });
+    expect(parseJsonResult(result)).toMatchObject({
+      action: "move",
+      coordinates: {
+        input: {
+          coordinateSpace: "normalized_remote_frame",
+          point: { x: 1, y: 0 },
+        },
+        normalized: { x: 1, y: 0 },
+        intrinsic: { x: 1920, y: 0, width: 1920, height: 1080 },
+        diagnostics: [],
+      },
+    });
+  });
+
+  it("returns explicit clamping diagnostics for direct out-of-bounds intrinsic coordinates", async () => {
+    const result = await new GlkvmInputTool().execute(
+      {
+        tabId: 42,
+        action: "move",
+        x: -10,
+        y: 1200,
+        coordinateSpace: "intrinsic_remote_frame_pixels",
+      },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+    expect(sentMouseMove(sentPackets()[0])).toEqual({ x: -32768, y: 32767 });
+    expect(parseJsonResult(result)).toMatchObject({
+      action: "move",
+      coordinates: {
+        input: {
+          coordinateSpace: "intrinsic_remote_frame_pixels",
+          point: { x: -10, y: 1200 },
+        },
+        intrinsic: { x: 0, y: 1080, width: 1920, height: 1080 },
+        diagnostics: expect.arrayContaining([
+          expect.objectContaining({
+            code: "coordinate_clamped",
+            axis: "x",
+            input: -10,
+            output: 0,
+          }),
+          expect.objectContaining({
+            code: "coordinate_clamped",
+            axis: "y",
+            input: 1200,
+            output: 1080,
+          }),
+        ]),
+      },
     });
   });
 

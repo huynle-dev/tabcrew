@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const frameMock = vi.hoisted(() => ({
   captureGlkvmFrame: vi.fn(),
+  formatGlkvmFrameMetadata: vi.fn(),
 }));
 
 const glkvmTabMock = vi.hoisted(() => ({
@@ -39,6 +40,26 @@ function parseErrorResult(
 describe("GlkvmScreenshotTool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    frameMock.formatGlkvmFrameMetadata.mockImplementation((frame, options) => ({
+      frameId: frame.frameId,
+      timestamp: frame.capturedAt,
+      capturedAt: frame.capturedAt,
+      tabId: frame.tabId,
+      ...(options?.mimeType !== undefined ? { mimeType: options.mimeType } : {}),
+      hash: frame.hash,
+      ...(frame.hashAlgorithm !== undefined
+        ? {
+            hashAlgorithm: frame.hashAlgorithm,
+            hashMetadata: { value: frame.hash, algorithm: frame.hashAlgorithm },
+          }
+        : {}),
+      ...(frame.width !== undefined ? { width: frame.width } : {}),
+      ...(frame.height !== undefined ? { height: frame.height } : {}),
+      ...(frame.source !== undefined ? { source: frame.source } : {}),
+      ...(frame.crop !== undefined ? { region: frame.crop, crop: frame.crop } : {}),
+      ...(frame.output !== undefined ? { output: frame.output } : {}),
+      ...(frame.scale !== undefined ? { scale: frame.scale } : {}),
+    }));
     glkvmTabMock.requireOwnedGlkvmTabForDirectControl.mockResolvedValue({
       tabId: 42,
       tab: { tabId: 42, title: "GLKVM", url: "https://kvm.example.com/#/" },
@@ -53,11 +74,26 @@ describe("GlkvmScreenshotTool", () => {
 
   it("validates an explicit owned tabId before returning the captured GLKVM video frame", async () => {
     frameMock.captureGlkvmFrame.mockResolvedValue({
+      frameId: "glkvm-frame-abc123",
+      capturedAt: "2026-04-30T12:00:00.000Z",
       tabId: 42,
       data: "jpeg-base64-frame",
       hash: "abc12345",
+      hashAlgorithm: "fnv1a-32",
       width: 960,
       height: 540,
+      source: {
+        width: 1920,
+        height: 1080,
+        coordinateSpace: "intrinsic_remote_frame_pixels",
+      },
+      crop: null,
+      output: {
+        width: 960,
+        height: 540,
+        coordinateSpace: "glkvm_screenshot_pixels",
+      },
+      scale: { x: 0.5, y: 0.5 },
     });
 
     const result = await new GlkvmScreenshotTool().execute(
@@ -81,16 +117,39 @@ describe("GlkvmScreenshotTool", () => {
       mimeType: "image/jpeg",
     });
     expect(parseMetadata(result)).toEqual({
+      frameId: "glkvm-frame-abc123",
+      timestamp: "2026-04-30T12:00:00.000Z",
+      capturedAt: "2026-04-30T12:00:00.000Z",
       tabId: 42,
       mimeType: "image/jpeg",
       hash: "abc12345",
+      hashAlgorithm: "fnv1a-32",
+      hashMetadata: {
+        value: "abc12345",
+        algorithm: "fnv1a-32",
+      },
       width: 960,
       height: 540,
+      source: {
+        width: 1920,
+        height: 1080,
+        coordinateSpace: "intrinsic_remote_frame_pixels",
+      },
+      region: null,
+      crop: null,
+      output: {
+        width: 960,
+        height: 540,
+        coordinateSpace: "glkvm_screenshot_pixels",
+      },
+      scale: { x: 0.5, y: 0.5 },
     });
   });
 
   it("passes region and downscale options to frame capture as intrinsic crop options", async () => {
     frameMock.captureGlkvmFrame.mockResolvedValue({
+      frameId: "glkvm-frame-cropped",
+      capturedAt: "2026-04-30T12:01:00.000Z",
       tabId: 42,
       data: "cropped-downscaled-jpeg",
       hash: "feedbeef",
@@ -114,6 +173,7 @@ describe("GlkvmScreenshotTool", () => {
         height: 180,
         coordinateSpace: "glkvm_screenshot_pixels",
       },
+      scale: { x: 0.4, y: 0.4 },
     });
 
     const result = await new GlkvmScreenshotTool().execute(
@@ -135,10 +195,17 @@ describe("GlkvmScreenshotTool", () => {
       maxHeight: 240,
     });
     expect(parseMetadata(result)).toEqual({
+      frameId: "glkvm-frame-cropped",
+      timestamp: "2026-04-30T12:01:00.000Z",
+      capturedAt: "2026-04-30T12:01:00.000Z",
       tabId: 42,
       mimeType: "image/jpeg",
       hash: "feedbeef",
       hashAlgorithm: "fnv1a-32",
+      hashMetadata: {
+        value: "feedbeef",
+        algorithm: "fnv1a-32",
+      },
       width: 320,
       height: 180,
       source: {
@@ -165,6 +232,35 @@ describe("GlkvmScreenshotTool", () => {
         height: 180,
         coordinateSpace: "glkvm_screenshot_pixels",
       },
+      scale: { x: 0.4, y: 0.4 },
+    });
+  });
+
+  it("treats a zeroed default region object as omitted full-frame capture", async () => {
+    frameMock.captureGlkvmFrame.mockResolvedValue({
+      tabId: 42,
+      data: "full-frame-jpeg",
+      hash: "abc12345",
+      width: 960,
+      height: 540,
+    });
+
+    const result = await new GlkvmScreenshotTool().execute(
+      {
+        tabId: 42,
+        region: { x: 0, y: 0, width: 0, height: 0 },
+        maxWidth: 960,
+        maxHeight: 540,
+      },
+      { sessionScope: "scope-a" },
+    );
+
+    expect(result.success).toBe(true);
+    expect(frameMock.captureGlkvmFrame).toHaveBeenCalledWith({
+      tabId: 42,
+      sessionScope: "scope-a",
+      maxWidth: 960,
+      maxHeight: 540,
     });
   });
 

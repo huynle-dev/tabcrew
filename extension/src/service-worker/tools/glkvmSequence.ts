@@ -1,8 +1,8 @@
 import type { ToolContext, ToolHandler, ToolResult } from "../../types/messages.js";
 import { getVideoMetadata, validateOwnedGlkvmTab } from "../glkvmTab.js";
-import { captureGlkvmFrame, type GlkvmFrame } from "./glkvmFrame.js";
+import { captureGlkvmFrame, formatGlkvmFrameMetadata, type GlkvmFrame } from "./glkvmFrame.js";
 import { encodeKeyEvent } from "./kvmHidEncoder.js";
-import { buildKeySteps, buildMouseInputPlan, buildTextFallbackSteps, frameSize, type KeyAction, type MouseAction, type MouseInputPlan } from "./kvmInputHidSteps.js";
+import { buildKeySteps, buildMouseInputPlan, buildTextFallbackSteps, frameSize, type KeyAction, type MouseAction, type MouseCoordinateSpace, type MouseInputPlan } from "./kvmInputHidSteps.js";
 import { cleanupSession, connect, send, type CleanupOutcome, type GlkvmSession } from "./kvmHidTransport.js";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -39,7 +39,18 @@ function formatCleanup(outcome: CleanupOutcome | undefined): Record<string, unkn
 }
 
 function frameMetadata(frame: GlkvmFrame, includeData = false): Record<string, unknown> {
-  return { tabId: frame.tabId, hash: frame.hash, ...(frame.width !== undefined ? { width: frame.width } : {}), ...(frame.height !== undefined ? { height: frame.height } : {}), ...(includeData ? { data: frame.data } : {}) };
+  return { ...formatGlkvmFrameMetadata(frame), ...(includeData ? { data: frame.data } : {}) };
+}
+
+function finalFrameMetadata(log: SequenceLogEntry[], frame: GlkvmFrame): Record<string, unknown> {
+  for (let index = log.length - 1; index >= 0; index -= 1) {
+    const entry = log[index];
+    if (entry.action === "capture" && entry.status === "ok" && typeof entry.frame === "object" && entry.frame !== null) {
+      return entry.frame as Record<string, unknown>;
+    }
+  }
+
+  return frameMetadata(frame);
 }
 
 function requireTabId(args: Record<string, unknown>): number {
@@ -68,6 +79,42 @@ function keyAction(value: unknown): KeyAction {
 function mouseAction(value: unknown): MouseAction | undefined {
   if (value === "click" || value === "move" || value === "drag" || value === "scroll") return value;
   return undefined;
+}
+
+function coordinateSpace(value: unknown): MouseCoordinateSpace | undefined {
+  if (value === undefined) return undefined;
+  if (value === "glkvm_screenshot_pixels" || value === "intrinsic_remote_frame_pixels" || value === "normalized_remote_frame") return value;
+  throw new Error(`Unsupported GLKVM sequence coordinateSpace: ${String(value)}`);
+}
+
+function frameId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new Error("GLKVM sequence frameId must be a non-empty string when provided");
+}
+
+function intrinsicFrameSize(video: {
+  videoWidth: number;
+  videoHeight: number;
+  visible: boolean;
+  displayRect: { width: number; height: number };
+}): { width: number; height: number } {
+  frameSize(video);
+  return { width: video.videoWidth, height: video.videoHeight };
+}
+
+function mouseCoordinateSize(
+  video: {
+    videoWidth: number;
+    videoHeight: number;
+    visible: boolean;
+    displayRect: { width: number; height: number };
+  },
+  space: MouseCoordinateSpace | undefined,
+  cachedFrameId: string | undefined,
+): { width: number; height: number } {
+  if (space !== undefined || cachedFrameId !== undefined) return intrinsicFrameSize(video);
+  return frameSize(video);
 }
 
 function stepErrorLog(index: number, action: unknown, startedAt: number, error: unknown): SequenceLogEntry {
@@ -127,9 +174,12 @@ async function buildMousePlan(tabId: number, step: Record<string, unknown>, acti
     const amount = step.amount === undefined ? 1 : requiredNumber(step, "amount");
     return buildMouseInputPlan({ action, direction, amount });
   }
-  const size = frameSize(await getVideoMetadata(tabId));
-  if (action === "drag") return buildMouseInputPlan({ action, start: { x: requiredNumber(step, "startX"), y: requiredNumber(step, "startY") }, end: { x: requiredNumber(step, "endX"), y: requiredNumber(step, "endY") }, size, button: step.button });
-  return buildMouseInputPlan({ action, point: { x: requiredNumber(step, "x"), y: requiredNumber(step, "y") }, size, button: step.button });
+  const video = await getVideoMetadata(tabId);
+  const space = coordinateSpace(step.coordinateSpace);
+  const cachedFrameId = frameId(step.frameId);
+  const size = mouseCoordinateSize(video, space, cachedFrameId);
+  if (action === "drag") return buildMouseInputPlan({ action, start: { x: requiredNumber(step, "startX"), y: requiredNumber(step, "startY") }, end: { x: requiredNumber(step, "endX"), y: requiredNumber(step, "endY") }, size, coordinateSpace: space, frameId: cachedFrameId, button: step.button });
+  return buildMouseInputPlan({ action, point: { x: requiredNumber(step, "x"), y: requiredNumber(step, "y") }, size, coordinateSpace: space, frameId: cachedFrameId, button: step.button });
 }
 
 function sessionMetadata(session: GlkvmSession): Record<string, unknown> {
@@ -210,7 +260,7 @@ export class GlkvmSequenceTool implements ToolHandler {
         }
       }
       cleanup = session ? await cleanupSession(session, { releaseAll: true }) : undefined;
-      return json(true, { completed: true, tabId, ...(session ? { session: sessionMetadata(session) } : {}), log, cleanup: formatCleanup(cleanup), finalFrame: finalFrame ? log.findLast((entry) => entry.action === "capture" && entry.status === "ok")?.frame ?? frameMetadata(finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
+      return json(true, { completed: true, tabId, ...(session ? { session: sessionMetadata(session) } : {}), log, cleanup: formatCleanup(cleanup), finalFrame: finalFrame ? finalFrameMetadata(log, finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });
     } catch (error) {
       cleanup = session ? await cleanupSession(session, { releaseAll: true }) : undefined;
       return json(false, { completed: false, errorType: error instanceof SequenceWaitTimeout ? "sequence_wait_timeout" : "sequence_error", error: error instanceof Error ? error.message : String(error), tabId, ...(session ? { session: sessionMetadata(session) } : {}), cleanup: formatCleanup(cleanup), log, finalFrame: finalFrame ? frameMetadata(finalFrame) : undefined, elapsedMs: elapsedSince(sequenceStartedAt) });

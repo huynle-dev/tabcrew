@@ -8,6 +8,8 @@ const INTRINSIC_REMOTE_FRAME_COORDINATE_SPACE =
   "intrinsic_remote_frame_pixels" as const;
 const GLKVM_SCREENSHOT_COORDINATE_SPACE = "glkvm_screenshot_pixels" as const;
 const HASH_ALGORITHM = "fnv1a-32" as const;
+const FRAME_CACHE_LIMIT = 20;
+let nextFrameSequence = 0;
 
 export interface GlkvmFrameCropOptions {
   readonly x: number;
@@ -28,7 +30,14 @@ export interface GlkvmFrameDimensions {
     | typeof GLKVM_SCREENSHOT_COORDINATE_SPACE;
 }
 
+export interface GlkvmFrameScale {
+  readonly x: number;
+  readonly y: number;
+}
+
 export interface GlkvmFrame {
+  readonly frameId: string;
+  readonly capturedAt: string;
   readonly tabId: number;
   readonly hash: string;
   readonly data: string;
@@ -37,8 +46,17 @@ export interface GlkvmFrame {
   readonly source?: GlkvmFrameDimensions;
   readonly crop?: GlkvmFrameCrop | null;
   readonly output?: GlkvmFrameDimensions;
+  readonly scale?: GlkvmFrameScale;
   readonly hashAlgorithm?: typeof HASH_ALGORITHM;
 }
+
+export type GlkvmFrameDescriptor = Pick<
+  GlkvmFrame,
+  "frameId" | "capturedAt" | "tabId" | "source" | "crop" | "output" | "width" | "height"
+>;
+
+const recentFrames = new Map<string, GlkvmFrameDescriptor>();
+const latestFrameMetadataByTab = new Map<number, Record<string, unknown>>();
 
 export class GlkvmFrameCaptureError extends Error {
   readonly code: "CAPTURE_FAILED";
@@ -57,6 +75,80 @@ function hashFrameData(data: string): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function createFrameId(): string {
+  nextFrameSequence = (nextFrameSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `glkvm-frame-${Date.now().toString(36)}-${nextFrameSequence.toString(36)}`;
+}
+
+function rememberFrameDescriptor(frame: GlkvmFrame): void {
+  const descriptor: GlkvmFrameDescriptor = {
+    frameId: frame.frameId,
+    capturedAt: frame.capturedAt,
+    tabId: frame.tabId,
+    source: frame.source,
+    crop: frame.crop,
+    output: frame.output,
+    width: frame.width,
+    height: frame.height,
+  };
+  recentFrames.set(frame.frameId, descriptor);
+  while (recentFrames.size > FRAME_CACHE_LIMIT) {
+    const oldest = recentFrames.keys().next().value;
+    if (oldest === undefined) break;
+    recentFrames.delete(oldest);
+  }
+}
+
+export function resolveCachedGlkvmFrameDescriptor(
+  frameId: string | undefined,
+): GlkvmFrameDescriptor | undefined {
+  if (!frameId) return undefined;
+  return recentFrames.get(frameId);
+}
+
+export function clearGlkvmFrameCacheForTests(): void {
+  recentFrames.clear();
+  latestFrameMetadataByTab.clear();
+  nextFrameSequence = 0;
+}
+
+export function formatGlkvmFrameMetadata(
+  frame: GlkvmFrame,
+  options?: { mimeType?: string },
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    frameId: frame.frameId,
+    timestamp: frame.capturedAt,
+    capturedAt: frame.capturedAt,
+    tabId: frame.tabId,
+    ...(options?.mimeType !== undefined ? { mimeType: options.mimeType } : {}),
+    hash: frame.hash,
+  };
+  if (frame.hashAlgorithm !== undefined) {
+    metadata.hashAlgorithm = frame.hashAlgorithm;
+    metadata.hashMetadata = {
+      value: frame.hash,
+      algorithm: frame.hashAlgorithm,
+    };
+  }
+  if (frame.width !== undefined) metadata.width = frame.width;
+  if (frame.height !== undefined) metadata.height = frame.height;
+  if (frame.source !== undefined) metadata.source = frame.source;
+  if (frame.crop !== undefined) {
+    metadata.region = frame.crop;
+    metadata.crop = frame.crop;
+  }
+  if (frame.output !== undefined) metadata.output = frame.output;
+  if (frame.scale !== undefined) metadata.scale = frame.scale;
+  return metadata;
+}
+
+export function getLatestGlkvmFrameMetadata(
+  tabId: number,
+): Record<string, unknown> | undefined {
+  return latestFrameMetadataByTab.get(tabId);
 }
 
 export async function captureGlkvmFrame(options?: {
@@ -154,8 +246,14 @@ export async function captureGlkvmFrame(options?: {
     height: value.height ?? outputSize.height,
     coordinateSpace: GLKVM_SCREENSHOT_COORDINATE_SPACE,
   } satisfies GlkvmFrameDimensions;
+  const scale = {
+    x: output.width / captureSource.width,
+    y: output.height / captureSource.height,
+  } satisfies GlkvmFrameScale;
 
-  return {
+  const frame: GlkvmFrame = {
+    frameId: createFrameId(),
+    capturedAt: new Date().toISOString(),
     tabId,
     data: value.data,
     hash: hashFrameData(value.data),
@@ -164,8 +262,15 @@ export async function captureGlkvmFrame(options?: {
     source,
     crop,
     output,
+    scale,
     hashAlgorithm: HASH_ALGORITHM,
   };
+  rememberFrameDescriptor(frame);
+  latestFrameMetadataByTab.set(
+    tabId,
+    formatGlkvmFrameMetadata(frame, { mimeType: "image/jpeg" }),
+  );
+  return frame;
 }
 
 function validateCrop(
@@ -289,8 +394,12 @@ function buildCanvasCaptureExpression(
         output.height,
       );
       const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+      const prefix = "data:image/jpeg;base64,";
+      if (!dataUrl.startsWith(prefix)) {
+        return { error: 'unexpected_data_url', message: 'Canvas returned an unexpected image data URL.' };
+      }
       return {
-        data: dataUrl.replace(/^data:image\/jpeg;base64,/, ''),
+        data: dataUrl.slice(prefix.length),
         width: output.width,
         height: output.height,
       };

@@ -12,6 +12,7 @@ import {
   frameSize,
   type KeyAction,
   type KeyStep,
+  type MouseCoordinateSpace,
   type MouseAction,
   type MouseInputPlan,
 } from "./kvmInputHidSteps.js";
@@ -70,6 +71,50 @@ function getMouseAction(value: unknown): MouseAction | undefined {
     return value;
   }
   return undefined;
+}
+
+function getCoordinateSpace(value: unknown): MouseCoordinateSpace | undefined {
+  if (value === undefined) return undefined;
+  if (
+    value === "glkvm_screenshot_pixels"
+    || value === "intrinsic_remote_frame_pixels"
+    || value === "normalized_remote_frame"
+  ) {
+    return value;
+  }
+  throw new Error(`Unsupported GLKVM coordinateSpace: ${String(value)}`);
+}
+
+function getFrameId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new Error("GLKVM frameId must be a non-empty string when provided");
+}
+
+function intrinsicFrameSize(video: {
+  videoWidth: number;
+  videoHeight: number;
+  visible: boolean;
+  displayRect: { width: number; height: number };
+}): { width: number; height: number } {
+  frameSize(video);
+  return { width: video.videoWidth, height: video.videoHeight };
+}
+
+function mouseCoordinateSize(
+  video: {
+    videoWidth: number;
+    videoHeight: number;
+    visible: boolean;
+    displayRect: { width: number; height: number };
+  },
+  coordinateSpace: MouseCoordinateSpace | undefined,
+  frameId: string | undefined,
+): { width: number; height: number } {
+  if (coordinateSpace !== undefined || frameId !== undefined) {
+    return intrinsicFrameSize(video);
+  }
+  return frameSize(video);
 }
 
 async function sendKeySteps(session: GlkvmSession, steps: KeyStep[]): Promise<void> {
@@ -275,7 +320,9 @@ export class GlkvmInputTool implements ToolHandler {
         plan = buildMouseInputPlan({ action, direction, amount });
       } else {
         const video = await getVideoMetadata(validated.tabId);
-        const size = frameSize(video);
+        const coordinateSpace = getCoordinateSpace(args.coordinateSpace);
+        const frameId = getFrameId(args.frameId);
+        const size = mouseCoordinateSize(video, coordinateSpace, frameId);
 
         if (action === "drag") {
           plan = buildMouseInputPlan({
@@ -289,6 +336,8 @@ export class GlkvmInputTool implements ToolHandler {
               y: getRequiredNumber(args, "endY"),
             },
             size,
+            coordinateSpace,
+            frameId,
             button: args.button,
           });
         } else {
@@ -299,6 +348,8 @@ export class GlkvmInputTool implements ToolHandler {
               y: getRequiredNumber(args, "y"),
             },
             size,
+            coordinateSpace,
+            frameId,
             button: args.button,
           });
         }

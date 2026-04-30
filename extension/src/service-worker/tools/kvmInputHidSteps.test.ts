@@ -5,6 +5,7 @@ import {
   buildMouseInputPlan,
   buildTextFallbackSteps,
   mapMousePoint,
+  resolveMouseInputCoordinates,
   resolveKvmdKeyName,
 } from "./kvmInputHidSteps.js";
 
@@ -108,5 +109,112 @@ describe("kvmInputHidSteps", () => {
       direction: "down",
       amount: 3,
     });
+  });
+
+  it("maps crop-relative downscaled screenshot pixels back to intrinsic frame pixels", () => {
+    const frame = {
+      frameId: "frame-crop-downscale",
+      capturedAt: "2026-04-30T12:00:00.000Z",
+      tabId: 42,
+      source: {
+        width: 1920,
+        height: 1080,
+        coordinateSpace: "intrinsic_remote_frame_pixels" as const,
+      },
+      crop: {
+        x: 100,
+        y: 50,
+        width: 800,
+        height: 450,
+        coordinateSpace: "intrinsic_remote_frame_pixels" as const,
+      },
+      output: {
+        width: 400,
+        height: 225,
+        coordinateSpace: "glkvm_screenshot_pixels" as const,
+      },
+    };
+
+    const plan = buildMouseInputPlan({
+      action: "click",
+      point: { x: 200, y: 112.5 },
+      size: { width: 400, height: 225 },
+      coordinateSpace: "glkvm_screenshot_pixels",
+      frame,
+    });
+
+    expect(plan.response.coordinates).toMatchObject({
+      input: {
+        coordinateSpace: "glkvm_screenshot_pixels",
+        point: { x: 200, y: 112.5 },
+        frameId: "frame-crop-downscale",
+      },
+      intrinsic: { x: 500, y: 275, width: 1920, height: 1080 },
+      screenshot: { x: 200, y: 112.5, width: 400, height: 225 },
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "mapped_from_screenshot_output",
+          frameId: "frame-crop-downscale",
+        }),
+      ]),
+    });
+    expect(plan.response.coordinates).toMatchObject({
+      absolute: { x: expect.any(Number), y: expect.any(Number) },
+    });
+  });
+
+  it("maps normalized remote-frame boundaries and clamps out-of-bounds points with diagnostics", () => {
+    expect(
+      resolveMouseInputCoordinates({
+        point: { x: 1, y: 0 },
+        size: { width: 1920, height: 1080 },
+        coordinateSpace: "normalized_remote_frame",
+      }),
+    ).toMatchObject({
+      intrinsic: { x: 1920, y: 0 },
+      normalized: { x: 1, y: 0 },
+      diagnostics: [],
+    });
+
+    const outOfBounds = buildMouseInputPlan({
+      action: "move",
+      point: { x: 1.25, y: -0.5 },
+      size: { width: 1920, height: 1080 },
+      coordinateSpace: "normalized_remote_frame",
+    });
+
+    expect(outOfBounds.response.coordinates).toMatchObject({
+      input: {
+        coordinateSpace: "normalized_remote_frame",
+        point: { x: 1.25, y: -0.5 },
+      },
+      intrinsic: { x: 1920, y: 0, width: 1920, height: 1080 },
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "coordinate_clamped",
+          axis: "x",
+          input: 2400,
+          output: 1920,
+        }),
+        expect.objectContaining({
+          code: "coordinate_clamped",
+          axis: "y",
+          input: -540,
+          output: 0,
+        }),
+      ]),
+    });
+  });
+
+  it("rejects screenshot coordinates without a matching frame descriptor", () => {
+    expect(() =>
+      buildMouseInputPlan({
+        action: "move",
+        point: { x: 10, y: 10 },
+        size: { width: 400, height: 225 },
+        coordinateSpace: "glkvm_screenshot_pixels",
+        frameId: "missing-frame",
+      }),
+    ).toThrow("Unknown or stale GLKVM frameId missing-frame");
   });
 });

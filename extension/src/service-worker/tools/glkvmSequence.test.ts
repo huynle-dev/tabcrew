@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const frameMock = vi.hoisted(() => ({ captureGlkvmFrame: vi.fn() }));
+const frameMock = vi.hoisted(() => ({ captureGlkvmFrame: vi.fn(), formatGlkvmFrameMetadata: vi.fn(), resolveCachedGlkvmFrameDescriptor: vi.fn() }));
 const tabMock = vi.hoisted(() => ({
   getVideoMetadata: vi.fn(),
   resolveGlkvmTab: vi.fn(),
@@ -21,6 +21,42 @@ function parseJsonResult(result: Awaited<ReturnType<InstanceType<typeof GlkvmSeq
   return JSON.parse(block.text);
 }
 
+function makeFrame(frameId: string, hash: string, data: string) {
+  return {
+    frameId,
+    capturedAt: `2026-04-30T00:00:0${frameId.slice(-1)}.000Z`,
+    tabId: 42,
+    hash,
+    hashAlgorithm: "fnv1a-32",
+    data,
+    width: 640,
+    height: 360,
+    source: { width: 1280, height: 720, coordinateSpace: "intrinsic_remote_frame_pixels" },
+    crop: null,
+    output: { width: 640, height: 360, coordinateSpace: "glkvm_screenshot_pixels" },
+    scale: { x: 0.5, y: 0.5 },
+  };
+}
+
+function expectedFrameMetadata(frame: ReturnType<typeof makeFrame>) {
+  return {
+    frameId: frame.frameId,
+    timestamp: frame.capturedAt,
+    capturedAt: frame.capturedAt,
+    tabId: frame.tabId,
+    hash: frame.hash,
+    hashAlgorithm: frame.hashAlgorithm,
+    hashMetadata: { value: frame.hash, algorithm: frame.hashAlgorithm },
+    width: frame.width,
+    height: frame.height,
+    source: frame.source,
+    region: frame.crop,
+    crop: frame.crop,
+    output: frame.output,
+    scale: frame.scale,
+  };
+}
+
 describe("GlkvmSequenceTool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -34,6 +70,8 @@ describe("GlkvmSequenceTool", () => {
     transportMock.connect.mockResolvedValue({ tabId: 42, sessionId: "session-1", createdAt: 123 });
     transportMock.cleanupSession.mockResolvedValue({ ok: true, releasedKeys: 0, releasedButtons: 0 });
     transportMock.send.mockResolvedValue(undefined);
+    frameMock.formatGlkvmFrameMetadata.mockImplementation((frame: ReturnType<typeof makeFrame>) => expectedFrameMetadata(frame));
+    frameMock.resolveCachedGlkvmFrameDescriptor.mockReturnValue(undefined);
   });
 
   it("executes accepted sequence actions over one explicit tab session and logs outcomes", async () => {
@@ -160,5 +198,125 @@ describe("GlkvmSequenceTool", () => {
     expect(parseJsonResult(result)).toMatchObject({ completed: true, log: [
       { index: 0, action: "waitFrameStable", status: "ok", stable: true, timedOut: false, initialHash: "initial", currentHash: "changed" },
     ], finalFrame: { tabId: 42, hash: "changed" } });
+  });
+
+  it("returns canonical frame metadata for sequence capture and finalFrame outputs", async () => {
+    const captured = makeFrame("frame-3", "capture", "capture-jpeg");
+    frameMock.captureGlkvmFrame.mockResolvedValueOnce(captured);
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [
+      { action: "capture", includeData: true },
+    ] }, { sessionScope: "scope-a" });
+
+    expect(result.success).toBe(true);
+    const body = parseJsonResult(result);
+    expect(body.log[0]).toMatchObject({
+      index: 0,
+      action: "capture",
+      status: "ok",
+      frame: { ...expectedFrameMetadata(captured), data: "capture-jpeg" },
+    });
+    expect(body.finalFrame).toMatchObject({ ...expectedFrameMetadata(captured), data: "capture-jpeg" });
+  });
+
+  it("maps sequence screenshot coordinates through frameId crop and downscale metadata before HID input", async () => {
+    frameMock.resolveCachedGlkvmFrameDescriptor.mockReturnValueOnce({
+      frameId: "frame-crop",
+      capturedAt: "2026-04-30T00:00:00.000Z",
+      tabId: 42,
+      source: { width: 1920, height: 1080, coordinateSpace: "intrinsic_remote_frame_pixels" },
+      crop: { x: 100, y: 50, width: 800, height: 400, coordinateSpace: "intrinsic_remote_frame_pixels" },
+      output: { width: 400, height: 200, coordinateSpace: "glkvm_screenshot_pixels" },
+      width: 400,
+      height: 200,
+    });
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [
+      { action: "click", x: 200, y: 100, coordinateSpace: "glkvm_screenshot_pixels", frameId: "frame-crop" },
+    ] }, {});
+
+    expect(result.success).toBe(true);
+    expect(frameMock.resolveCachedGlkvmFrameDescriptor).toHaveBeenCalledWith("frame-crop");
+    expect(transportMock.send).toHaveBeenCalledTimes(3);
+    expect(parseJsonResult(result)).toMatchObject({ completed: true, log: [
+      {
+        index: 0,
+        action: "click",
+        status: "ok",
+        coordinates: {
+          input: { coordinateSpace: "glkvm_screenshot_pixels", point: { x: 200, y: 100 }, frameId: "frame-crop" },
+          screenshot: { x: 200, y: 100, width: 400, height: 200 },
+          intrinsic: { x: 500, y: 250, width: 1920, height: 1080 },
+          diagnostics: [{ code: "mapped_from_screenshot_output", frameId: "frame-crop" }],
+        },
+      },
+    ] });
+  });
+
+  it("maps sequence normalized remote-frame boundary coordinates to intrinsic edges", async () => {
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [
+      { action: "drag", startX: 0, startY: 0, endX: 1, endY: 1, coordinateSpace: "normalized_remote_frame" },
+    ] }, {});
+
+    expect(result.success).toBe(true);
+    expect(transportMock.send).toHaveBeenCalledTimes(4);
+    expect(parseJsonResult(result)).toMatchObject({ completed: true, log: [
+      {
+        index: 0,
+        action: "drag",
+        status: "ok",
+        coordinates: {
+          input: { coordinateSpace: "normalized_remote_frame" },
+          intrinsic: {
+            start: { x: 0, y: 0, width: 1280, height: 720 },
+            end: { x: 1280, y: 720, width: 1280, height: 720 },
+          },
+          diagnostics: [],
+        },
+      },
+    ] });
+  });
+
+  it("rejects unknown or stale sequence frameId before opening a HID session or sending packets", async () => {
+    frameMock.resolveCachedGlkvmFrameDescriptor.mockReturnValueOnce(undefined);
+
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [
+      { action: "move", x: 1, y: 2, coordinateSpace: "glkvm_screenshot_pixels", frameId: "missing-frame" },
+    ] }, {});
+
+    expect(result.success).toBe(false);
+    expect(frameMock.resolveCachedGlkvmFrameDescriptor).toHaveBeenCalledWith("missing-frame");
+    expect(transportMock.connect).not.toHaveBeenCalled();
+    expect(transportMock.send).not.toHaveBeenCalled();
+    expect(transportMock.cleanupSession).not.toHaveBeenCalled();
+    expect(parseJsonResult(result)).toMatchObject({
+      completed: false,
+      errorType: "sequence_error",
+      error: expect.stringContaining("Unknown or stale GLKVM frameId missing-frame"),
+      log: [{ index: 0, action: "move", status: "error", error: expect.stringContaining("Unknown or stale GLKVM frameId missing-frame") }],
+    });
+  });
+
+  it("returns explicit coordinate clamp diagnostics for out-of-bounds sequence mouse input", async () => {
+    const result = await new GlkvmSequenceTool().execute({ tabId: 42, steps: [
+      { action: "move", x: -10, y: 999, coordinateSpace: "intrinsic_remote_frame_pixels" },
+    ] }, {});
+
+    expect(result.success).toBe(true);
+    expect(parseJsonResult(result)).toMatchObject({ completed: true, log: [
+      {
+        index: 0,
+        action: "move",
+        status: "ok",
+        coordinates: {
+          input: { coordinateSpace: "intrinsic_remote_frame_pixels", point: { x: -10, y: 999 } },
+          intrinsic: { x: 0, y: 720, width: 1280, height: 720 },
+          diagnostics: [
+            { code: "coordinate_clamped", axis: "x", input: -10, output: 0 },
+            { code: "coordinate_clamped", axis: "y", input: 999, output: 720 },
+          ],
+        },
+      },
+    ] });
   });
 });

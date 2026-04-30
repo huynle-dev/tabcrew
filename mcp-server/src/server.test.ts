@@ -415,7 +415,11 @@ describe("getToolSchemas", () => {
       fallback: { enum: ["keys", "none"] },
       button: { enum: ["left", "middle", "right"] },
       direction: { enum: ["up", "down"] },
+      coordinateSpace: { enum: ["glkvm_screenshot_pixels", "intrinsic_remote_frame_pixels", "normalized_remote_frame"] },
+      frameId: { type: "string" },
     });
+    expect(inputSchema.inputSchema.properties.coordinateSpace.description).toContain("GLKVM screenshot");
+    expect(inputSchema.inputSchema.properties.frameId.description).toContain("screenshot-output");
     expect(inputSchema.inputSchema.required).toContain("action");
   });
 
@@ -464,11 +468,16 @@ describe("getToolSchemas", () => {
         pollInterval: expect.any(Object),
         stabilityDuration: expect.any(Object),
         includeData: expect.any(Object),
+        coordinateSpace: expect.any(Object),
+        frameId: expect.any(Object),
       })
     );
     expect(stepProperties.keyAction.enum).toEqual(["press", "down", "up", "hotkey", "chord"]);
     expect(stepProperties.button.enum).toEqual(["left", "middle", "right"]);
     expect(stepProperties.direction.enum).toEqual(["up", "down"]);
+    expect(stepProperties.coordinateSpace.enum).toEqual(["glkvm_screenshot_pixels", "intrinsic_remote_frame_pixels", "normalized_remote_frame"]);
+    expect(stepProperties.coordinateSpace.description).toContain("mouse");
+    expect(stepProperties.frameId.description).toContain("screenshot-output");
     expect(stepProperties).toEqual(
       expect.objectContaining({
         x: expect.any(Object),
@@ -603,6 +612,28 @@ describe("createMcpServer", () => {
     expect(result.content).toEqual([
       { type: "text", text: "Navigated to: https://example.com" },
     ]);
+  });
+
+  it("strips synthetic zero GLKVM screenshot regions before forwarding", async () => {
+    const sendSpy = vi.spyOn(mockSocketClient, "sendToolRequest").mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+    });
+
+    await client.callTool({
+      name: TOOL_NAMES.GLKVM_SCREENSHOT,
+      arguments: {
+        tabId: 42,
+        region: { x: 0, y: 0, width: 0, height: 0 },
+        maxWidth: 960,
+        maxHeight: 540,
+      },
+    });
+
+    expect(sendSpy).toHaveBeenCalledWith(TOOL_NAMES.GLKVM_SCREENSHOT, {
+      tabId: 42,
+      maxWidth: 960,
+      maxHeight: 540,
+    });
   });
 
   it("forwards GLKVM smoke test calls without normalization", async () => {

@@ -4,6 +4,10 @@ import {
   encodeMouseWheel,
   mapToAbsolute,
 } from "./kvmHidEncoder.js";
+import {
+  resolveCachedGlkvmFrameDescriptor,
+  type GlkvmFrameDescriptor,
+} from "./glkvmFrame.js";
 
 export type KeyAction = "press" | "down" | "up" | "hotkey" | "chord";
 
@@ -26,6 +30,32 @@ export interface MappedMousePoint extends MousePoint {
   absoluteY: number;
 }
 
+export type MouseCoordinateSpace =
+  | "glkvm_screenshot_pixels"
+  | "intrinsic_remote_frame_pixels"
+  | "normalized_remote_frame";
+
+export interface CoordinateDiagnostic {
+  readonly code: string;
+  readonly message: string;
+  readonly axis?: "x" | "y";
+  readonly input?: number;
+  readonly output?: number;
+  readonly frameId?: string;
+}
+
+export interface ResolvedMouseCoordinates {
+  readonly input: {
+    readonly coordinateSpace: MouseCoordinateSpace;
+    readonly point: MousePoint;
+    readonly frameId?: string;
+  };
+  readonly intrinsic: MousePoint & { width: number; height: number };
+  readonly screenshot?: MousePoint & { width: number; height: number };
+  readonly normalized?: MousePoint;
+  readonly diagnostics: CoordinateDiagnostic[];
+}
+
 export interface MouseInputPlan {
   packets: Uint8Array[];
   response: Record<string, unknown>;
@@ -41,6 +71,9 @@ export type MouseInputPlanInput =
     action: "click" | "move";
     point: MousePoint;
     size: { width: number; height: number };
+    coordinateSpace?: MouseCoordinateSpace;
+    frameId?: string;
+    frame?: GlkvmFrameDescriptor;
     button?: unknown;
   }
   | {
@@ -48,6 +81,9 @@ export type MouseInputPlanInput =
     start: MousePoint;
     end: MousePoint;
     size: { width: number; height: number };
+    coordinateSpace?: MouseCoordinateSpace;
+    frameId?: string;
+    frame?: GlkvmFrameDescriptor;
     button?: unknown;
   };
 
@@ -208,6 +244,146 @@ export function mapMousePoint(
   };
 }
 
+function frameSourceSize(
+  frame: GlkvmFrameDescriptor | undefined,
+  fallback: { width: number; height: number },
+): { width: number; height: number } {
+  return {
+    width: frame?.source?.width ?? fallback.width,
+    height: frame?.source?.height ?? fallback.height,
+  };
+}
+
+function resolveFrameDescriptor(
+  frame: GlkvmFrameDescriptor | undefined,
+  frameId: string | undefined,
+): GlkvmFrameDescriptor | undefined {
+  if (frame !== undefined) {
+    if (frameId !== undefined && frame.frameId !== frameId) {
+      throw new Error(
+        `GLKVM frameId mismatch: requested ${frameId} but descriptor is ${frame.frameId}.`,
+      );
+    }
+    return frame;
+  }
+  if (frameId === undefined) {
+    return undefined;
+  }
+  const resolved = resolveCachedGlkvmFrameDescriptor(frameId);
+  if (resolved === undefined) {
+    throw new Error(
+      `Unknown or stale GLKVM frameId ${frameId}. Capture a fresh glkvm_screenshot before sending screenshot-coordinate mouse input.`,
+    );
+  }
+  return resolved;
+}
+
+function clampCoordinate(
+  axis: "x" | "y",
+  value: number,
+  min: number,
+  max: number,
+  diagnostics: CoordinateDiagnostic[],
+): number {
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid GLKVM mouse ${axis}: expected a finite number.`);
+  }
+  const clamped = Math.min(max, Math.max(min, value));
+  if (clamped !== value) {
+    diagnostics.push({
+      code: "coordinate_clamped",
+      message: `Mouse ${axis} coordinate ${value} was outside ${min}..${max} and was clamped to ${clamped}.`,
+      axis,
+      input: value,
+      output: clamped,
+    });
+  }
+  return clamped;
+}
+
+export function resolveMouseInputCoordinates(options: {
+  point: MousePoint;
+  size: { width: number; height: number };
+  coordinateSpace?: MouseCoordinateSpace;
+  frameId?: string;
+  frame?: GlkvmFrameDescriptor;
+}): ResolvedMouseCoordinates {
+  const coordinateSpace = options.coordinateSpace ?? "glkvm_screenshot_pixels";
+  const frame = resolveFrameDescriptor(options.frame, options.frameId);
+  const source = frameSourceSize(frame, options.size);
+  const diagnostics: CoordinateDiagnostic[] = [];
+  let intrinsicX: number;
+  let intrinsicY: number;
+  let screenshot: ResolvedMouseCoordinates["screenshot"];
+  let normalized: MousePoint | undefined;
+
+  if (coordinateSpace === "normalized_remote_frame") {
+    normalized = { x: options.point.x, y: options.point.y };
+    intrinsicX = options.point.x * source.width;
+    intrinsicY = options.point.y * source.height;
+  } else if (coordinateSpace === "intrinsic_remote_frame_pixels") {
+    intrinsicX = options.point.x;
+    intrinsicY = options.point.y;
+  } else {
+    const output = frame?.output ?? {
+      width: options.size.width,
+      height: options.size.height,
+      coordinateSpace: "glkvm_screenshot_pixels" as const,
+    };
+    const crop = frame?.crop ?? {
+      x: 0,
+      y: 0,
+      width: source.width,
+      height: source.height,
+      coordinateSpace: "intrinsic_remote_frame_pixels" as const,
+    };
+    const scaleX = crop.width / output.width;
+    const scaleY = crop.height / output.height;
+    intrinsicX = crop.x + options.point.x * scaleX;
+    intrinsicY = crop.y + options.point.y * scaleY;
+    screenshot = {
+      x: options.point.x,
+      y: options.point.y,
+      width: output.width,
+      height: output.height,
+    };
+    if (frame !== undefined) {
+      diagnostics.push({
+        code: "mapped_from_screenshot_output",
+        message:
+          "Mapped GLKVM screenshot-output coordinates through frame crop/downscale metadata to intrinsic remote-frame pixels.",
+        frameId: frame.frameId,
+      });
+    }
+  }
+
+  const clampedX = normalizeZero(
+    clampCoordinate("x", intrinsicX, 0, source.width, diagnostics),
+  );
+  const clampedY = normalizeZero(
+    clampCoordinate("y", intrinsicY, 0, source.height, diagnostics),
+  );
+
+  return {
+    input: {
+      coordinateSpace,
+      point: { x: options.point.x, y: options.point.y },
+      ...(frame?.frameId ?? options.frameId
+        ? { frameId: frame?.frameId ?? options.frameId }
+        : {}),
+    },
+    intrinsic: {
+      x: clampedX,
+      y: clampedY,
+      width: source.width,
+      height: source.height,
+    },
+    ...(screenshot ? { screenshot } : {}),
+    ...(normalized ? { normalized } : {}),
+    diagnostics,
+  };
+}
+
 function normalizeZero(value: number): number {
   return Object.is(value, -0) ? 0 : value;
 }
@@ -222,6 +398,20 @@ function formatPoint(point: MappedMousePoint): Record<string, unknown> {
   return {
     screenshot: { x: point.x, y: point.y },
     absolute: { x: point.absoluteX, y: point.absoluteY },
+  };
+}
+
+function formatResolvedCoordinates(
+  resolved: ResolvedMouseCoordinates,
+  mapped: MappedMousePoint,
+): Record<string, unknown> {
+  return {
+    input: resolved.input,
+    ...(resolved.screenshot ? { screenshot: resolved.screenshot } : {}),
+    ...(resolved.normalized ? { normalized: resolved.normalized } : {}),
+    intrinsic: resolved.intrinsic,
+    absolute: { x: mapped.absoluteX, y: mapped.absoluteY },
+    diagnostics: resolved.diagnostics,
   };
 }
 
@@ -245,8 +435,22 @@ export function buildMouseInputPlan(
   const button = getMouseButton(input.button);
 
   if (input.action === "drag") {
-    const start = mapMousePoint(input.start, input.size);
-    const end = mapMousePoint(input.end, input.size);
+    const startResolved = resolveMouseInputCoordinates({
+      point: input.start,
+      size: input.size,
+      coordinateSpace: input.coordinateSpace,
+      frameId: input.frameId,
+      frame: input.frame,
+    });
+    const endResolved = resolveMouseInputCoordinates({
+      point: input.end,
+      size: input.size,
+      coordinateSpace: input.coordinateSpace,
+      frameId: input.frameId,
+      frame: input.frame,
+    });
+    const start = mapMousePoint(startResolved.intrinsic, startResolved.intrinsic);
+    const end = mapMousePoint(endResolved.intrinsic, endResolved.intrinsic);
     packets.push(
       encodeMouseMove(start.absoluteX, start.absoluteY),
       encodeMouseButton(button, true),
@@ -257,12 +461,33 @@ export function buildMouseInputPlan(
     response.coordinates = {
       start: formatPoint(start),
       end: formatPoint(end),
+      input: {
+        coordinateSpace: input.coordinateSpace ?? "glkvm_screenshot_pixels",
+        ...(input.frame?.frameId ?? input.frameId
+          ? { frameId: input.frame?.frameId ?? input.frameId }
+          : {}),
+      },
+      intrinsic: {
+        start: startResolved.intrinsic,
+        end: endResolved.intrinsic,
+      },
       screenshot: { width: input.size.width, height: input.size.height },
+      diagnostics: [
+        ...startResolved.diagnostics,
+        ...endResolved.diagnostics,
+      ],
     };
     return { packets, response };
   }
 
-  const point = mapMousePoint(input.point, input.size);
+  const resolved = resolveMouseInputCoordinates({
+    point: input.point,
+    size: input.size,
+    coordinateSpace: input.coordinateSpace,
+    frameId: input.frameId,
+    frame: input.frame,
+  });
+  const point = mapMousePoint(resolved.intrinsic, resolved.intrinsic);
   packets.push(encodeMouseMove(point.absoluteX, point.absoluteY));
   response.coordinates = {
     screenshot: {
@@ -272,6 +497,7 @@ export function buildMouseInputPlan(
       height: input.size.height,
     },
     absolute: { x: point.absoluteX, y: point.absoluteY },
+    ...formatResolvedCoordinates(resolved, point),
   };
 
   if (input.action === "click") {
