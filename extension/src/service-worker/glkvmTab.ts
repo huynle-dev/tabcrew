@@ -110,6 +110,38 @@ export interface RequireOwnedGlkvmTabOptions {
   readonly target?: string;
 }
 
+export type GlkvmOpenAttachReadinessReason =
+  | "tab_not_found"
+  | "page_loading"
+  | "page_ready"
+  | "video_hidden"
+  | "frame_dimensions_unavailable"
+  | "frame_ready";
+
+export interface GlkvmOpenAttachReadinessStatus {
+  readonly pagePresent: boolean;
+  readonly videoVisible: boolean;
+  readonly firstFrameAvailable: boolean;
+  readonly reason: GlkvmOpenAttachReadinessReason;
+}
+
+export interface GlkvmOpenAttachReadinessResult {
+  readonly ready: boolean;
+  readonly timedOut: boolean;
+  readonly tabId: number;
+  readonly tab: GlkvmTabInfo;
+  readonly video: GlkvmVideoMetadata | null;
+  readonly readiness: GlkvmOpenAttachReadinessStatus;
+  readonly elapsedMs: number;
+  readonly timeoutMs: number;
+}
+
+export interface WaitForGlkvmOpenAttachReadinessOptions {
+  readonly timeoutMs?: number;
+  readonly pollIntervalMs?: number;
+  readonly fallbackUrl?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -472,6 +504,57 @@ export async function getVideoMetadata(
   };
 }
 
+export async function waitForGlkvmOpenAttachReadiness(
+  tabId: number,
+  options?: WaitForGlkvmOpenAttachReadinessOptions,
+): Promise<GlkvmOpenAttachReadinessResult> {
+  const timeoutMs = normalizeDuration(options?.timeoutMs, 5000, 0, 60_000);
+  const pollIntervalMs = normalizeDuration(
+    options?.pollIntervalMs,
+    250,
+    1,
+    Math.max(1, timeoutMs),
+  );
+  const startedAt = Date.now();
+  let latest = buildReadinessResult({
+    tabId,
+    tab: { tabId, title: "", url: options?.fallbackUrl ?? "" },
+    video: null,
+    readiness: {
+      pagePresent: false,
+      videoVisible: false,
+      firstFrameAvailable: false,
+      reason: "page_loading",
+    },
+    ready: false,
+    timedOut: false,
+    startedAt,
+    timeoutMs,
+  });
+
+  while (true) {
+    latest = await checkOpenAttachReadiness(tabId, {
+      fallbackUrl: options?.fallbackUrl,
+      startedAt,
+      timeoutMs,
+      timedOut: false,
+    });
+    if (latest.ready) {
+      return latest;
+    }
+
+    if (Date.now() - startedAt >= timeoutMs) {
+      return {
+        ...latest,
+        timedOut: true,
+        elapsedMs: Date.now() - startedAt,
+      };
+    }
+
+    await delay(Math.min(pollIntervalMs, timeoutMs - (Date.now() - startedAt)));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -534,12 +617,183 @@ function isGlkvmTab(tab: chrome.tabs.Tab): boolean {
   return GLKVM_HASH_PATTERN.test(url) && title.includes(GLKVM_TITLE);
 }
 
+function isGlkvmPageReady(tab: chrome.tabs.Tab): boolean {
+  return tab.status === "complete" && isGlkvmTab(tab);
+}
+
 function toGlkvmTabInfo(tab: chrome.tabs.Tab, tabId: number): GlkvmTabInfo {
   return {
     tabId,
     title: tab.title ?? "",
     url: tab.url ?? "",
   };
+}
+
+async function checkOpenAttachReadiness(
+  tabId: number,
+  options: {
+    readonly fallbackUrl?: string;
+    readonly startedAt: number;
+    readonly timeoutMs: number;
+    readonly timedOut: boolean;
+  },
+): Promise<GlkvmOpenAttachReadinessResult> {
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return buildReadinessResult({
+      tabId,
+      tab: { tabId, title: "", url: options.fallbackUrl ?? "" },
+      video: null,
+      readiness: {
+        pagePresent: false,
+        videoVisible: false,
+        firstFrameAvailable: false,
+        reason: "tab_not_found",
+      },
+      ready: false,
+      timedOut: options.timedOut,
+      startedAt: options.startedAt,
+      timeoutMs: options.timeoutMs,
+    });
+  }
+
+  const tabInfo = {
+    ...toGlkvmTabInfo(tab, tabId),
+    url: tab.url ?? tab.pendingUrl ?? options.fallbackUrl ?? "",
+  };
+
+  if (!isGlkvmPageReady(tab)) {
+    return buildReadinessResult({
+      tabId,
+      tab: tabInfo,
+      video: null,
+      readiness: {
+        pagePresent: false,
+        videoVisible: false,
+        firstFrameAvailable: false,
+        reason: "page_loading",
+      },
+      ready: false,
+      timedOut: options.timedOut,
+      startedAt: options.startedAt,
+      timeoutMs: options.timeoutMs,
+    });
+  }
+
+  let video: GlkvmVideoMetadata | null = null;
+  try {
+    video = await getVideoMetadata(tabId);
+  } catch {
+    return buildReadinessResult({
+      tabId,
+      tab: tabInfo,
+      video: null,
+      readiness: {
+        pagePresent: true,
+        videoVisible: false,
+        firstFrameAvailable: false,
+        reason: "video_hidden",
+      },
+      ready: false,
+      timedOut: options.timedOut,
+      startedAt: options.startedAt,
+      timeoutMs: options.timeoutMs,
+    });
+  }
+
+  const videoVisible =
+    video.visible && video.displayRect.width > 0 && video.displayRect.height > 0;
+  if (!videoVisible) {
+    return buildReadinessResult({
+      tabId,
+      tab: tabInfo,
+      video,
+      readiness: {
+        pagePresent: true,
+        videoVisible: false,
+        firstFrameAvailable: false,
+        reason: "video_hidden",
+      },
+      ready: false,
+      timedOut: options.timedOut,
+      startedAt: options.startedAt,
+      timeoutMs: options.timeoutMs,
+    });
+  }
+
+  if (video.videoWidth <= 0 || video.videoHeight <= 0) {
+    return buildReadinessResult({
+      tabId,
+      tab: tabInfo,
+      video,
+      readiness: {
+        pagePresent: true,
+        videoVisible: true,
+        firstFrameAvailable: false,
+        reason: "frame_dimensions_unavailable",
+      },
+      ready: false,
+      timedOut: options.timedOut,
+      startedAt: options.startedAt,
+      timeoutMs: options.timeoutMs,
+    });
+  }
+
+  return buildReadinessResult({
+    tabId,
+    tab: tabInfo,
+    video,
+    readiness: {
+      pagePresent: true,
+      videoVisible: true,
+      firstFrameAvailable: true,
+      reason: "frame_ready",
+    },
+    ready: true,
+    timedOut: options.timedOut,
+    startedAt: options.startedAt,
+    timeoutMs: options.timeoutMs,
+  });
+}
+
+function buildReadinessResult(details: {
+  readonly tabId: number;
+  readonly tab: GlkvmTabInfo;
+  readonly video: GlkvmVideoMetadata | null;
+  readonly readiness: GlkvmOpenAttachReadinessStatus;
+  readonly ready: boolean;
+  readonly timedOut: boolean;
+  readonly startedAt: number;
+  readonly timeoutMs: number;
+}): GlkvmOpenAttachReadinessResult {
+  return {
+    ready: details.ready,
+    timedOut: details.timedOut,
+    tabId: details.tabId,
+    tab: details.tab,
+    video: details.video,
+    readiness: details.readiness,
+    elapsedMs: Math.max(0, Date.now() - details.startedAt),
+    timeoutMs: details.timeoutMs,
+  };
+}
+
+function normalizeDuration(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getGlkvmTargetDiagnostics(

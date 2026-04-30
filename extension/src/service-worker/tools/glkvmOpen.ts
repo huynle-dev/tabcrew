@@ -1,4 +1,5 @@
 import type { ToolContext, ToolHandler, ToolResult } from "../../types/messages.js";
+import { waitForGlkvmOpenAttachReadiness } from "../glkvmTab.js";
 import { tabGroupManager } from "../tabGroups.js";
 
 function json(success: boolean, value: Record<string, unknown>): ToolResult {
@@ -17,6 +18,18 @@ function normalizeGlkvmUrl(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function normalizeDurationArg(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function buildReadinessStatus(readiness: Awaited<ReturnType<typeof waitForGlkvmOpenAttachReadiness>>) {
+  return {
+    glkvm: readiness.readiness.pagePresent,
+    owned: true,
+    readiness: readiness.readiness,
+  };
 }
 
 export class GlkvmOpenTool implements ToolHandler {
@@ -62,18 +75,32 @@ export class GlkvmOpenTool implements ToolHandler {
         });
       }
 
+      const readiness = await waitForGlkvmOpenAttachReadiness(tab.id, {
+        timeoutMs: normalizeDurationArg(args.timeout),
+        pollIntervalMs: normalizeDurationArg(args.pollInterval),
+        fallbackUrl: url,
+      });
+
+      if (!readiness.ready) {
+        return json(false, {
+          errorType: "glkvm_not_ready_timeout",
+          error: `GLKVM tab ${tab.id} did not become ready before timeout.`,
+          tabId: tab.id,
+          groupId,
+          tab: readiness.tab,
+          video: readiness.video,
+          status: buildReadinessStatus(readiness),
+          timeoutMs: readiness.timeoutMs,
+          elapsedMs: readiness.elapsedMs,
+        });
+      }
+
       return json(true, {
         tabId: tab.id,
         groupId,
-        tab: {
-          tabId: tab.id,
-          title: tab.title ?? "",
-          url: tab.url ?? tab.pendingUrl ?? url,
-        },
-        status: {
-          glkvm: true,
-          owned: true,
-        },
+        tab: readiness.tab,
+        video: readiness.video,
+        status: buildReadinessStatus(readiness),
       });
     } catch (error) {
       return json(false, {
