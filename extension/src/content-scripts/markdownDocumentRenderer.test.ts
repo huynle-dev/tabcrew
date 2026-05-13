@@ -22,6 +22,7 @@ import {
   renderFileTreeEntry,
   shouldRenderFileBrowserShell,
   parseDirectoryListing,
+  routeFileBrowserPreview,
   shouldPreviewFileBrowserEntry,
   shouldRenderMarkdownDocument,
   updateDocumentPreviewContainer,
@@ -124,6 +125,25 @@ describe("markdown document renderer", () => {
     expect(classifyFileBrowserFile("file:///Users/me/project/program.bin")).toBe("binary");
   });
 
+  it("routes every general file browser preview type to the expected renderer", () => {
+    const cases = [
+      ["README.md", "", "markdown"],
+      ["notes.txt", "", "text"],
+      ["src/app.ts", "", "text"],
+      ["photo.png", "", "image"],
+      ["movie.mp4", "", "video"],
+      ["song.mp3", "", "audio"],
+      ["manual.pdf", "", "pdf"],
+      ["deck.pptx", "", "fallback"],
+      ["archive.tar.gz", "", "fallback"],
+      ["unknown.custom", "", "fallback"],
+    ] as const;
+
+    for (const [name, contentType, route] of cases) {
+      expect(routeFileBrowserPreview(`file:///Users/me/project/${name}`, contentType)).toBe(route);
+    }
+  });
+
   it("uses MIME types when file names do not identify a preview type", () => {
     expect(classifyFileBrowserFile("file:///Users/me/project/download", "image/png")).toBe("image");
     expect(classifyFileBrowserFile("file:///Users/me/project/download", "video/webm; codecs=vp9")).toBe("video");
@@ -166,6 +186,19 @@ describe("markdown document renderer", () => {
     expect(model.outline).toEqual([]);
   });
 
+  it("escapes text previews without treating code-like text as markup", () => {
+    const model = createFileBrowserPreviewModel(
+      "file:///Users/me/project/src/template.ts",
+      "const html = `<img src=x onerror=alert(1)> & ${value}`;",
+    );
+
+    expect(model.route).toBe("text");
+    expect(model.source).toContain("<img src=x onerror=alert(1)>");
+    expect(model.html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(model.html).toContain("&amp;");
+    expect(model.html).not.toContain("<img src=x");
+  });
+
   it("routes media and PDF files through media preview paths", () => {
     expect(createFileBrowserPreviewModel("file:///Users/me/project/photo.png", "").route).toBe("image");
     expect(createFileBrowserPreviewModel("file:///Users/me/project/movie.mp4", "").route).toBe("video");
@@ -177,6 +210,23 @@ describe("markdown document renderer", () => {
     expect(createFileBrowserPreviewModel("file:///Users/me/project/deck.pptx", "").route).toBe("fallback");
     expect(createFileBrowserPreviewModel("file:///Users/me/project/program.bin", "").route).toBe("fallback");
     expect(createFileBrowserPreviewModel("file:///Users/me/project/archive.zip", "").route).toBe("fallback");
+  });
+
+  it("renders unsupported, binary, archive, and unknown files with safe fallback copy", () => {
+    const binaryModel = createFileBrowserPreviewModel("file:///Users/me/project/program.bin", "binary contents");
+    const archiveModel = createFileBrowserPreviewModel("file:///Users/me/project/archive.zip", "zip contents");
+    const unknownModel = createFileBrowserPreviewModel("file:///Users/me/project/unknown.custom", "unknown contents");
+
+    for (const model of [binaryModel, archiveModel, unknownModel]) {
+      expect(model.route).toBe("fallback");
+      expect(model.source).toBe("");
+      expect(model.outline).toEqual([]);
+      expect(model.html).toContain("chromeuse-markdown-fallback-preview");
+      expect(model.html).toContain("Open file in browser");
+    }
+    expect(binaryModel.html).toContain("Preview is not available for binary files.");
+    expect(archiveModel.html).toContain("Preview is not available for archive files.");
+    expect(unknownModel.html).toContain("Preview is not available for binary files.");
   });
 
   it("documents Office previews as fallback-only to keep parser dependencies out of the content-script bundle", () => {
