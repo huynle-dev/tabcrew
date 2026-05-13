@@ -96,6 +96,8 @@ const FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES = new Set([
   "application/octet-stream",
   "application/zip",
 ]);
+const LOCAL_FILE_ACCESS_GUIDANCE =
+  "Allow access to file URLs for the ChromeUse extension in Chrome's extension settings, then reload this file preview.";
 const FILE_BROWSER_COMPOUND_FILE_TYPES = new Map<string, FileBrowserFileType>([
   ["dockerfile", "text"],
   ["makefile", "text"],
@@ -308,12 +310,35 @@ function renderFileBrowserPreviewHtml(
       return `<iframe class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-pdf" src="${safeUrl}" title="${safeTitle}"></iframe>`;
     case "fallback":
       if (fileType === "office") {
-        return `<div class="chromeuse-markdown-fallback-preview">Office previews are fallback-only for now. mammoth/xlsx are not bundled into this always-injected content script; open the file directly to view it.</div>`;
+        return `<div class="chromeuse-markdown-fallback-preview"><h1>Office preview unavailable</h1><p>Office previews are fallback-only for now. Native rendering is not available for this Office format in ChromeUse.</p><p>mammoth/xlsx are not bundled into this always-injected content script. Open the file in the browser or an external Office-compatible application to view it.</p><p><a class="chromeuse-markdown-error-action" href="${safeUrl}">Open file in browser</a></p></div>`;
       }
-      return `<div class="chromeuse-markdown-fallback-preview">Preview is not available for ${escapeHtml(fileType)} files. Open the file directly to view it.</div>`;
+      return `<div class="chromeuse-markdown-fallback-preview"><h1>Preview unavailable</h1><p>Preview is not available for ${escapeHtml(fileType)} files.</p><p><a class="chromeuse-markdown-error-action" href="${safeUrl}">Open file in browser</a></p></div>`;
     case "markdown":
       return renderMarkdown(source);
   }
+}
+
+function createFileBrowserErrorModel(url: string, error: unknown): DocumentPreviewModel {
+  const message = errorMessage(error) || "Unable to load preview";
+  return {
+    title: titleFromUrl(url),
+    source: message,
+    html: renderFileBrowserErrorHtml(url, message),
+    outline: [],
+  };
+}
+
+function renderFileBrowserErrorHtml(url: string, message: string): string {
+  const openFileLink = isFileUrl(url)
+    ? `<p><a class="chromeuse-markdown-error-action" href="${escapeHtmlAttribute(url)}">Open file in browser</a></p>`
+    : "";
+  return `<div class="chromeuse-markdown-error-preview"><h1>Preview unavailable</h1><p>${escapeHtml(message)}</p>${openFileLink}</div>`;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return error == null ? "" : String(error);
 }
 
 function escapeHtml(value: string): string {
@@ -1218,6 +1243,7 @@ function createStyle(doc: Document): HTMLStyleElement {
       background: #ffffff;
     }
 
+    .chromeuse-markdown-error-preview,
     .chromeuse-markdown-fallback-preview {
       max-width: 760px;
       margin: 0 auto;
@@ -1227,6 +1253,24 @@ function createStyle(doc: Document): HTMLStyleElement {
       background: #fff7f7;
       color: #713f3f;
       font-size: 17px;
+    }
+
+    .chromeuse-markdown-error-preview h1,
+    .chromeuse-markdown-fallback-preview h1 {
+      margin: 0 0 16px;
+      color: #7f1d1d;
+      text-align: left;
+    }
+
+    .chromeuse-markdown-error-action {
+      display: inline-flex;
+      margin-top: 8px;
+      border-radius: 10px;
+      padding: 9px 13px;
+      background: #fee2e2;
+      color: #991b1b;
+      font-weight: 800;
+      text-decoration: none;
     }
 
     .chromeuse-markdown-top-left,
@@ -1491,7 +1535,8 @@ async function fetchTextUrl(url: string, options: FetchTextUrlOptions): Promise<
     if (extensionFetchError) {
       const extensionMessage = extensionFetchError instanceof Error ? extensionFetchError.message : String(extensionFetchError);
       const pageMessage = error instanceof Error ? error.message : String(error);
-      throw new Error(`${options.failureMessage}: extension fetch failed (${extensionMessage}); page fetch failed (${pageMessage})`);
+      const message = `${options.failureMessage}: extension fetch failed (${extensionMessage}); page fetch failed (${pageMessage})`;
+      throw new Error(isFileUrl(url) ? `${message}. ${LOCAL_FILE_ACCESS_GUIDANCE}` : message);
     }
     throw error;
   }
@@ -1548,9 +1593,14 @@ export async function handleFileTreeFileClick<TModel extends DocumentPreviewMode
 
   event.preventDefault();
   const route = routeFileBrowserPreview(entry.url);
-  const source = route === "markdown" || route === "text" ? await fetchFilePreviewSource(entry.url) : "";
-  const model = selection.renderer.createModel(entry.url, source);
-  updateDocumentPreviewContainer(doc, selection.renderer, selection.preview, model);
+  try {
+    const source = route === "markdown" || route === "text" ? await fetchFilePreviewSource(entry.url) : "";
+    const model = selection.renderer.createModel(entry.url, source);
+    updateDocumentPreviewContainer(doc, selection.renderer, selection.preview, model);
+  } catch (error) {
+    const model = createFileBrowserErrorModel(entry.url, error);
+    updateDocumentPreviewContainer(doc, { shouldRender: () => true, createModel: () => model }, selection.preview, model);
+  }
   navigationList.dataset.activeUrl = entry.url;
   navigationList.querySelectorAll("li.active").forEach((activeItem) => activeItem.classList.remove("active"));
   item.classList.add("active");
@@ -1652,7 +1702,16 @@ async function loadFileTreeDirectory<TModel extends DocumentPreviewModel>(
     const activeUrl = navigationList.dataset.activeUrl ?? currentUrl;
     for (const entry of entries) list.appendChild(renderFileTreeEntry(doc, entry, activeUrl, navigationList, selection));
   } catch (error) {
-    list.textContent = error instanceof Error ? error.message : "Unable to load files";
+    const message = error instanceof Error ? error.message : "Unable to load files";
+    const container = doc.createElement("div");
+    container.className = "chromeuse-markdown-file-tree-error";
+    const text = doc.createElement("p");
+    text.textContent = message;
+    const action = doc.createElement("a");
+    action.href = directoryUrl;
+    action.textContent = "Open folder in browser";
+    container.append(text, action);
+    list.replaceChildren(container);
   }
 }
 
