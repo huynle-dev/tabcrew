@@ -162,7 +162,9 @@ describe("markdown document renderer", () => {
   it("parses Chrome file directory listings into files and folders", () => {
     const listing = `
       <script>
+        addRow("archive.zip", "archive.zip", 0, "1 KB", "today");
         addRow("guide.md", "guide.md", 0, "1 KB", "today");
+        addRow("image.png", "image.png", 0, "1 KB", "today");
         addRow("notes.txt", "notes.txt", 0, "1 KB", "today");
         addRow("specs", "specs/", 1, "", "today");
       </script>
@@ -170,9 +172,11 @@ describe("markdown document renderer", () => {
 
     const entries: FileBrowserEntry[] = parseDirectoryListing(listing, "file:///Users/me/project/docs/");
 
-    expect(entries).toEqual([
+    expect(entries.map(toEntryIdentity)).toEqual([
       { name: "specs", url: "file:///Users/me/project/docs/specs/", type: "directory" },
+      { name: "archive.zip", url: "file:///Users/me/project/docs/archive.zip", type: "file" },
       { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
+      { name: "image.png", url: "file:///Users/me/project/docs/image.png", type: "file" },
       { name: "notes.txt", url: "file:///Users/me/project/docs/notes.txt", type: "file" },
     ]);
   });
@@ -195,14 +199,18 @@ describe("markdown document renderer", () => {
     );
 
     const listing = `
+      <a href="archive.zip">archive.zip</a>
       <a href="guide.md">guide.md</a>
+      <a href="image.png">image.png</a>
       <a href="notes.txt">notes.txt</a>
       <a href="specs/">specs/</a>
     `;
 
     expect(parseDirectoryListing(listing, "file:///Users/me/project/docs/")).toEqual([
       { name: "specs", url: "file:///Users/me/project/docs/specs/", type: "directory" },
+      { name: "archive.zip", url: "file:///Users/me/project/docs/archive.zip", type: "file" },
       { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
+      { name: "image.png", url: "file:///Users/me/project/docs/image.png", type: "file" },
       { name: "notes.txt", url: "file:///Users/me/project/docs/notes.txt", type: "file" },
     ]);
   });
@@ -227,7 +235,7 @@ describe("markdown document renderer", () => {
       </script>
     `;
 
-    expect(buildFileTreeEntries(listing, "file:///Users/me/project/docs/sub/", false)).toEqual([
+    expect(buildFileTreeEntries(listing, "file:///Users/me/project/docs/sub/", false).map(toEntryIdentity)).toEqual([
       { name: "child", url: "file:///Users/me/project/docs/sub/child/", type: "directory" },
       { name: "README.md", url: "file:///Users/me/project/docs/sub/README.md", type: "file" },
     ]);
@@ -346,4 +354,8 @@ function createTestDocument(): { body: TestElement; title: string; createElement
     title: "",
     createElement: (tagName: string) => new TestElement(tagName.toLowerCase()),
   };
+}
+
+function toEntryIdentity(entry: FileBrowserEntry): FileBrowserEntry {
+  return { name: entry.name, url: entry.url, type: entry.type };
 }
