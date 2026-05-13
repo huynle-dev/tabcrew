@@ -166,7 +166,7 @@ describe("markdown document renderer", () => {
     expect(getParentDirectoryUrl("https://example.com/docs/README.md")).toBeNull();
   });
 
-  it("maps folders and common file types to Devicon assets", () => {
+  it("maps folders and common file types to Devicon and fallback assets", () => {
     expect(getFileTreeIconPath({ name: "docs", url: "file:///Users/me/project/docs/", type: "directory" })).toBe(
       "assets/devicons/folder.svg",
     );
@@ -178,6 +178,24 @@ describe("markdown document renderer", () => {
     );
     expect(getFileTreeIconPath({ name: "app.tsx", url: "file:///Users/me/project/app.tsx", type: "file" })).toBe(
       "assets/devicons/react.svg",
+    );
+    expect(getFileTreeIconPath({ name: "photo.png", url: "file:///Users/me/project/photo.png", type: "file" })).toBe(
+      "assets/devicons/image.svg",
+    );
+    expect(getFileTreeIconPath({ name: "movie.mp4", url: "file:///Users/me/project/movie.mp4", type: "file" })).toBe(
+      "assets/devicons/video.svg",
+    );
+    expect(getFileTreeIconPath({ name: "song.mp3", url: "file:///Users/me/project/song.mp3", type: "file" })).toBe(
+      "assets/devicons/audio.svg",
+    );
+    expect(getFileTreeIconPath({ name: "manual.pdf", url: "file:///Users/me/project/manual.pdf", type: "file" })).toBe(
+      "assets/devicons/pdf.svg",
+    );
+    expect(getFileTreeIconPath({ name: "deck.pptx", url: "file:///Users/me/project/deck.pptx", type: "file" })).toBe(
+      "assets/devicons/office.svg",
+    );
+    expect(getFileTreeIconPath({ name: "archive.tar.gz", url: "file:///Users/me/project/archive.tar.gz", type: "file" })).toBe(
+      "assets/devicons/archive.svg",
     );
     expect(getFileTreeIconPath({ name: "unknown.lock", url: "file:///Users/me/project/unknown.lock", type: "file" })).toBe(
       "assets/devicons/file.svg",

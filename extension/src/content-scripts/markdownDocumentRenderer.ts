@@ -507,6 +507,47 @@ export function getFileTreeIconPath(entry: FileBrowserEntry): string {
       return "assets/devicons/go.svg";
     case "rs":
       return "assets/devicons/rust.svg";
+    case "bmp":
+    case "gif":
+    case "heic":
+    case "jpeg":
+    case "jpg":
+    case "png":
+    case "svg":
+    case "webp":
+      return "assets/devicons/image.svg";
+    case "avi":
+    case "mov":
+    case "mp4":
+    case "webm":
+      return "assets/devicons/video.svg";
+    case "aac":
+    case "flac":
+    case "m4a":
+    case "mp3":
+    case "ogg":
+    case "wav":
+      return "assets/devicons/audio.svg";
+    case "pdf":
+      return "assets/devicons/pdf.svg";
+    case "doc":
+    case "docx":
+    case "odp":
+    case "ods":
+    case "odt":
+    case "ppt":
+    case "pptx":
+    case "rtf":
+    case "xls":
+    case "xlsx":
+      return "assets/devicons/office.svg";
+    case "7z":
+    case "bz2":
+    case "gz":
+    case "rar":
+    case "tar":
+    case "zip":
+      return "assets/devicons/archive.svg";
     default:
       return "assets/devicons/file.svg";
   }
