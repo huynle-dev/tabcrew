@@ -205,7 +205,6 @@ function parseAnchorDirectoryListing(html: string, currentHref: string): Markdow
 
       if (url.protocol !== "file:" || url.href === currentHref) return null;
       const isDirectory = url.pathname.endsWith("/");
-      if (!isDirectory && !isMarkdownFileUrl(url.href)) return null;
 
       const name = anchor.textContent?.trim().replace(/\/$/, "") || titleFromUrl(url.href);
       if (!name || name === "..") return null;
@@ -230,7 +229,7 @@ function parseChromeDirectoryListing(html: string, currentHref: string): Markdow
       }
 
       const isDirectory = rawType === "1";
-      if (url.protocol !== "file:" || (!isDirectory && !isMarkdownFileUrl(url.href))) return null;
+      if (url.protocol !== "file:") return null;
       if (isDirectory && !url.pathname.endsWith("/")) url.pathname += "/";
       return { name, url: url.href, type: isDirectory ? "directory" : "file" };
     })

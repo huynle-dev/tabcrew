@@ -112,7 +112,7 @@ describe("markdown document renderer", () => {
     );
   });
 
-  it("parses Chrome file directory listings into markdown files and folders", () => {
+  it("parses Chrome file directory listings into files and folders", () => {
     const listing = `
       <script>
         addRow("guide.md", "guide.md", 0, "1 KB", "today");
@@ -124,6 +124,37 @@ describe("markdown document renderer", () => {
     expect(parseDirectoryListing(listing, "file:///Users/me/project/docs/")).toEqual([
       { name: "specs", url: "file:///Users/me/project/docs/specs/", type: "directory" },
       { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
+      { name: "notes.txt", url: "file:///Users/me/project/docs/notes.txt", type: "file" },
+    ]);
+  });
+
+  it("parses anchor directory listings into files and folders", () => {
+    vi.stubGlobal(
+      "DOMParser",
+      class {
+        parseFromString(html: string) {
+          const anchors = Array.from(html.matchAll(/<a\s+href="([^"]*)">([^<]*)<\/a>/g)).map(([, href, text]) => ({
+            getAttribute: (name: string) => (name === "href" ? href : null),
+            textContent: text,
+          }));
+
+          return {
+            querySelectorAll: (selector: string) => (selector === "a[href]" ? anchors : []),
+          };
+        }
+      },
+    );
+
+    const listing = `
+      <a href="guide.md">guide.md</a>
+      <a href="notes.txt">notes.txt</a>
+      <a href="specs/">specs/</a>
+    `;
+
+    expect(parseDirectoryListing(listing, "file:///Users/me/project/docs/")).toEqual([
+      { name: "specs", url: "file:///Users/me/project/docs/specs/", type: "directory" },
+      { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
+      { name: "notes.txt", url: "file:///Users/me/project/docs/notes.txt", type: "file" },
     ]);
   });
 
