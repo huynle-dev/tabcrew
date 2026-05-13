@@ -4,6 +4,7 @@ import {
   addParentDirectoryEntry,
   buildFileTreeEntries,
   classifyFileBrowserFile,
+  createFileBrowserPreviewModel,
   createMarkdownDocumentModel,
   createDocumentPreviewContainer,
   extractMarkdownHeadings,
@@ -14,6 +15,7 @@ import {
   limitPreviewSource,
   MAX_TEXT_PREVIEW_CHARACTERS,
   markdownDocumentRenderer,
+  renderFileTreeEntry,
   shouldRenderFileBrowserShell,
   parseDirectoryListing,
   shouldPreviewFileBrowserEntry,
@@ -94,6 +96,44 @@ describe("markdown document renderer", () => {
     expect(model.outline).toBe(model.headings);
   });
 
+  it("routes markdown files through the markdown preview path", () => {
+    const model = createFileBrowserPreviewModel("file:///Users/me/project/README.md", "# Title");
+
+    expect(model.route).toBe("markdown");
+    expect(model.fileType).toBe("markdown");
+    expect(model.html).toContain("<h1>Title</h1>");
+    expect(model.outline).toEqual([{ level: 1, text: "Title", id: "title" }]);
+  });
+
+  it("routes text and code files through the text preview path", () => {
+    const model = createFileBrowserPreviewModel("file:///Users/me/project/src/app.ts", "const answer = 42;");
+
+    expect(model.route).toBe("text");
+    expect(model.fileType).toBe("text");
+    expect(model.html).toContain("chromeuse-markdown-text-preview");
+    expect(model.html).toContain("const answer = 42;");
+    expect(model.outline).toEqual([]);
+  });
+
+  it("routes media and PDF files through media preview paths", () => {
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/photo.png", "").route).toBe("image");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/movie.mp4", "").route).toBe("video");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/song.mp3", "").route).toBe("audio");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/manual.pdf", "").route).toBe("pdf");
+  });
+
+  it("routes unsupported, binary, and archive files through the fallback path", () => {
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/deck.pptx", "").route).toBe("fallback");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/program.bin", "").route).toBe("fallback");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/archive.zip", "").route).toBe("fallback");
+  });
+
+  it("keeps the TOC markdown-only by returning empty outlines for non-markdown previews", () => {
+    for (const name of ["notes.txt", "photo.png", "movie.mp4", "song.mp3", "manual.pdf", "archive.zip"]) {
+      expect(createFileBrowserPreviewModel(`file:///Users/me/project/${name}`, "# Not a markdown heading").outline).toEqual([]);
+    }
+  });
+
   it("truncates oversized text previews with an explicit fallback message", () => {
     const oversizedSource = `${"a".repeat(MAX_TEXT_PREVIEW_CHARACTERS)}tail`;
 
@@ -121,8 +161,8 @@ describe("markdown document renderer", () => {
 
   it("updates the preview container without replacing the main shell", () => {
     const doc = createTestDocument();
-    const initialModel = createMarkdownDocumentModel("file:///Users/me/README.md", "# Readme\n\nHello");
-    const nextModel = createMarkdownDocumentModel("file:///Users/me/guide.md", "# Guide\n\n## Steps\n\nUpdated");
+    const initialModel = createFileBrowserPreviewModel("file:///Users/me/README.md", "# Readme\n\nHello");
+    const nextModel = createFileBrowserPreviewModel("file:///Users/me/guide.md", "# Guide\n\n## Steps\n\nUpdated");
     const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
     const shell = doc.createElement("main");
 
@@ -202,13 +242,14 @@ describe("markdown document renderer", () => {
     );
   });
 
-  it("identifies only supported file entries as previewable", () => {
+  it("identifies all file entries as previewable through router or fallback paths", () => {
     expect(shouldPreviewFileBrowserEntry({ name: "README.md", url: "file:///Users/me/project/README.md", type: "file" })).toBe(
       true,
     );
     expect(shouldPreviewFileBrowserEntry({ name: "app.ts", url: "file:///Users/me/project/app.ts", type: "file" })).toBe(true);
-    expect(shouldPreviewFileBrowserEntry({ name: "image.png", url: "file:///Users/me/project/image.png", type: "file" })).toBe(
-      false,
+    expect(shouldPreviewFileBrowserEntry({ name: "image.png", url: "file:///Users/me/project/image.png", type: "file" })).toBe(true);
+    expect(shouldPreviewFileBrowserEntry({ name: "archive.zip", url: "file:///Users/me/project/archive.zip", type: "file" })).toBe(
+      true,
     );
     expect(shouldPreviewFileBrowserEntry({ name: "docs", url: "file:///Users/me/project/docs/", type: "directory" })).toBe(
       false,
@@ -251,11 +292,13 @@ describe("markdown document renderer", () => {
     expect(item.classList.contains("active")).toBe(true);
   });
 
-  it("leaves unsupported sidebar file clicks available for normal navigation", async () => {
+  it("intercepts unsupported sidebar file clicks and shows a fallback preview", async () => {
     const doc = createTestDocument();
     const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
     const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
     const preventDefault = vi.fn();
+    const sendMessage = vi.fn();
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
 
     const handled = await handleFileTreeFileClick(
       { preventDefault },
@@ -266,9 +309,105 @@ describe("markdown document renderer", () => {
       { renderer: markdownDocumentRenderer, preview },
     );
 
+    expect(handled).toBe(true);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(preview.title.textContent).toBe("archive.zip");
+    expect(preview.content.innerHTML).toContain("chromeuse-markdown-fallback-preview");
+  });
+
+  it("leaves directory entries available for expand/collapse instead of preview interception", async () => {
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const preventDefault = vi.fn();
+
+    const handled = await handleFileTreeFileClick(
+      { preventDefault },
+      doc as unknown as Document,
+      { name: "docs", url: "file:///Users/me/project/docs/", type: "directory" },
+      new TestElement("li") as unknown as HTMLElement,
+      new TestElement("ul") as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    );
+
     expect(handled).toBe(false);
     expect(preventDefault).not.toHaveBeenCalled();
     expect(preview.title.textContent).toBe("README.md");
+  });
+
+  it("preserves folder row expand/collapse behavior when file preview routing is enabled", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      html: '<script>addRow("guide.md", "guide.md", 0, "1 KB", "today");</script>',
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const navigationList = new TestElement("ul");
+    const item = renderFileTreeEntry(
+      doc as unknown as Document,
+      { name: "docs", url: "file:///Users/me/project/docs/", type: "directory" },
+      "file:///Users/me/project/README.md",
+      navigationList as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    ) as unknown as TestElement;
+    const button = item.children[0];
+    const childList = item.children[1];
+
+    button.click();
+    await waitForMicrotasks();
+
+    expect(item.classList.contains("expanded")).toBe(true);
+    expect(childList.hidden).toBe(false);
+    expect(childList.dataset.loaded).toBe("true");
+    expect(childList.children).toHaveLength(1);
+    expect(childList.children[0].textContent).toContain("guide.md");
+    expect(preview.title.textContent).toBe("README.md");
+    expect(sendMessage).toHaveBeenCalledWith({
+      action: "chromeuse_fetch_directory_listing",
+      url: "file:///Users/me/project/docs/",
+    });
+
+    button.click();
+    await waitForMicrotasks();
+
+    expect(item.classList.contains("expanded")).toBe(false);
+    expect(childList.hidden).toBe(true);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves parent directory navigation by replacing the root tree", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      html: '<script>addRow("README.md", "README.md", 0, "1 KB", "today");</script>',
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/docs/guide.md", "# Guide");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const navigationList = new TestElement("ul");
+    navigationList.appendChild(new TestElement("li"));
+    const item = renderFileTreeEntry(
+      doc as unknown as Document,
+      { name: "..", url: "file:///Users/me/project/", type: "directory" },
+      "file:///Users/me/project/docs/guide.md",
+      navigationList as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    ) as unknown as TestElement;
+
+    item.children[0].click();
+    await waitForMicrotasks();
+
+    expect(navigationList.children).toHaveLength(2);
+    expect(navigationList.children[0].textContent).toContain("..");
+    expect(navigationList.children[1].textContent).toContain("README.md");
+    expect(preview.title.textContent).toBe("guide.md");
+    expect(sendMessage).toHaveBeenCalledWith({
+      action: "chromeuse_fetch_directory_listing",
+      url: "file:///Users/me/project/",
+    });
   });
 
   it("parses Chrome file directory listings into files and folders", () => {
@@ -415,6 +554,7 @@ class TestElement {
   readonly children: TestElement[] = [];
   readonly dataset: Record<string, string> = {};
   readonly style: Record<string, string> = {};
+  private readonly listeners: Record<string, ((event: { preventDefault: () => void }) => void)[]> = {};
   className = "";
   hidden = false;
   href = "";
@@ -465,6 +605,16 @@ class TestElement {
   appendChild(child: TestElement): TestElement {
     this.children.push(child);
     return child;
+  }
+
+  addEventListener(type: string, listener: (event: { preventDefault: () => void }) => void): void {
+    this.listeners[type] ??= [];
+    this.listeners[type].push(listener);
+  }
+
+  click(): void {
+    const event = { preventDefault: vi.fn() };
+    for (const listener of this.listeners.click ?? []) listener(event);
   }
 
   replaceChildren(...children: TestElement[]): void {
@@ -534,4 +684,9 @@ function createTestDocument(): { body: TestElement; title: string; createElement
 
 function toEntryIdentity(entry: FileBrowserEntry): FileBrowserEntry {
   return { name: entry.name, url: entry.url, type: entry.type };
+}
+
+async function waitForMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }

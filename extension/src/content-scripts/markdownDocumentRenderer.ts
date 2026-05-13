@@ -27,6 +27,8 @@ export type FileBrowserFileType =
   | "archive"
   | "binary";
 
+export type FileBrowserPreviewRoute = "markdown" | "text" | "image" | "video" | "audio" | "pdf" | "fallback";
+
 export interface DocumentOutlineEntry {
   readonly level: 1 | 2 | 3;
   readonly text: string;
@@ -47,13 +49,18 @@ export interface DocumentPreviewContainer {
   readonly tocPanel: HTMLElement | null;
 }
 
-interface FilePreviewSelection<TModel extends DocumentPreviewModel = DocumentPreviewModel> {
+export interface FilePreviewSelection<TModel extends DocumentPreviewModel = DocumentPreviewModel> {
   readonly renderer: DocumentPreviewRenderer<TModel>;
   readonly preview: DocumentPreviewContainer;
 }
 
 export interface MarkdownDocumentModel extends DocumentPreviewModel {
   readonly headings: readonly MarkdownHeading[];
+}
+
+export interface FileBrowserPreviewModel extends MarkdownDocumentModel {
+  readonly fileType: FileBrowserFileType;
+  readonly route: FileBrowserPreviewRoute;
 }
 
 export type MarkdownHeading = DocumentOutlineEntry;
@@ -234,6 +241,44 @@ export function createMarkdownDocumentModel(url: string, source: string): Markdo
   };
 }
 
+export function routeFileBrowserPreview(urlOrName: string, contentType = ""): FileBrowserPreviewRoute {
+  const fileType = classifyFileBrowserFile(urlOrName, contentType);
+  switch (fileType) {
+    case "markdown":
+      return "markdown";
+    case "text":
+      return "text";
+    case "image":
+    case "video":
+    case "audio":
+    case "pdf":
+      return fileType;
+    case "office":
+    case "archive":
+    case "binary":
+      return "fallback";
+  }
+}
+
+export function createFileBrowserPreviewModel(url: string, source: string, contentType = ""): FileBrowserPreviewModel {
+  const fileType = classifyFileBrowserFile(url, contentType);
+  const route = routeFileBrowserPreview(url, contentType);
+  if (route === "markdown") {
+    return { ...createMarkdownDocumentModel(url, source), fileType, route };
+  }
+
+  const previewSource = route === "text" ? limitPreviewSource(source) : "";
+  return {
+    title: titleFromUrl(url),
+    source: previewSource,
+    html: renderFileBrowserPreviewHtml(route, url, previewSource, fileType),
+    outline: [],
+    headings: [],
+    fileType,
+    route,
+  };
+}
+
 export function limitPreviewSource(source: string): string {
   if (source.length <= MAX_TEXT_PREVIEW_CHARACTERS) return source;
 
@@ -241,9 +286,48 @@ export function limitPreviewSource(source: string): string {
   return `${source.slice(0, MAX_TEXT_PREVIEW_CHARACTERS)}\n\n---\n\nPreview truncated: ${omittedCharacterCount.toLocaleString()} characters omitted. Open the file directly to view the full contents.`;
 }
 
-export const markdownDocumentRenderer: DocumentPreviewRenderer<MarkdownDocumentModel> = {
+function renderFileBrowserPreviewHtml(
+  route: FileBrowserPreviewRoute,
+  url: string,
+  source: string,
+  fileType: FileBrowserFileType,
+): string {
+  const safeUrl = escapeHtmlAttribute(url);
+  const safeTitle = escapeHtml(titleFromUrl(url));
+  switch (route) {
+    case "text":
+      return `<pre class="chromeuse-markdown-text-preview"><code>${escapeHtml(source)}</code></pre>`;
+    case "image":
+      return `<figure class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-image"><img src="${safeUrl}" alt="${safeTitle}" /></figure>`;
+    case "video":
+      return `<figure class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-video"><video src="${safeUrl}" controls></video></figure>`;
+    case "audio":
+      return `<figure class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-audio"><audio src="${safeUrl}" controls></audio></figure>`;
+    case "pdf":
+      return `<iframe class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-pdf" src="${safeUrl}" title="${safeTitle}"></iframe>`;
+    case "fallback":
+      return `<div class="chromeuse-markdown-fallback-preview">Preview is not available for ${escapeHtml(fileType)} files. Open the file directly to view it.</div>`;
+    case "markdown":
+      return renderMarkdown(source);
+  }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value).replace(/`/g, "&#96;");
+}
+
+export const markdownDocumentRenderer: DocumentPreviewRenderer<FileBrowserPreviewModel> = {
   shouldRender: (url, contentType) => shouldRenderMarkdownDocument(url, contentType) || shouldRenderFileBrowserShell(url, contentType),
-  createModel: createMarkdownDocumentModel,
+  createModel: createFileBrowserPreviewModel,
   renderContentEffects: (doc, _model, content) => renderMermaidDiagrams(doc, content),
 };
 
@@ -554,7 +638,7 @@ export function getFileTreeIconPath(entry: FileBrowserEntry): string {
 }
 
 export function shouldPreviewFileBrowserEntry(entry: FileBrowserEntry): boolean {
-  return entry.type === "file" && FILE_BROWSER_SUPPORTED_FILE_RE.test(entry.url);
+  return entry.type === "file";
 }
 
 function getFileTreeIconUrl(entry: FileBrowserEntry): string | null {
@@ -1347,7 +1431,8 @@ export async function handleFileTreeFileClick<TModel extends DocumentPreviewMode
   if (!selection || !shouldPreviewFileBrowserEntry(entry)) return false;
 
   event.preventDefault();
-  const source = await fetchFilePreviewSource(entry.url);
+  const route = routeFileBrowserPreview(entry.url);
+  const source = route === "markdown" || route === "text" ? await fetchFilePreviewSource(entry.url) : "";
   const model = selection.renderer.createModel(entry.url, source);
   updateDocumentPreviewContainer(doc, selection.renderer, selection.preview, model);
   navigationList.querySelectorAll("li.active").forEach((activeItem) => activeItem.classList.remove("active"));
@@ -1355,7 +1440,7 @@ export async function handleFileTreeFileClick<TModel extends DocumentPreviewMode
   return true;
 }
 
-function renderFileTreeEntry<TModel extends DocumentPreviewModel>(
+export function renderFileTreeEntry<TModel extends DocumentPreviewModel>(
   doc: Document,
   entry: FileBrowserEntry,
   currentUrl: string,
