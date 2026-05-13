@@ -1,16 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { FileBrowserEntry } from "./markdownDocumentRenderer.js";
 import {
   addParentDirectoryEntry,
   buildFileTreeEntries,
   createMarkdownDocumentModel,
+  createDocumentPreviewContainer,
   extractMarkdownHeadings,
   fetchDirectoryListing,
   getFileTreeIconPath,
   getParentDirectoryUrl,
+  limitPreviewSource,
+  MAX_TEXT_PREVIEW_CHARACTERS,
   markdownDocumentRenderer,
   shouldRenderFileBrowserShell,
   parseDirectoryListing,
   shouldRenderMarkdownDocument,
+  updateDocumentPreviewContainer,
 } from "./markdownDocumentRenderer.js";
 
 describe("markdown document renderer", () => {
@@ -40,7 +45,14 @@ describe("markdown document renderer", () => {
   it("recognizes supported local non-markdown files for the file browser shell", () => {
     expect(shouldRenderFileBrowserShell("file:///Users/me/project/src/app.ts", "text/plain")).toBe(true);
     expect(shouldRenderFileBrowserShell("file:///Users/me/project/package.json", "application/json")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/src/app.ts", "application/octet-stream")).toBe(false);
     expect(shouldRenderFileBrowserShell("file:///Users/me/project/archive.zip", "application/zip")).toBe(false);
+  });
+
+  it("rejects image and SVG file previews instead of rendering them inline", () => {
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/logo.svg", "image/svg+xml")).toBe(false);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/photo.png", "image/png")).toBe(false);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/icon.svg", "text/plain")).toBe(false);
   });
 
   it("creates a safe rendered markdown document model", () => {
@@ -57,6 +69,18 @@ describe("markdown document renderer", () => {
     expect(model.outline).toBe(model.headings);
   });
 
+  it("truncates oversized text previews with an explicit fallback message", () => {
+    const oversizedSource = `${"a".repeat(MAX_TEXT_PREVIEW_CHARACTERS)}tail`;
+
+    const limited = limitPreviewSource(oversizedSource);
+    const model = createMarkdownDocumentModel("file:///Users/me/project/large.ts", oversizedSource);
+
+    expect(limited).toContain("Preview truncated:");
+    expect(limited).not.toContain("tail");
+    expect(model.source).toBe(limited);
+    expect(model.html).toContain("Preview truncated:");
+  });
+
   it("exposes markdown rendering through a generic document renderer boundary", () => {
     expect(markdownDocumentRenderer.shouldRender("file:///Users/me/notes.md", "text/plain")).toBe(true);
     expect(markdownDocumentRenderer.shouldRender("file:///Users/me/project/docs/", "text/html")).toBe(true);
@@ -68,6 +92,29 @@ describe("markdown document renderer", () => {
     expect(model.html).toContain("<h1>Notes</h1>");
     expect(model.outline).toEqual([{ level: 1, text: "Notes", id: "notes" }]);
     expect(model.headings).toBe(model.outline);
+  });
+
+  it("updates the preview container without replacing the main shell", () => {
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/README.md", "# Readme\n\nHello");
+    const nextModel = createMarkdownDocumentModel("file:///Users/me/guide.md", "# Guide\n\n## Steps\n\nUpdated");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const shell = doc.createElement("main");
+
+    shell.append(preview.main as unknown as TestElement);
+    doc.body.append(preview.raw as unknown as TestElement, shell);
+    const originalMain = preview.main;
+
+    updateDocumentPreviewContainer(doc as unknown as Document, markdownDocumentRenderer, preview, nextModel);
+
+    expect(preview.main).toBe(originalMain);
+    expect(doc.title).toBe("guide.md");
+    expect(preview.title.textContent).toBe("guide.md");
+    expect(preview.content.innerHTML).toContain("<h1 id=\"guide\">Guide</h1>");
+    expect(preview.content.innerHTML).toContain("<h2 id=\"steps\">Steps</h2>");
+    expect(preview.raw.textContent).toBe(nextModel.source);
+    expect(preview.tocPanel?.textContent).toContain("Guide");
+    expect(preview.tocPanel?.textContent).toContain("Steps");
   });
 
   it("renders mermaid fences as mermaid diagram containers", () => {
@@ -121,7 +168,9 @@ describe("markdown document renderer", () => {
       </script>
     `;
 
-    expect(parseDirectoryListing(listing, "file:///Users/me/project/docs/")).toEqual([
+    const entries: FileBrowserEntry[] = parseDirectoryListing(listing, "file:///Users/me/project/docs/");
+
+    expect(entries).toEqual([
       { name: "specs", url: "file:///Users/me/project/docs/specs/", type: "directory" },
       { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
       { name: "notes.txt", url: "file:///Users/me/project/docs/notes.txt", type: "file" },
@@ -220,3 +269,81 @@ describe("markdown document renderer", () => {
     await expect(fetchDirectoryListing("file:///Users/me/project/docs/")).resolves.toBe("file directory html");
   });
 });
+
+class TestElement {
+  readonly children: TestElement[] = [];
+  className = "";
+  hidden = false;
+  href = "";
+  id = "";
+  type = "";
+  private html = "";
+  private text = "";
+
+  constructor(readonly tagName: string) {}
+
+  append(...children: TestElement[]): void {
+    this.children.push(...children);
+  }
+
+  appendChild(child: TestElement): TestElement {
+    this.children.push(child);
+    return child;
+  }
+
+  replaceChildren(...children: TestElement[]): void {
+    this.textContent = "";
+    this.html = "";
+    this.children.length = 0;
+    this.children.push(...children);
+  }
+
+  set innerHTML(value: string) {
+    this.html = value;
+    this.children.length = 0;
+    for (const match of value.matchAll(/<span class="([^"]+)"><\/span>/g)) {
+      const span = new TestElement("span");
+      span.className = match[1];
+      this.children.push(span);
+    }
+    for (const match of value.matchAll(/<h([1-3])>(.*?)<\/h\1>/g)) {
+      const heading = new TestElement(`h${match[1]}`);
+      heading.textContent = match[2].replace(/<[^>]+>/g, "");
+      this.children.push(heading);
+    }
+  }
+
+  get firstElementChild(): TestElement | null {
+    return this.children[0] ?? null;
+  }
+
+  set textContent(value: string) {
+    this.text = value;
+  }
+
+  get textContent(): string {
+    return `${this.text}${this.children.map((child) => child.textContent).join("")}`;
+  }
+
+  get innerHTML(): string {
+    let index = 0;
+    return this.html.replace(/<h([1-3])>(.*?)<\/h\1>/g, (_match, level: string, text: string) => {
+      const heading = this.children[index++];
+      const id = heading?.id ? ` id="${heading.id}"` : "";
+      return `<h${level}${id}>${text}</h${level}>`;
+    });
+  }
+
+  querySelectorAll(selector: string): TestElement[] {
+    const selectors = selector.split(",").map((part) => part.trim().toLowerCase());
+    return this.children.filter((child) => selectors.includes(child.tagName));
+  }
+}
+
+function createTestDocument(): { body: TestElement; title: string; createElement: (tagName: string) => TestElement } {
+  return {
+    body: new TestElement("body"),
+    title: "",
+    createElement: (tagName: string) => new TestElement(tagName.toLowerCase()),
+  };
+}

@@ -26,15 +26,23 @@ export interface DocumentPreviewRenderer<TModel extends DocumentPreviewModel = D
   readonly renderContentEffects?: (doc: Document, model: TModel, content: HTMLElement) => void;
 }
 
+export interface DocumentPreviewContainer {
+  readonly main: HTMLElement;
+  readonly title: HTMLElement;
+  readonly content: HTMLElement;
+  readonly raw: HTMLElement;
+  readonly tocPanel: HTMLElement | null;
+}
+
 export interface MarkdownDocumentModel extends DocumentPreviewModel {
   readonly headings: readonly MarkdownHeading[];
 }
 
-export type MarkdownFileTreeEntry = FileBrowserEntry;
 export type MarkdownHeading = DocumentOutlineEntry;
 
 const MARKDOWN_DOCUMENT_RE = /\.(?:md|mdx|markdown)(?:[?#].*)?$/i;
 const FILE_BROWSER_SUPPORTED_FILE_RE = /\.(?:cjs|css|go|htm|html|js|json|jsx|md|mdx|markdown|mjs|py|rs|svelte|ts|tsx|vue)(?:[?#].*)?$/i;
+export const MAX_TEXT_PREVIEW_CHARACTERS = 512 * 1024;
 const MARKDOWN_CONTENT_TYPES = new Set([
   "text/markdown",
   "text/x-markdown",
@@ -50,12 +58,20 @@ const PLAIN_DOCUMENT_CONTENT_TYPES = new Set([
 ]);
 
 const FILE_BROWSER_FILE_CONTENT_TYPES = new Set([
-  ...PLAIN_DOCUMENT_CONTENT_TYPES,
+  "",
+  "text/plain",
   "application/json",
   "application/javascript",
   "text/css",
   "text/html",
   "text/javascript",
+]);
+
+const FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES = new Set([
+  "application/octet-stream",
+  "application/pdf",
+  "application/zip",
+  "image/svg+xml",
 ]);
 
 let hideDotFiles = true;
@@ -70,20 +86,29 @@ export function shouldRenderFileBrowserShell(url: string, contentType: string): 
   if (!isFileUrl(url)) return false;
 
   const normalizedContentType = normalizeContentType(contentType);
+  if (isUnsafeInlinePreviewContentType(normalizedContentType)) return false;
   if (isLocalDirectoryListingUrl(url)) return DIRECTORY_LISTING_CONTENT_TYPES.has(normalizedContentType);
 
   return FILE_BROWSER_SUPPORTED_FILE_RE.test(url) && FILE_BROWSER_FILE_CONTENT_TYPES.has(normalizedContentType);
 }
 
 export function createMarkdownDocumentModel(url: string, source: string): MarkdownDocumentModel {
-  const headings = extractMarkdownHeadings(source);
+  const previewSource = limitPreviewSource(source);
+  const headings = extractMarkdownHeadings(previewSource);
   return {
     title: titleFromUrl(url),
-    source,
-    html: renderMarkdown(source),
+    source: previewSource,
+    html: renderMarkdown(previewSource),
     outline: headings,
     headings,
   };
+}
+
+export function limitPreviewSource(source: string): string {
+  if (source.length <= MAX_TEXT_PREVIEW_CHARACTERS) return source;
+
+  const omittedCharacterCount = source.length - MAX_TEXT_PREVIEW_CHARACTERS;
+  return `${source.slice(0, MAX_TEXT_PREVIEW_CHARACTERS)}\n\n---\n\nPreview truncated: ${omittedCharacterCount.toLocaleString()} characters omitted. Open the file directly to view the full contents.`;
 }
 
 export const markdownDocumentRenderer: DocumentPreviewRenderer<MarkdownDocumentModel> = {
@@ -138,7 +163,7 @@ export function getParentDirectoryUrl(fileUrl: string): string | null {
   }
 }
 
-export function parseDirectoryListing(html: string, directoryUrl: string): MarkdownFileTreeEntry[] {
+export function parseDirectoryListing(html: string, directoryUrl: string): FileBrowserEntry[] {
   const currentHref = new URL(directoryUrl).href;
   const anchorEntries = parseAnchorDirectoryListing(html, currentHref);
   if (anchorEntries.length) return sortEntries(anchorEntries);
@@ -146,9 +171,9 @@ export function parseDirectoryListing(html: string, directoryUrl: string): Markd
 }
 
 export function addParentDirectoryEntry(
-  entries: readonly MarkdownFileTreeEntry[],
+  entries: readonly FileBrowserEntry[],
   directoryUrl: string,
-): MarkdownFileTreeEntry[] {
+): FileBrowserEntry[] {
   const parentUrl = getParentDirectoryUrl(directoryUrl);
   if (!parentUrl || parentUrl === directoryUrl) return [...entries];
   return [{ name: "..", url: parentUrl, type: "directory" }, ...entries];
@@ -158,7 +183,7 @@ export function buildFileTreeEntries(
   html: string,
   directoryUrl: string,
   includeParentEntry: boolean,
-): MarkdownFileTreeEntry[] {
+): FileBrowserEntry[] {
   const entries = parseDirectoryListing(html, directoryUrl);
   return includeParentEntry ? addParentDirectoryEntry(entries, directoryUrl) : entries;
 }
@@ -188,11 +213,15 @@ function normalizeContentType(contentType: string): string {
   return contentType.split(";", 1)[0].trim().toLowerCase();
 }
 
-function parseAnchorDirectoryListing(html: string, currentHref: string): MarkdownFileTreeEntry[] {
+function isUnsafeInlinePreviewContentType(contentType: string): boolean {
+  return contentType.startsWith("image/") || FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES.has(contentType);
+}
+
+function parseAnchorDirectoryListing(html: string, currentHref: string): FileBrowserEntry[] {
   if (typeof DOMParser === "undefined") return [];
   const doc = new DOMParser().parseFromString(html, "text/html");
   return Array.from(doc.querySelectorAll("a[href]"))
-    .map((anchor): MarkdownFileTreeEntry | null => {
+    .map((anchor): FileBrowserEntry | null => {
       const href = anchor.getAttribute("href");
       if (!href || href === "../") return null;
 
@@ -210,13 +239,13 @@ function parseAnchorDirectoryListing(html: string, currentHref: string): Markdow
       if (!name || name === "..") return null;
       return { name, url: url.href, type: isDirectory ? "directory" : "file" };
     })
-    .filter((entry): entry is MarkdownFileTreeEntry => entry !== null);
+    .filter((entry): entry is FileBrowserEntry => entry !== null);
 }
 
-function parseChromeDirectoryListing(html: string, currentHref: string): MarkdownFileTreeEntry[] {
+function parseChromeDirectoryListing(html: string, currentHref: string): FileBrowserEntry[] {
   const rows = html.matchAll(/addRow\("((?:\\.|[^"\\])*)",\s*"((?:\\.|[^"\\])*)",\s*(\d)/g);
   return Array.from(rows)
-    .map(([, rawName, rawHref, rawType]): MarkdownFileTreeEntry | null => {
+    .map(([, rawName, rawHref, rawType]): FileBrowserEntry | null => {
       const name = parseJSONString(rawName).replace(/\/$/, "");
       const href = parseJSONString(rawHref);
       if (!name || name === ".." || !href) return null;
@@ -233,7 +262,7 @@ function parseChromeDirectoryListing(html: string, currentHref: string): Markdow
       if (isDirectory && !url.pathname.endsWith("/")) url.pathname += "/";
       return { name, url: url.href, type: isDirectory ? "directory" : "file" };
     })
-    .filter((entry): entry is MarkdownFileTreeEntry => entry !== null);
+    .filter((entry): entry is FileBrowserEntry => entry !== null);
 }
 
 function parseJSONString(value: string): string {
@@ -244,7 +273,7 @@ function parseJSONString(value: string): string {
   }
 }
 
-function sortEntries(entries: MarkdownFileTreeEntry[]): MarkdownFileTreeEntry[] {
+function sortEntries(entries: FileBrowserEntry[]): FileBrowserEntry[] {
   return entries.sort((a, b) => {
     if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
     return a.name.localeCompare(b.name);
@@ -272,7 +301,7 @@ function getChromeUseIconUrl(size: 16 | 48 = 16): string | null {
   return chrome.runtime.getURL(`assets/icon-${size}.png`);
 }
 
-export function getFileTreeIconPath(entry: MarkdownFileTreeEntry): string {
+export function getFileTreeIconPath(entry: FileBrowserEntry): string {
   if (entry.type === "directory") return "assets/devicons/folder.svg";
 
   const name = entry.name.toLowerCase();
@@ -319,12 +348,12 @@ export function getFileTreeIconPath(entry: MarkdownFileTreeEntry): string {
   }
 }
 
-function getFileTreeIconUrl(entry: MarkdownFileTreeEntry): string | null {
+function getFileTreeIconUrl(entry: FileBrowserEntry): string | null {
   if (typeof chrome === "undefined" || !chrome.runtime?.getURL) return null;
   return chrome.runtime.getURL(getFileTreeIconPath(entry));
 }
 
-function createFileTreeIcon(doc: Document, entry: MarkdownFileTreeEntry): HTMLElement {
+function createFileTreeIcon(doc: Document, entry: FileBrowserEntry): HTMLElement {
   const iconUrl = getFileTreeIconUrl(entry);
   if (!iconUrl) {
     const fallback = doc.createElement("span");
@@ -1091,7 +1120,7 @@ export async function fetchDirectoryListing(directoryUrl: string): Promise<strin
 
 function renderFileTreeEntry(
   doc: Document,
-  entry: MarkdownFileTreeEntry,
+  entry: FileBrowserEntry,
   currentUrl: string,
   navigationList: HTMLElement,
 ): HTMLElement {
@@ -1198,13 +1227,53 @@ function createTocList(doc: Document, headings: readonly DocumentOutlineEntry[])
     item.className = `chromeuse-markdown-toc-level-${heading.level}`;
     const link = doc.createElement("a");
     link.href = `#${heading.id}`;
-    link.innerHTML = `<span class="chromeuse-markdown-toc-text"></span>`;
-    link.firstElementChild!.textContent = heading.text;
+    const text = doc.createElement("span");
+    text.className = "chromeuse-markdown-toc-text";
+    text.textContent = heading.text;
+    link.appendChild(text);
     item.appendChild(link);
     list.appendChild(item);
   }
 
   return list;
+}
+
+export function createDocumentPreviewContainer(doc: Document, model: DocumentPreviewModel): DocumentPreviewContainer {
+  const main = doc.createElement("section");
+  main.className = "chromeuse-markdown-main";
+
+  const title = doc.createElement("div");
+  title.className = "chromeuse-markdown-title";
+
+  const content = doc.createElement("article");
+  content.className = "chromeuse-markdown-content";
+
+  const raw = doc.createElement("pre");
+  raw.className = "chromeuse-markdown-raw-view";
+
+  const tocPanel = doc.createElement("section");
+  tocPanel.className = "chromeuse-markdown-side-panel";
+  tocPanel.hidden = true;
+
+  main.append(title, content);
+  const preview = { main, title, content, raw, tocPanel };
+  updateDocumentPreviewContainer(doc, { shouldRender: () => true, createModel: () => model }, preview, model);
+  return preview;
+}
+
+export function updateDocumentPreviewContainer<TModel extends DocumentPreviewModel>(
+  doc: Document,
+  renderer: DocumentPreviewRenderer<TModel>,
+  preview: DocumentPreviewContainer,
+  model: TModel,
+): void {
+  doc.title = model.title;
+  preview.title.textContent = model.title;
+  preview.content.innerHTML = model.html;
+  applyHeadingIds(preview.content, model.outline);
+  preview.raw.textContent = model.source;
+  preview.tocPanel?.replaceChildren(createTocList(doc, model.outline));
+  renderer.renderContentEffects?.(doc, model, preview.content);
 }
 
 function createSideSwitch(doc: Document, filesPanel: HTMLElement, tocPanel: HTMLElement): HTMLElement {
@@ -1234,7 +1303,12 @@ function createSideSwitch(doc: Document, filesPanel: HTMLElement, tocPanel: HTML
   return switcher;
 }
 
-function createFileTreeSidebar(doc: Document, currentUrl: string, headings: readonly DocumentOutlineEntry[]): HTMLElement | null {
+function createFileTreeSidebar(
+  doc: Document,
+  currentUrl: string,
+  headings: readonly DocumentOutlineEntry[],
+  tocPanel: HTMLElement = doc.createElement("section"),
+): HTMLElement | null {
   const parentDirectoryUrl = getParentDirectoryUrl(currentUrl);
   if (!parentDirectoryUrl) return null;
 
@@ -1244,7 +1318,6 @@ function createFileTreeSidebar(doc: Document, currentUrl: string, headings: read
   const filesPanel = doc.createElement("section");
   filesPanel.className = "chromeuse-markdown-side-panel";
 
-  const tocPanel = doc.createElement("section");
   tocPanel.className = "chromeuse-markdown-side-panel";
   tocPanel.hidden = true;
 
@@ -1329,7 +1402,7 @@ function createOptionsMenu(doc: Document): HTMLElement {
   return menu;
 }
 
-function createTopControls(doc: Document, source: string): DocumentFragment {
+function createTopControls(doc: Document, raw: HTMLElement): DocumentFragment {
   const fragment = doc.createDocumentFragment();
 
   const left = doc.createElement("div");
@@ -1362,9 +1435,6 @@ function createTopControls(doc: Document, source: string): DocumentFragment {
   code.textContent = "</>";
   code.title = "Toggle raw";
   code.addEventListener("click", () => doc.body.classList.toggle("chromeuse-raw-visible"));
-  const raw = doc.createElement("pre");
-  raw.className = "chromeuse-markdown-raw-view";
-  raw.textContent = source;
   actions.append(more, code, optionsMenu);
 
   fragment.append(left, actions, raw);
@@ -1380,7 +1450,6 @@ export function renderCurrentPreviewDocument<TModel extends DocumentPreviewModel
   if (!renderer.shouldRender(url, doc.contentType)) return false;
 
   const model = renderer.createModel(url, readDocumentSource(doc));
-  doc.title = model.title;
   setPageIcon(doc);
   doc.head.appendChild(createStyle(doc));
 
@@ -1388,25 +1457,13 @@ export function renderCurrentPreviewDocument<TModel extends DocumentPreviewModel
   shell.id = "chromeuse-markdown-shell";
   shell.className = "chromeuse-markdown-shell";
 
-  const main = doc.createElement("section");
-  main.className = "chromeuse-markdown-main";
-
-  const title = doc.createElement("div");
-  title.className = "chromeuse-markdown-title";
-  title.textContent = model.title;
-
-  const content = doc.createElement("article");
-  content.className = "chromeuse-markdown-content";
-  content.innerHTML = model.html;
-  applyHeadingIds(content, model.outline);
-
-  main.append(title, content);
-  const sidebar = createFileTreeSidebar(doc, url, model.outline);
+  const preview = createDocumentPreviewContainer(doc, model);
+  const sidebar = createFileTreeSidebar(doc, url, model.outline, preview.tocPanel ?? undefined);
   if (sidebar) shell.append(sidebar);
-  shell.append(main);
+  shell.append(preview.main);
   doc.body.className = `${doc.body.className} chromeuse-markdown-document`.trim();
-  doc.body.replaceChildren(createTopControls(doc, model.source), shell);
-  renderer.renderContentEffects?.(doc, model, content);
+  doc.body.replaceChildren(createTopControls(doc, preview.raw), shell);
+  renderer.renderContentEffects?.(doc, model, preview.content);
   return true;
 }
 
