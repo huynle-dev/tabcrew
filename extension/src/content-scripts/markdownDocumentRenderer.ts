@@ -12,7 +12,20 @@ export interface FileBrowserEntry {
   readonly name: string;
   readonly url: string;
   readonly type: "directory" | "file";
+  readonly size?: string;
+  readonly modified?: string;
 }
+
+export type FileBrowserFileType =
+  | "markdown"
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "pdf"
+  | "office"
+  | "archive"
+  | "binary";
 
 export interface DocumentOutlineEntry {
   readonly level: 1 | 2 | 3;
@@ -32,6 +45,11 @@ export interface DocumentPreviewContainer {
   readonly content: HTMLElement;
   readonly raw: HTMLElement;
   readonly tocPanel: HTMLElement | null;
+}
+
+interface FilePreviewSelection<TModel extends DocumentPreviewModel = DocumentPreviewModel> {
+  readonly renderer: DocumentPreviewRenderer<TModel>;
+  readonly preview: DocumentPreviewContainer;
 }
 
 export interface MarkdownDocumentModel extends DocumentPreviewModel {
@@ -74,6 +92,102 @@ const FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES = new Set([
   "image/svg+xml",
 ]);
 
+const FILE_BROWSER_COMPOUND_FILE_TYPES = new Map<string, FileBrowserFileType>([
+  ["dockerfile", "text"],
+  ["makefile", "text"],
+  ["package.json", "text"],
+  ["package-lock.json", "text"],
+  ["pnpm-lock.yaml", "text"],
+  ["tsconfig.json", "text"],
+]);
+
+const FILE_BROWSER_EXTENSION_TYPES = new Map<string, FileBrowserFileType>([
+  ["7z", "archive"],
+  ["aac", "audio"],
+  ["avi", "video"],
+  ["bmp", "image"],
+  ["bz2", "archive"],
+  ["c", "text"],
+  ["cjs", "text"],
+  ["cpp", "text"],
+  ["css", "text"],
+  ["csv", "text"],
+  ["doc", "office"],
+  ["docx", "office"],
+  ["flac", "audio"],
+  ["gif", "image"],
+  ["go", "text"],
+  ["gz", "archive"],
+  ["heic", "image"],
+  ["htm", "text"],
+  ["html", "text"],
+  ["jpeg", "image"],
+  ["jpg", "image"],
+  ["js", "text"],
+  ["json", "text"],
+  ["jsx", "text"],
+  ["log", "text"],
+  ["m4a", "audio"],
+  ["markdown", "markdown"],
+  ["md", "markdown"],
+  ["mdx", "markdown"],
+  ["mjs", "text"],
+  ["mov", "video"],
+  ["mp3", "audio"],
+  ["mp4", "video"],
+  ["odp", "office"],
+  ["ods", "office"],
+  ["odt", "office"],
+  ["ogg", "audio"],
+  ["pdf", "pdf"],
+  ["png", "image"],
+  ["ppt", "office"],
+  ["pptx", "office"],
+  ["py", "text"],
+  ["rar", "archive"],
+  ["rs", "text"],
+  ["rtf", "office"],
+  ["svelte", "text"],
+  ["svg", "image"],
+  ["tar", "archive"],
+  ["text", "text"],
+  ["ts", "text"],
+  ["tsx", "text"],
+  ["txt", "text"],
+  ["vue", "text"],
+  ["wav", "audio"],
+  ["webm", "video"],
+  ["webp", "image"],
+  ["xls", "office"],
+  ["xlsx", "office"],
+  ["xml", "text"],
+  ["yaml", "text"],
+  ["yml", "text"],
+  ["zip", "archive"],
+]);
+
+const FILE_BROWSER_MIME_TYPES = new Map<string, FileBrowserFileType>([
+  ["application/gzip", "archive"],
+  ["application/javascript", "text"],
+  ["application/json", "text"],
+  ["application/msword", "office"],
+  ["application/pdf", "pdf"],
+  ["application/rtf", "office"],
+  ["application/vnd.ms-excel", "office"],
+  ["application/vnd.ms-powerpoint", "office"],
+  ["application/vnd.openxmlformats-officedocument.presentationml.presentation", "office"],
+  ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "office"],
+  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "office"],
+  ["application/zip", "archive"],
+  ["image/svg+xml", "image"],
+  ["text/css", "text"],
+  ["text/html", "text"],
+  ["text/javascript", "text"],
+  ["text/markdown", "markdown"],
+  ["text/plain", "text"],
+  ["text/x-markdown", "markdown"],
+]);
+
 let hideDotFiles = true;
 
 export function shouldRenderMarkdownDocument(url: string, contentType: string): boolean {
@@ -90,6 +204,22 @@ export function shouldRenderFileBrowserShell(url: string, contentType: string): 
   if (isLocalDirectoryListingUrl(url)) return DIRECTORY_LISTING_CONTENT_TYPES.has(normalizedContentType);
 
   return FILE_BROWSER_SUPPORTED_FILE_RE.test(url) && FILE_BROWSER_FILE_CONTENT_TYPES.has(normalizedContentType);
+}
+
+export function classifyFileBrowserFile(urlOrName: string, contentType = ""): FileBrowserFileType {
+  const name = fileNameFromUrlOrPath(urlOrName).toLowerCase();
+  const compoundType = FILE_BROWSER_COMPOUND_FILE_TYPES.get(name);
+  if (compoundType) return compoundType;
+
+  const extensionType = FILE_BROWSER_EXTENSION_TYPES.get(fileExtensionFor(name));
+  if (extensionType) return extensionType;
+
+  const normalizedContentType = normalizeContentType(contentType);
+  if (normalizedContentType.startsWith("image/")) return "image";
+  if (normalizedContentType.startsWith("video/")) return "video";
+  if (normalizedContentType.startsWith("audio/")) return "audio";
+  if (normalizedContentType.startsWith("text/")) return "text";
+  return FILE_BROWSER_MIME_TYPES.get(normalizedContentType) ?? "binary";
 }
 
 export function createMarkdownDocumentModel(url: string, source: string): MarkdownDocumentModel {
@@ -213,6 +343,24 @@ function normalizeContentType(contentType: string): string {
   return contentType.split(";", 1)[0].trim().toLowerCase();
 }
 
+function fileNameFromUrlOrPath(urlOrName: string): string {
+  try {
+    const parsed = new URL(urlOrName);
+    const lastSegment = parsed.pathname.split("/").filter(Boolean).at(-1);
+    return lastSegment ? decodeURIComponent(lastSegment) : urlOrName;
+  } catch {
+    const lastSegment = urlOrName.split(/[?#]/, 1)[0].split(/[\\/]/).filter(Boolean).at(-1);
+    return lastSegment ? decodeURIComponent(lastSegment) : urlOrName;
+  }
+}
+
+function fileExtensionFor(name: string): string {
+  if (name.endsWith(".tar.gz") || name.endsWith(".tar.bz2")) return "tar";
+  const dotIndex = name.lastIndexOf(".");
+  if (dotIndex <= 0 || dotIndex === name.length - 1) return "";
+  return name.slice(dotIndex + 1);
+}
+
 function isUnsafeInlinePreviewContentType(contentType: string): boolean {
   return contentType.startsWith("image/") || FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES.has(contentType);
 }
@@ -243,9 +391,11 @@ function parseAnchorDirectoryListing(html: string, currentHref: string): FileBro
 }
 
 function parseChromeDirectoryListing(html: string, currentHref: string): FileBrowserEntry[] {
-  const rows = html.matchAll(/addRow\("((?:\\.|[^"\\])*)",\s*"((?:\\.|[^"\\])*)",\s*(\d)/g);
+  const rows = html.matchAll(
+    /addRow\("((?:\\.|[^"\\])*)",\s*"((?:\\.|[^"\\])*)",\s*(\d)(?:,\s*"((?:\\.|[^"\\])*)")?(?:,\s*"((?:\\.|[^"\\])*)")?\s*\)/g,
+  );
   return Array.from(rows)
-    .map(([, rawName, rawHref, rawType]): FileBrowserEntry | null => {
+    .map(([, rawName, rawHref, rawType, rawSize, rawModified]): FileBrowserEntry | null => {
       const name = parseJSONString(rawName).replace(/\/$/, "");
       const href = parseJSONString(rawHref);
       if (!name || name === ".." || !href) return null;
@@ -260,9 +410,23 @@ function parseChromeDirectoryListing(html: string, currentHref: string): FileBro
       const isDirectory = rawType === "1";
       if (url.protocol !== "file:") return null;
       if (isDirectory && !url.pathname.endsWith("/")) url.pathname += "/";
-      return { name, url: url.href, type: isDirectory ? "directory" : "file" };
+      return withEntryMetadata(
+        { name, url: url.href, type: isDirectory ? "directory" : "file" },
+        rawSize,
+        rawModified,
+      );
     })
     .filter((entry): entry is FileBrowserEntry => entry !== null);
+}
+
+function withEntryMetadata(entry: FileBrowserEntry, rawSize: string | undefined, rawModified: string | undefined): FileBrowserEntry {
+  const size = rawSize === undefined ? "" : parseJSONString(rawSize).trim();
+  const modified = rawModified === undefined ? "" : parseJSONString(rawModified).trim();
+  return {
+    ...entry,
+    ...(size ? { size } : {}),
+    ...(modified ? { modified } : {}),
+  };
 }
 
 function parseJSONString(value: string): string {
@@ -346,6 +510,10 @@ export function getFileTreeIconPath(entry: FileBrowserEntry): string {
     default:
       return "assets/devicons/file.svg";
   }
+}
+
+export function shouldPreviewFileBrowserEntry(entry: FileBrowserEntry): boolean {
+  return entry.type === "file" && FILE_BROWSER_SUPPORTED_FILE_RE.test(entry.url);
 }
 
 function getFileTreeIconUrl(entry: FileBrowserEntry): string | null {
@@ -1088,15 +1256,24 @@ function createStyle(doc: Document): HTMLStyleElement {
 }
 
 export async function fetchDirectoryListing(directoryUrl: string): Promise<string> {
+  return fetchTextUrl(directoryUrl, "Unable to load files");
+}
+
+async function fetchFilePreviewSource(fileUrl: string): Promise<string> {
+  return fetchTextUrl(fileUrl, "Unable to load preview");
+}
+
+async function fetchTextUrl(url: string, failureMessage: string): Promise<string> {
   let extensionFetchError: unknown;
 
   if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
     try {
       const response = await chrome.runtime.sendMessage({
         action: "chromeuse_fetch_directory_listing",
-        url: directoryUrl,
+        url,
       });
       if (response?.ok && typeof response.html === "string") return response.html;
+      if (response?.ok && typeof response.text === "string") return response.text;
       if (typeof response === "string") return response;
       extensionFetchError = new Error(response?.error ?? "Extension fetch failed");
     } catch (error) {
@@ -1105,24 +1282,44 @@ export async function fetchDirectoryListing(directoryUrl: string): Promise<strin
   }
 
   try {
-    const response = await fetch(directoryUrl);
-    if (!response.ok && !isFileUrl(directoryUrl)) throw new Error(`HTTP ${response.status}`);
+    const response = await fetch(url);
+    if (!response.ok && !isFileUrl(url)) throw new Error(`HTTP ${response.status}`);
     return response.text();
   } catch (error) {
     if (extensionFetchError) {
       const extensionMessage = extensionFetchError instanceof Error ? extensionFetchError.message : String(extensionFetchError);
       const pageMessage = error instanceof Error ? error.message : String(error);
-      throw new Error(`Unable to load files: extension fetch failed (${extensionMessage}); page fetch failed (${pageMessage})`);
+      throw new Error(`${failureMessage}: extension fetch failed (${extensionMessage}); page fetch failed (${pageMessage})`);
     }
     throw error;
   }
 }
 
-function renderFileTreeEntry(
+export async function handleFileTreeFileClick<TModel extends DocumentPreviewModel>(
+  event: Pick<Event, "preventDefault">,
+  doc: Document,
+  entry: FileBrowserEntry,
+  item: HTMLElement,
+  navigationList: HTMLElement,
+  selection: FilePreviewSelection<TModel> | undefined,
+): Promise<boolean> {
+  if (!selection || !shouldPreviewFileBrowserEntry(entry)) return false;
+
+  event.preventDefault();
+  const source = await fetchFilePreviewSource(entry.url);
+  const model = selection.renderer.createModel(entry.url, source);
+  updateDocumentPreviewContainer(doc, selection.renderer, selection.preview, model);
+  navigationList.querySelectorAll("li.active").forEach((activeItem) => activeItem.classList.remove("active"));
+  item.classList.add("active");
+  return true;
+}
+
+function renderFileTreeEntry<TModel extends DocumentPreviewModel>(
   doc: Document,
   entry: FileBrowserEntry,
   currentUrl: string,
   navigationList: HTMLElement,
+  selection?: FilePreviewSelection<TModel>,
 ): HTMLElement {
   const item = doc.createElement("li");
   item.className = `chromeuse-markdown-file-tree-entry chromeuse-markdown-file-tree-entry-${entry.type}`;
@@ -1146,7 +1343,7 @@ function renderFileTreeEntry(
     if (entry.name === "..") {
       caret.textContent = "";
       button.addEventListener("click", () => {
-        void loadFileTreeDirectory(doc, entry.url, navigationList, currentUrl, true, navigationList);
+        void loadFileTreeDirectory(doc, entry.url, navigationList, currentUrl, true, navigationList, selection);
       });
       item.appendChild(button);
       return item;
@@ -1161,7 +1358,7 @@ function renderFileTreeEntry(
       childList.hidden = !expanded;
       if (expanded && !childList.dataset.loaded) {
         childList.dataset.loaded = "true";
-        void loadFileTreeDirectory(doc, entry.url, childList, currentUrl, false, navigationList);
+        void loadFileTreeDirectory(doc, entry.url, childList, currentUrl, false, navigationList, selection);
       }
     });
 
@@ -1179,18 +1376,22 @@ function renderFileTreeEntry(
   name.className = "chromeuse-markdown-file-name";
   name.textContent = entry.name;
   link.append(spacer, icon, name);
+  link.addEventListener("click", (event) => {
+    void handleFileTreeFileClick(event, doc, entry, item, navigationList, selection);
+  });
   if (entry.url === currentUrl) item.classList.add("active");
   item.appendChild(link);
   return item;
 }
 
-async function loadFileTreeDirectory(
+async function loadFileTreeDirectory<TModel extends DocumentPreviewModel>(
   doc: Document,
   directoryUrl: string,
   list: HTMLElement,
   currentUrl: string,
   includeParentEntry = true,
   navigationList: HTMLElement = list,
+  selection?: FilePreviewSelection<TModel>,
 ): Promise<void> {
   list.textContent = "Loading...";
   try {
@@ -1205,7 +1406,7 @@ async function loadFileTreeDirectory(
       return;
     }
 
-    for (const entry of entries) list.appendChild(renderFileTreeEntry(doc, entry, currentUrl, navigationList));
+    for (const entry of entries) list.appendChild(renderFileTreeEntry(doc, entry, currentUrl, navigationList, selection));
   } catch (error) {
     list.textContent = error instanceof Error ? error.message : "Unable to load files";
   }
@@ -1303,11 +1504,12 @@ function createSideSwitch(doc: Document, filesPanel: HTMLElement, tocPanel: HTML
   return switcher;
 }
 
-function createFileTreeSidebar(
+function createFileTreeSidebar<TModel extends DocumentPreviewModel>(
   doc: Document,
   currentUrl: string,
   headings: readonly DocumentOutlineEntry[],
   tocPanel: HTMLElement = doc.createElement("section"),
+  selection?: FilePreviewSelection<TModel>,
 ): HTMLElement | null {
   const parentDirectoryUrl = getParentDirectoryUrl(currentUrl);
   if (!parentDirectoryUrl) return null;
@@ -1330,9 +1532,9 @@ function createFileTreeSidebar(
   filesPanel.append(title, list);
   tocPanel.appendChild(createTocList(doc, headings));
   sidebar.append(createSideSwitch(doc, filesPanel, tocPanel), filesPanel, tocPanel);
-  void loadFileTreeDirectory(doc, parentDirectoryUrl, list, currentUrl);
+  void loadFileTreeDirectory(doc, parentDirectoryUrl, list, currentUrl, true, list, selection);
   doc.addEventListener("chromeuse_hide_dotfiles_changed", () => {
-    void loadFileTreeDirectory(doc, parentDirectoryUrl, list, currentUrl);
+    void loadFileTreeDirectory(doc, parentDirectoryUrl, list, currentUrl, true, list, selection);
   });
   return sidebar;
 }
@@ -1458,7 +1660,7 @@ export function renderCurrentPreviewDocument<TModel extends DocumentPreviewModel
   shell.className = "chromeuse-markdown-shell";
 
   const preview = createDocumentPreviewContainer(doc, model);
-  const sidebar = createFileTreeSidebar(doc, url, model.outline, preview.tocPanel ?? undefined);
+  const sidebar = createFileTreeSidebar(doc, url, model.outline, preview.tocPanel ?? undefined, { renderer, preview });
   if (sidebar) shell.append(sidebar);
   shell.append(preview.main);
   doc.body.className = `${doc.body.className} chromeuse-markdown-document`.trim();

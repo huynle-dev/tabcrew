@@ -3,17 +3,20 @@ import type { FileBrowserEntry } from "./markdownDocumentRenderer.js";
 import {
   addParentDirectoryEntry,
   buildFileTreeEntries,
+  classifyFileBrowserFile,
   createMarkdownDocumentModel,
   createDocumentPreviewContainer,
   extractMarkdownHeadings,
   fetchDirectoryListing,
   getFileTreeIconPath,
   getParentDirectoryUrl,
+  handleFileTreeFileClick,
   limitPreviewSource,
   MAX_TEXT_PREVIEW_CHARACTERS,
   markdownDocumentRenderer,
   shouldRenderFileBrowserShell,
   parseDirectoryListing,
+  shouldPreviewFileBrowserEntry,
   shouldRenderMarkdownDocument,
   updateDocumentPreviewContainer,
 } from "./markdownDocumentRenderer.js";
@@ -53,6 +56,28 @@ describe("markdown document renderer", () => {
     expect(shouldRenderFileBrowserShell("file:///Users/me/project/logo.svg", "image/svg+xml")).toBe(false);
     expect(shouldRenderFileBrowserShell("file:///Users/me/project/photo.png", "image/png")).toBe(false);
     expect(shouldRenderFileBrowserShell("file:///Users/me/project/icon.svg", "text/plain")).toBe(false);
+  });
+
+  it("classifies general file browser preview file types independent of rendering", () => {
+    expect(classifyFileBrowserFile("file:///Users/me/project/README.md")).toBe("markdown");
+    expect(classifyFileBrowserFile("file:///Users/me/project/src/app.ts")).toBe("text");
+    expect(classifyFileBrowserFile("file:///Users/me/project/package.json")).toBe("text");
+    expect(classifyFileBrowserFile("file:///Users/me/project/logo.svg", "text/plain")).toBe("image");
+    expect(classifyFileBrowserFile("file:///Users/me/project/movie.mp4")).toBe("video");
+    expect(classifyFileBrowserFile("file:///Users/me/project/song.mp3")).toBe("audio");
+    expect(classifyFileBrowserFile("file:///Users/me/project/manual.pdf")).toBe("pdf");
+    expect(classifyFileBrowserFile("file:///Users/me/project/deck.pptx")).toBe("office");
+    expect(classifyFileBrowserFile("file:///Users/me/project/archive.tar.gz")).toBe("archive");
+    expect(classifyFileBrowserFile("file:///Users/me/project/program.bin")).toBe("binary");
+  });
+
+  it("uses MIME types when file names do not identify a preview type", () => {
+    expect(classifyFileBrowserFile("file:///Users/me/project/download", "image/png")).toBe("image");
+    expect(classifyFileBrowserFile("file:///Users/me/project/download", "video/webm; codecs=vp9")).toBe("video");
+    expect(classifyFileBrowserFile("file:///Users/me/project/download", "audio/wav")).toBe("audio");
+    expect(classifyFileBrowserFile("file:///Users/me/project/download", "application/pdf")).toBe("pdf");
+    expect(classifyFileBrowserFile("file:///Users/me/project/download", "application/zip")).toBe("archive");
+    expect(classifyFileBrowserFile("file:///Users/me/project/download", "application/octet-stream")).toBe("binary");
   });
 
   it("creates a safe rendered markdown document model", () => {
@@ -159,6 +184,75 @@ describe("markdown document renderer", () => {
     );
   });
 
+  it("identifies only supported file entries as previewable", () => {
+    expect(shouldPreviewFileBrowserEntry({ name: "README.md", url: "file:///Users/me/project/README.md", type: "file" })).toBe(
+      true,
+    );
+    expect(shouldPreviewFileBrowserEntry({ name: "app.ts", url: "file:///Users/me/project/app.ts", type: "file" })).toBe(true);
+    expect(shouldPreviewFileBrowserEntry({ name: "image.png", url: "file:///Users/me/project/image.png", type: "file" })).toBe(
+      false,
+    );
+    expect(shouldPreviewFileBrowserEntry({ name: "docs", url: "file:///Users/me/project/docs/", type: "directory" })).toBe(
+      false,
+    );
+  });
+
+  it("intercepts supported sidebar file clicks and updates the main preview", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({ ok: true, html: "# Guide\n\nPreview body" });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const navigationList = new TestElement("ul");
+    const previousItem = new TestElement("li");
+    const item = new TestElement("li");
+    const preventDefault = vi.fn();
+    previousItem.classList.add("active");
+    navigationList.append(previousItem, item);
+
+    const handled = await handleFileTreeFileClick(
+      { preventDefault },
+      doc as unknown as Document,
+      { name: "guide.md", url: "file:///Users/me/project/guide.md", type: "file" },
+      item as unknown as HTMLElement,
+      navigationList as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    );
+
+    expect(handled).toBe(true);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith({
+      action: "chromeuse_fetch_directory_listing",
+      url: "file:///Users/me/project/guide.md",
+    });
+    expect(doc.title).toBe("guide.md");
+    expect(preview.title.textContent).toBe("guide.md");
+    expect(preview.content.innerHTML).toContain('<h1 id="guide">Guide</h1>');
+    expect(preview.raw.textContent).toBe("# Guide\n\nPreview body");
+    expect(previousItem.classList.contains("active")).toBe(false);
+    expect(item.classList.contains("active")).toBe(true);
+  });
+
+  it("leaves unsupported sidebar file clicks available for normal navigation", async () => {
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const preventDefault = vi.fn();
+
+    const handled = await handleFileTreeFileClick(
+      { preventDefault },
+      doc as unknown as Document,
+      { name: "archive.zip", url: "file:///Users/me/project/archive.zip", type: "file" },
+      new TestElement("li") as unknown as HTMLElement,
+      new TestElement("ul") as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    );
+
+    expect(handled).toBe(false);
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(preview.title.textContent).toBe("README.md");
+  });
+
   it("parses Chrome file directory listings into files and folders", () => {
     const listing = `
       <script>
@@ -178,6 +272,13 @@ describe("markdown document renderer", () => {
       { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
       { name: "image.png", url: "file:///Users/me/project/docs/image.png", type: "file" },
       { name: "notes.txt", url: "file:///Users/me/project/docs/notes.txt", type: "file" },
+    ]);
+    expect(entries).toEqual([
+      { name: "specs", url: "file:///Users/me/project/docs/specs/", type: "directory", modified: "today" },
+      { name: "archive.zip", url: "file:///Users/me/project/docs/archive.zip", type: "file", size: "1 KB", modified: "today" },
+      { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file", size: "1 KB", modified: "today" },
+      { name: "image.png", url: "file:///Users/me/project/docs/image.png", type: "file", size: "1 KB", modified: "today" },
+      { name: "notes.txt", url: "file:///Users/me/project/docs/notes.txt", type: "file", size: "1 KB", modified: "today" },
     ]);
   });
 
@@ -212,6 +313,20 @@ describe("markdown document renderer", () => {
       { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
       { name: "image.png", url: "file:///Users/me/project/docs/image.png", type: "file" },
       { name: "notes.txt", url: "file:///Users/me/project/docs/notes.txt", type: "file" },
+    ]);
+  });
+
+  it("parses Chrome directory listings without metadata", () => {
+    const listing = `
+      <script>
+        addRow("guide.md", "guide.md", 0);
+        addRow("specs", "specs/", 1);
+      </script>
+    `;
+
+    expect(parseDirectoryListing(listing, "file:///Users/me/project/docs/")).toEqual([
+      { name: "specs", url: "file:///Users/me/project/docs/specs/", type: "directory" },
+      { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
     ]);
   });
 
@@ -280,6 +395,8 @@ describe("markdown document renderer", () => {
 
 class TestElement {
   readonly children: TestElement[] = [];
+  readonly dataset: Record<string, string> = {};
+  readonly style: Record<string, string> = {};
   className = "";
   hidden = false;
   href = "";
@@ -289,6 +406,39 @@ class TestElement {
   private text = "";
 
   constructor(readonly tagName: string) {}
+
+  get classList(): {
+    add: (...names: string[]) => void;
+    remove: (...names: string[]) => void;
+    contains: (name: string) => boolean;
+    toggle: (name: string, force?: boolean) => boolean;
+  } {
+    const getClasses = () => new Set(this.className.split(/\s+/).filter(Boolean));
+    const setClasses = (classes: Set<string>) => {
+      this.className = Array.from(classes).join(" ");
+    };
+    return {
+      add: (...names) => {
+        const classes = getClasses();
+        names.forEach((name) => classes.add(name));
+        setClasses(classes);
+      },
+      remove: (...names) => {
+        const classes = getClasses();
+        names.forEach((name) => classes.delete(name));
+        setClasses(classes);
+      },
+      contains: (name) => getClasses().has(name),
+      toggle: (name, force) => {
+        const classes = getClasses();
+        const enabled = force ?? !classes.has(name);
+        if (enabled) classes.add(name);
+        else classes.delete(name);
+        setClasses(classes);
+        return enabled;
+      },
+    };
+  }
 
   append(...children: TestElement[]): void {
     this.children.push(...children);
@@ -344,7 +494,15 @@ class TestElement {
 
   querySelectorAll(selector: string): TestElement[] {
     const selectors = selector.split(",").map((part) => part.trim().toLowerCase());
-    return this.children.filter((child) => selectors.includes(child.tagName));
+    const matches = (element: TestElement) =>
+      selectors.some((part) => {
+        const [tagName, className] = part.split(".");
+        if (tagName && tagName !== element.tagName) return false;
+        return !className || element.classList.contains(className);
+      });
+    const descendants = (element: TestElement): TestElement[] =>
+      element.children.flatMap((child) => [child, ...descendants(child)]);
+    return descendants(this).filter(matches);
   }
 }
 
