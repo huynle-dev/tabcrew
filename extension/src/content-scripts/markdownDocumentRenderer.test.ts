@@ -7,6 +7,7 @@ import {
   fetchDirectoryListing,
   getFileTreeIconPath,
   getParentDirectoryUrl,
+  markdownDocumentRenderer,
   parseDirectoryListing,
   shouldRenderMarkdownDocument,
 } from "./markdownDocumentRenderer.js";
@@ -35,6 +36,18 @@ describe("markdown document renderer", () => {
     expect(model.html).toContain("<h1>Title</h1>");
     expect(model.html).not.toContain("<script>");
     expect(model.html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(model.outline).toBe(model.headings);
+  });
+
+  it("exposes markdown rendering through a generic document renderer boundary", () => {
+    expect(markdownDocumentRenderer.shouldRender("file:///Users/me/notes.md", "text/plain")).toBe(true);
+
+    const model = markdownDocumentRenderer.createModel("file:///Users/me/notes.md", "# Notes");
+
+    expect(model.title).toBe("notes.md");
+    expect(model.html).toContain("<h1>Notes</h1>");
+    expect(model.outline).toEqual([{ level: 1, text: "Notes", id: "notes" }]);
+    expect(model.headings).toBe(model.outline);
   });
 
   it("renders mermaid fences as mermaid diagram containers", () => {

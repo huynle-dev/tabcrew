@@ -1,24 +1,37 @@
 import mermaid from "mermaid";
 import { renderMarkdown } from "../sidepanel/markdownRenderer.js";
 
-export interface MarkdownDocumentModel {
+export interface DocumentPreviewModel {
   readonly title: string;
   readonly source: string;
   readonly html: string;
-  readonly headings: readonly MarkdownHeading[];
+  readonly outline: readonly DocumentOutlineEntry[];
 }
 
-export interface MarkdownFileTreeEntry {
+export interface FileBrowserEntry {
   readonly name: string;
   readonly url: string;
   readonly type: "directory" | "file";
 }
 
-export interface MarkdownHeading {
+export interface DocumentOutlineEntry {
   readonly level: 1 | 2 | 3;
   readonly text: string;
   readonly id: string;
 }
+
+export interface DocumentPreviewRenderer<TModel extends DocumentPreviewModel = DocumentPreviewModel> {
+  readonly shouldRender: (url: string, contentType: string) => boolean;
+  readonly createModel: (url: string, source: string) => TModel;
+  readonly renderContentEffects?: (doc: Document, model: TModel, content: HTMLElement) => void;
+}
+
+export interface MarkdownDocumentModel extends DocumentPreviewModel {
+  readonly headings: readonly MarkdownHeading[];
+}
+
+export type MarkdownFileTreeEntry = FileBrowserEntry;
+export type MarkdownHeading = DocumentOutlineEntry;
 
 const MARKDOWN_DOCUMENT_RE = /\.(?:md|mdx|markdown)(?:[?#].*)?$/i;
 const MARKDOWN_CONTENT_TYPES = new Set([
@@ -42,13 +55,21 @@ export function shouldRenderMarkdownDocument(url: string, contentType: string): 
 }
 
 export function createMarkdownDocumentModel(url: string, source: string): MarkdownDocumentModel {
+  const headings = extractMarkdownHeadings(source);
   return {
     title: titleFromUrl(url),
     source,
     html: renderMarkdown(source),
-    headings: extractMarkdownHeadings(source),
+    outline: headings,
+    headings,
   };
 }
+
+export const markdownDocumentRenderer: DocumentPreviewRenderer<MarkdownDocumentModel> = {
+  shouldRender: shouldRenderMarkdownDocument,
+  createModel: createMarkdownDocumentModel,
+  renderContentEffects: (doc, _model, content) => renderMermaidDiagrams(doc, content),
+};
 
 export function extractMarkdownHeadings(source: string): MarkdownHeading[] {
   return source
@@ -1128,7 +1149,7 @@ async function loadFileTreeDirectory(
   }
 }
 
-function createTocList(doc: Document, headings: readonly MarkdownHeading[]): HTMLElement {
+function createTocList(doc: Document, headings: readonly DocumentOutlineEntry[]): HTMLElement {
   const list = doc.createElement("ul");
   list.className = "chromeuse-markdown-toc-list";
 
@@ -1180,7 +1201,7 @@ function createSideSwitch(doc: Document, filesPanel: HTMLElement, tocPanel: HTML
   return switcher;
 }
 
-function createFileTreeSidebar(doc: Document, currentUrl: string, headings: readonly MarkdownHeading[]): HTMLElement | null {
+function createFileTreeSidebar(doc: Document, currentUrl: string, headings: readonly DocumentOutlineEntry[]): HTMLElement | null {
   const parentDirectoryUrl = getParentDirectoryUrl(currentUrl);
   if (!parentDirectoryUrl) return null;
 
@@ -1210,7 +1231,7 @@ function createFileTreeSidebar(doc: Document, currentUrl: string, headings: read
   return sidebar;
 }
 
-function applyHeadingIds(content: HTMLElement, headings: readonly MarkdownHeading[]): void {
+function applyHeadingIds(content: HTMLElement, headings: readonly DocumentOutlineEntry[]): void {
   const elements = Array.from(content.querySelectorAll("h1, h2, h3"));
   for (let i = 0; i < elements.length && i < headings.length; i++) {
     elements[i].id = headings[i].id;
@@ -1317,11 +1338,15 @@ function createTopControls(doc: Document, source: string): DocumentFragment {
   return fragment;
 }
 
-export function renderCurrentMarkdownDocument(doc: Document = document, url: string = location.href): boolean {
+export function renderCurrentPreviewDocument<TModel extends DocumentPreviewModel>(
+  renderer: DocumentPreviewRenderer<TModel>,
+  doc: Document = document,
+  url: string = location.href,
+): boolean {
   if (!doc.body || doc.getElementById("chromeuse-markdown-shell")) return false;
-  if (!shouldRenderMarkdownDocument(url, doc.contentType)) return false;
+  if (!renderer.shouldRender(url, doc.contentType)) return false;
 
-  const model = createMarkdownDocumentModel(url, readDocumentSource(doc));
+  const model = renderer.createModel(url, readDocumentSource(doc));
   doc.title = model.title;
   setPageIcon(doc);
   doc.head.appendChild(createStyle(doc));
@@ -1340,16 +1365,20 @@ export function renderCurrentMarkdownDocument(doc: Document = document, url: str
   const content = doc.createElement("article");
   content.className = "chromeuse-markdown-content";
   content.innerHTML = model.html;
-  applyHeadingIds(content, model.headings);
+  applyHeadingIds(content, model.outline);
 
   main.append(title, content);
-  const sidebar = createFileTreeSidebar(doc, url, model.headings);
+  const sidebar = createFileTreeSidebar(doc, url, model.outline);
   if (sidebar) shell.append(sidebar);
   shell.append(main);
   doc.body.className = `${doc.body.className} chromeuse-markdown-document`.trim();
   doc.body.replaceChildren(createTopControls(doc, model.source), shell);
-  renderMermaidDiagrams(doc, content);
+  renderer.renderContentEffects?.(doc, model, content);
   return true;
+}
+
+export function renderCurrentMarkdownDocument(doc: Document = document, url: string = location.href): boolean {
+  return renderCurrentPreviewDocument(markdownDocumentRenderer, doc, url);
 }
 
 if (typeof document !== "undefined") {
