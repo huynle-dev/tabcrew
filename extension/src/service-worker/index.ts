@@ -39,18 +39,41 @@ registerTools(messageRouter);
 initSidePanelHandler();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || typeof message !== "object" || message.action !== "chromeuse_fetch_directory_listing") {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+
+  if (message.action === "chromeuse_fetch_directory_listing") {
+    const url = typeof message.url === "string" ? message.url : "";
+    fetch(url)
+      .then(async (response) => {
+        if (!response.ok && !isFileUrl(url)) throw new Error(`HTTP ${response.status}`);
+        sendResponse({ ok: true, html: await response.text() });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : "Unable to load files" });
+      });
+
+    return true;
+  }
+
+  if (message.action !== "chromeuse_fetch_local_file") {
     return false;
   }
 
   const url = typeof message.url === "string" ? message.url : "";
+  const responseType = message.responseType === "arrayBuffer" ? "arrayBuffer" : "text";
   fetch(url)
     .then(async (response) => {
       if (!response.ok && !isFileUrl(url)) throw new Error(`HTTP ${response.status}`);
-      sendResponse({ ok: true, html: await response.text() });
+      if (responseType === "arrayBuffer") {
+        sendResponse({ ok: true, arrayBuffer: await response.arrayBuffer() });
+        return;
+      }
+      sendResponse({ ok: true, text: await response.text() });
     })
     .catch((error) => {
-      sendResponse({ ok: false, error: error instanceof Error ? error.message : "Unable to load files" });
+      sendResponse({ ok: false, error: error instanceof Error ? error.message : "Unable to load preview" });
     });
 
   return true;

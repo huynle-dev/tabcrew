@@ -9,6 +9,8 @@ import {
   createDocumentPreviewContainer,
   extractMarkdownHeadings,
   fetchDirectoryListing,
+  fetchLocalFileArrayBuffer,
+  fetchLocalFileText,
   getFileTreeIconPath,
   getParentDirectoryUrl,
   handleFileTreeFileClick,
@@ -54,10 +56,35 @@ describe("markdown document renderer", () => {
     expect(shouldRenderFileBrowserShell("file:///Users/me/project/archive.zip", "application/zip")).toBe(false);
   });
 
-  it("rejects image and SVG file previews instead of rendering them inline", () => {
-    expect(shouldRenderFileBrowserShell("file:///Users/me/project/logo.svg", "image/svg+xml")).toBe(false);
-    expect(shouldRenderFileBrowserShell("file:///Users/me/project/photo.png", "image/png")).toBe(false);
-    expect(shouldRenderFileBrowserShell("file:///Users/me/project/icon.svg", "text/plain")).toBe(false);
+  it("recognizes local media and PDF files for file URL previews", () => {
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/photo.png", "image/png")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/movie.mp4", "video/mp4")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/song.mp3", "audio/mpeg")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/manual.pdf", "application/pdf")).toBe(true);
+    expect(shouldRenderFileBrowserShell("https://example.com/project/photo.png", "image/png")).toBe(false);
+  });
+
+  it("renders media and PDF previews from escaped file URLs", () => {
+    const imageModel = createFileBrowserPreviewModel("file:///Users/me/project/photo%20&%20logo.png", "", "image/png");
+    const videoModel = createFileBrowserPreviewModel("file:///Users/me/project/movie.mp4", "", "video/mp4");
+    const audioModel = createFileBrowserPreviewModel("file:///Users/me/project/song.mp3", "", "audio/mpeg");
+    const pdfModel = createFileBrowserPreviewModel("file:///Users/me/project/manual.pdf", "", "application/pdf");
+
+    expect(imageModel.html).toContain('<img src="file:///Users/me/project/photo%20&amp;%20logo.png"');
+    expect(imageModel.html).toContain('alt="photo &amp; logo.png"');
+    expect(videoModel.html).toContain('<video src="file:///Users/me/project/movie.mp4" controls></video>');
+    expect(audioModel.html).toContain('<audio src="file:///Users/me/project/song.mp3" controls></audio>');
+    expect(pdfModel.html).toContain('<iframe class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-pdf"');
+    expect(pdfModel.html).toContain('src="file:///Users/me/project/manual.pdf"');
+  });
+
+  it("renders SVG previews as file URL image references without inline SVG injection", () => {
+    const model = createFileBrowserPreviewModel("file:///Users/me/project/logo.svg", "<svg><script>alert(1)</script></svg>", "image/svg+xml");
+
+    expect(model.route).toBe("image");
+    expect(model.html).toContain('<img src="file:///Users/me/project/logo.svg"');
+    expect(model.html).not.toContain("<svg");
+    expect(model.html).not.toContain("<script>");
   });
 
   it("classifies general file browser preview file types independent of rendering", () => {
@@ -281,8 +308,9 @@ describe("markdown document renderer", () => {
     expect(handled).toBe(true);
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(sendMessage).toHaveBeenCalledWith({
-      action: "chromeuse_fetch_directory_listing",
+      action: "chromeuse_fetch_local_file",
       url: "file:///Users/me/project/guide.md",
+      responseType: "text",
     });
     expect(doc.title).toBe("guide.md");
     expect(preview.title.textContent).toBe("guide.md");
@@ -290,6 +318,43 @@ describe("markdown document renderer", () => {
     expect(preview.raw.textContent).toBe("# Guide\n\nPreview body");
     expect(previousItem.classList.contains("active")).toBe(false);
     expect(item.classList.contains("active")).toBe(true);
+  });
+
+  it("marks the selected preview active when rendering newly expanded folders", async () => {
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, html: "# Guide\n\nPreview body" })
+      .mockResolvedValueOnce({
+        ok: true,
+        html: '<script>addRow("guide.md", "guide.md", 0, "1 KB", "today");</script>',
+      });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const navigationList = new TestElement("ul");
+    const selectedItem = renderFileTreeEntry(
+      doc as unknown as Document,
+      { name: "guide.md", url: "file:///Users/me/project/docs/guide.md", type: "file" },
+      "file:///Users/me/project/README.md",
+      navigationList as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    ) as unknown as TestElement;
+    const folderItem = renderFileTreeEntry(
+      doc as unknown as Document,
+      { name: "docs", url: "file:///Users/me/project/docs/", type: "directory" },
+      "file:///Users/me/project/README.md",
+      navigationList as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    ) as unknown as TestElement;
+    navigationList.append(selectedItem, folderItem);
+
+    selectedItem.children[0].click();
+    await waitForMicrotasks();
+    folderItem.children[0].click();
+    await waitForMicrotasks();
+
+    expect(selectedItem.classList.contains("active")).toBe(true);
+    expect(folderItem.children[1].children[0].classList.contains("active")).toBe(true);
   });
 
   it("intercepts unsupported sidebar file clicks and shows a fallback preview", async () => {
@@ -368,6 +433,7 @@ describe("markdown document renderer", () => {
     expect(sendMessage).toHaveBeenCalledWith({
       action: "chromeuse_fetch_directory_listing",
       url: "file:///Users/me/project/docs/",
+      responseType: "text",
     });
 
     button.click();
@@ -407,7 +473,44 @@ describe("markdown document renderer", () => {
     expect(sendMessage).toHaveBeenCalledWith({
       action: "chromeuse_fetch_directory_listing",
       url: "file:///Users/me/project/",
+      responseType: "text",
     });
+  });
+
+  it("fetches local text file previews through a generic file fetch action", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({ ok: true, text: "const answer = 42;" });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await expect(fetchLocalFileText("file:///Users/me/project/src/app.ts")).resolves.toBe("const answer = 42;");
+    expect(sendMessage).toHaveBeenCalledWith({
+      action: "chromeuse_fetch_local_file",
+      url: "file:///Users/me/project/src/app.ts",
+      responseType: "text",
+    });
+  });
+
+  it("fetches local file previews as array buffers for binary conversion paths", async () => {
+    const arrayBuffer = new Uint8Array([1, 2, 3]).buffer;
+    const sendMessage = vi.fn().mockResolvedValue({ ok: true, arrayBuffer });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await expect(fetchLocalFileArrayBuffer("file:///Users/me/project/deck.pptx")).resolves.toBe(arrayBuffer);
+    expect(sendMessage).toHaveBeenCalledWith({
+      action: "chromeuse_fetch_local_file",
+      url: "file:///Users/me/project/deck.pptx",
+      responseType: "arrayBuffer",
+    });
+  });
+
+  it("preserves extension and page fetch details when local text preview loading fails", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({ ok: false, error: "Missing host permission" });
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Load blocked"));
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchLocalFileText("file:///Users/me/project/README.md")).rejects.toThrow(
+      "Unable to load preview: extension fetch failed (Missing host permission); page fetch failed (Load blocked)",
+    );
   });
 
   it("parses Chrome file directory listings into files and folders", () => {
@@ -529,6 +632,7 @@ describe("markdown document renderer", () => {
     expect(sendMessage).toHaveBeenCalledWith({
       action: "chromeuse_fetch_directory_listing",
       url: "file:///Users/me/project/docs/",
+      responseType: "text",
     });
     expect(fetchMock).toHaveBeenCalledWith("file:///Users/me/project/docs/");
   });

@@ -94,9 +94,7 @@ const FILE_BROWSER_FILE_CONTENT_TYPES = new Set([
 
 const FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES = new Set([
   "application/octet-stream",
-  "application/pdf",
   "application/zip",
-  "image/svg+xml",
 ]);
 
 const FILE_BROWSER_COMPOUND_FILE_TYPES = new Map<string, FileBrowserFileType>([
@@ -210,7 +208,11 @@ export function shouldRenderFileBrowserShell(url: string, contentType: string): 
   if (isUnsafeInlinePreviewContentType(normalizedContentType)) return false;
   if (isLocalDirectoryListingUrl(url)) return DIRECTORY_LISTING_CONTENT_TYPES.has(normalizedContentType);
 
-  return FILE_BROWSER_SUPPORTED_FILE_RE.test(url) && FILE_BROWSER_FILE_CONTENT_TYPES.has(normalizedContentType);
+  const route = routeFileBrowserPreview(url, normalizedContentType);
+  if (route === "fallback") return false;
+  if (route === "markdown") return shouldRenderMarkdownDocument(url, normalizedContentType);
+  if (route === "text") return FILE_BROWSER_SUPPORTED_FILE_RE.test(url) && FILE_BROWSER_FILE_CONTENT_TYPES.has(normalizedContentType);
+  return true;
 }
 
 export function classifyFileBrowserFile(urlOrName: string, contentType = ""): FileBrowserFileType {
@@ -446,7 +448,7 @@ function fileExtensionFor(name: string): string {
 }
 
 function isUnsafeInlinePreviewContentType(contentType: string): boolean {
-  return contentType.startsWith("image/") || FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES.has(contentType);
+  return FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES.has(contentType);
 }
 
 function parseAnchorDirectoryListing(html: string, currentHref: string): FileBrowserEntry[] {
@@ -1186,6 +1188,34 @@ function createStyle(doc: Document): HTMLStyleElement {
       padding: 0;
     }
 
+    .chromeuse-markdown-media-preview {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 0;
+    }
+
+    .chromeuse-markdown-media-preview img,
+    .chromeuse-markdown-media-preview video {
+      display: block;
+      max-width: 100%;
+      max-height: calc(100vh - 160px);
+      margin: 0 auto;
+      border-radius: 12px;
+      object-fit: contain;
+    }
+
+    .chromeuse-markdown-media-preview audio {
+      width: 100%;
+    }
+
+    .chromeuse-markdown-media-preview-pdf {
+      min-height: calc(100vh - 160px);
+      border: 1px solid #e3e7ee;
+      border-radius: 12px;
+      background: #ffffff;
+    }
+
     .chromeuse-markdown-top-left,
     .chromeuse-markdown-top-actions {
       position: fixed;
@@ -1381,26 +1411,60 @@ function createStyle(doc: Document): HTMLStyleElement {
 }
 
 export async function fetchDirectoryListing(directoryUrl: string): Promise<string> {
-  return fetchTextUrl(directoryUrl, "Unable to load files");
+  return fetchTextUrl(directoryUrl, {
+    action: "chromeuse_fetch_directory_listing",
+    failureMessage: "Unable to load files",
+    responseTextKeys: ["html", "text"],
+  });
+}
+
+export async function fetchLocalFileText(fileUrl: string): Promise<string> {
+  return fetchTextUrl(fileUrl, {
+    action: "chromeuse_fetch_local_file",
+    failureMessage: "Unable to load preview",
+    responseTextKeys: ["text", "html"],
+  });
+}
+
+export async function fetchLocalFileArrayBuffer(fileUrl: string): Promise<ArrayBuffer> {
+  return fetchArrayBufferUrl(fileUrl, {
+    action: "chromeuse_fetch_local_file",
+    failureMessage: "Unable to load preview",
+  });
 }
 
 async function fetchFilePreviewSource(fileUrl: string): Promise<string> {
-  return fetchTextUrl(fileUrl, "Unable to load preview");
+  return fetchLocalFileText(fileUrl);
 }
 
-async function fetchTextUrl(url: string, failureMessage: string): Promise<string> {
+interface FetchTextUrlOptions {
+  readonly action: "chromeuse_fetch_directory_listing" | "chromeuse_fetch_local_file";
+  readonly failureMessage: string;
+  readonly responseTextKeys: readonly ("html" | "text")[];
+}
+
+interface FetchArrayBufferUrlOptions {
+  readonly action: "chromeuse_fetch_local_file";
+  readonly failureMessage: string;
+}
+
+async function fetchTextUrl(url: string, options: FetchTextUrlOptions): Promise<string> {
   let extensionFetchError: unknown;
 
   if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
     try {
       const response = await chrome.runtime.sendMessage({
-        action: "chromeuse_fetch_directory_listing",
+        action: options.action,
         url,
+        responseType: "text",
       });
-      if (response?.ok && typeof response.html === "string") return response.html;
-      if (response?.ok && typeof response.text === "string") return response.text;
+      if (response?.ok) {
+        for (const key of options.responseTextKeys) {
+          if (typeof response[key] === "string") return response[key];
+        }
+      }
       if (typeof response === "string") return response;
-      extensionFetchError = new Error(response?.error ?? "Extension fetch failed");
+      extensionFetchError = new Error(fetchResponseErrorMessage(response));
     } catch (error) {
       extensionFetchError = error;
     }
@@ -1414,10 +1478,49 @@ async function fetchTextUrl(url: string, failureMessage: string): Promise<string
     if (extensionFetchError) {
       const extensionMessage = extensionFetchError instanceof Error ? extensionFetchError.message : String(extensionFetchError);
       const pageMessage = error instanceof Error ? error.message : String(error);
-      throw new Error(`${failureMessage}: extension fetch failed (${extensionMessage}); page fetch failed (${pageMessage})`);
+      throw new Error(`${options.failureMessage}: extension fetch failed (${extensionMessage}); page fetch failed (${pageMessage})`);
     }
     throw error;
   }
+}
+
+async function fetchArrayBufferUrl(url: string, options: FetchArrayBufferUrlOptions): Promise<ArrayBuffer> {
+  let extensionFetchError: unknown;
+
+  if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: options.action,
+        url,
+        responseType: "arrayBuffer",
+      });
+      if (response?.ok && response.arrayBuffer instanceof ArrayBuffer) return response.arrayBuffer;
+      extensionFetchError = new Error(fetchResponseErrorMessage(response));
+    } catch (error) {
+      extensionFetchError = error;
+    }
+  }
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok && !isFileUrl(url)) throw new Error(`HTTP ${response.status}`);
+    return response.arrayBuffer();
+  } catch (error) {
+    if (extensionFetchError) {
+      const extensionMessage = extensionFetchError instanceof Error ? extensionFetchError.message : String(extensionFetchError);
+      const pageMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`${options.failureMessage}: extension fetch failed (${extensionMessage}); page fetch failed (${pageMessage})`);
+    }
+    throw error;
+  }
+}
+
+function fetchResponseErrorMessage(response: unknown): string {
+  if (response && typeof response === "object" && "error" in response) {
+    const error = (response as { readonly error?: unknown }).error;
+    if (typeof error === "string" && error) return error;
+  }
+  return "Extension fetch failed";
 }
 
 export async function handleFileTreeFileClick<TModel extends DocumentPreviewModel>(
@@ -1435,6 +1538,7 @@ export async function handleFileTreeFileClick<TModel extends DocumentPreviewMode
   const source = route === "markdown" || route === "text" ? await fetchFilePreviewSource(entry.url) : "";
   const model = selection.renderer.createModel(entry.url, source);
   updateDocumentPreviewContainer(doc, selection.renderer, selection.preview, model);
+  navigationList.dataset.activeUrl = entry.url;
   navigationList.querySelectorAll("li.active").forEach((activeItem) => activeItem.classList.remove("active"));
   item.classList.add("active");
   return true;
@@ -1505,7 +1609,7 @@ export function renderFileTreeEntry<TModel extends DocumentPreviewModel>(
   link.addEventListener("click", (event) => {
     void handleFileTreeFileClick(event, doc, entry, item, navigationList, selection);
   });
-  if (entry.url === currentUrl) item.classList.add("active");
+  if (entry.url === (navigationList.dataset.activeUrl ?? currentUrl)) item.classList.add("active");
   item.appendChild(link);
   return item;
 }
@@ -1532,7 +1636,8 @@ async function loadFileTreeDirectory<TModel extends DocumentPreviewModel>(
       return;
     }
 
-    for (const entry of entries) list.appendChild(renderFileTreeEntry(doc, entry, currentUrl, navigationList, selection));
+    const activeUrl = navigationList.dataset.activeUrl ?? currentUrl;
+    for (const entry of entries) list.appendChild(renderFileTreeEntry(doc, entry, activeUrl, navigationList, selection));
   } catch (error) {
     list.textContent = error instanceof Error ? error.message : "Unable to load files";
   }
