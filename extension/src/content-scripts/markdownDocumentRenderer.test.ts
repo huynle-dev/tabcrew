@@ -206,8 +206,17 @@ describe("markdown document renderer", () => {
     expect(createFileBrowserPreviewModel("file:///Users/me/project/manual.pdf", "").route).toBe("pdf");
   });
 
+  it("routes docx and xlsx files through the on-demand Office preview path", () => {
+    expect(routeFileBrowserPreview("file:///Users/me/project/brief.docx")).toBe("office");
+    expect(routeFileBrowserPreview("file:///Users/me/project/budget.xlsx")).toBe("office");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/brief.docx", "").route).toBe("office");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/budget.xlsx", "").route).toBe("office");
+  });
+
   it("routes unsupported, binary, and archive files through the fallback path", () => {
     expect(createFileBrowserPreviewModel("file:///Users/me/project/deck.pptx", "").route).toBe("fallback");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/legacy.doc", "").route).toBe("fallback");
+    expect(createFileBrowserPreviewModel("file:///Users/me/project/legacy.xls", "").route).toBe("fallback");
     expect(createFileBrowserPreviewModel("file:///Users/me/project/program.bin", "").route).toBe("fallback");
     expect(createFileBrowserPreviewModel("file:///Users/me/project/archive.zip", "").route).toBe("fallback");
   });
@@ -229,14 +238,14 @@ describe("markdown document renderer", () => {
     expect(unknownModel.html).toContain("Preview is not available for binary files.");
   });
 
-  it("documents Office previews as fallback-only to keep parser dependencies out of the content-script bundle", () => {
+  it("documents unsupported Office formats as fallback-only", () => {
     const model = createFileBrowserPreviewModel("file:///Users/me/project/deck.pptx", "binary office contents");
 
     expect(model.fileType).toBe("office");
     expect(model.route).toBe("fallback");
     expect(model.source).toBe("");
-    expect(model.html).toContain("Office previews are fallback-only");
-    expect(model.html).toContain("mammoth/xlsx are not bundled into this always-injected content script");
+    expect(model.html).toContain("This Office format is not supported by the on-demand ChromeUse preview renderer");
+    expect(model.html).toContain("DOCX and XLSX can render via the service worker; other Office formats are fallback-only");
   });
 
   it("keeps the TOC markdown-only by returning empty outlines for non-markdown previews", () => {
@@ -492,6 +501,92 @@ describe("markdown document renderer", () => {
     expect(preview.raw.textContent).toBe("# Guide\n\nPreview body");
     expect(previousItem.classList.contains("active")).toBe(false);
     expect(item.classList.contains("active")).toBe(true);
+  });
+
+  it("renders docx previews returned by the service-worker Office renderer", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      html: '<div class="chromeuse-office-preview chromeuse-office-docx"><p>Quarterly plan</p></div>',
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const preventDefault = vi.fn();
+
+    const handled = await handleFileTreeFileClick(
+      { preventDefault },
+      doc as unknown as Document,
+      { name: "brief.docx", url: "file:///Users/me/project/brief.docx", type: "file" },
+      new TestElement("li") as unknown as HTMLElement,
+      new TestElement("ul") as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    );
+
+    expect(handled).toBe(true);
+    expect(sendMessage).toHaveBeenCalledWith({
+      action: "chromeuse_render_office_preview",
+      url: "file:///Users/me/project/brief.docx",
+      fileType: "docx",
+    });
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ responseType: "text" }));
+    expect(preview.title.textContent).toBe("brief.docx");
+    expect(preview.content.innerHTML).toContain("chromeuse-office-docx");
+    expect(preview.content.innerHTML).toContain("Quarterly plan");
+    expect(preview.raw.hidden).toBe(true);
+  });
+
+  it("renders xlsx previews returned by the service-worker Office renderer", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      html: '<div class="chromeuse-office-preview"><section class="chromeuse-office-sheet"><h2>Sheet1</h2><table><tbody><tr><td>Total</td></tr></tbody></table></section></div>',
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+
+    await handleFileTreeFileClick(
+      { preventDefault: vi.fn() },
+      doc as unknown as Document,
+      { name: "budget.xlsx", url: "file:///Users/me/project/budget.xlsx", type: "file" },
+      new TestElement("li") as unknown as HTMLElement,
+      new TestElement("ul") as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith({
+      action: "chromeuse_render_office_preview",
+      url: "file:///Users/me/project/budget.xlsx",
+      fileType: "xlsx",
+    });
+    expect(preview.content.innerHTML).toContain("chromeuse-office-sheet");
+    expect(preview.content.innerHTML).toContain("Total");
+  });
+
+  it("shows a graceful Office preview fallback when service-worker rendering fails", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "Unable to render DOCX preview: corrupt zip",
+      html: '<div class="chromeuse-markdown-fallback-preview">Unable to render DOCX preview: corrupt zip</div>',
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+
+    await handleFileTreeFileClick(
+      { preventDefault: vi.fn() },
+      doc as unknown as Document,
+      { name: "brief.docx", url: "file:///Users/me/project/brief.docx", type: "file" },
+      new TestElement("li") as unknown as HTMLElement,
+      new TestElement("ul") as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    );
+
+    expect(preview.title.textContent).toBe("brief.docx");
+    expect(preview.content.innerHTML).toContain("chromeuse-markdown-fallback-preview");
+    expect(preview.content.innerHTML).toContain("Unable to render DOCX preview: corrupt zip");
   });
 
   it("marks the selected preview active when rendering newly expanded folders", async () => {

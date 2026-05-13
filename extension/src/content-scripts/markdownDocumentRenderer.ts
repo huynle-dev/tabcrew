@@ -27,7 +27,7 @@ export type FileBrowserFileType =
   | "archive"
   | "binary";
 
-export type FileBrowserPreviewRoute = "markdown" | "text" | "image" | "video" | "audio" | "pdf" | "fallback";
+export type FileBrowserPreviewRoute = "markdown" | "text" | "image" | "video" | "audio" | "pdf" | "office" | "fallback";
 
 export interface DocumentOutlineEntry {
   readonly level: 1 | 2 | 3;
@@ -257,6 +257,7 @@ export function routeFileBrowserPreview(urlOrName: string, contentType = ""): Fi
     case "pdf":
       return fileType;
     case "office":
+      return isSupportedOfficePreviewFile(urlOrName) ? "office" : "fallback";
     case "archive":
     case "binary":
       return "fallback";
@@ -308,14 +309,28 @@ function renderFileBrowserPreviewHtml(
       return `<figure class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-audio"><audio src="${safeUrl}" controls></audio></figure>`;
     case "pdf":
       return `<iframe class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-pdf" src="${safeUrl}" title="${safeTitle}"></iframe>`;
+    case "office":
+      return `<div class="chromeuse-markdown-fallback-preview"><h1>Office preview loading</h1><p>DOCX and XLSX previews are rendered on demand by the ChromeUse service worker to keep parser dependencies out of this always-injected content script.</p><p><a class="chromeuse-markdown-error-action" href="${safeUrl}">Open file in browser</a></p></div>`;
     case "fallback":
       if (fileType === "office") {
-        return `<div class="chromeuse-markdown-fallback-preview"><h1>Office preview unavailable</h1><p>Office previews are fallback-only for now. Native rendering is not available for this Office format in ChromeUse.</p><p>mammoth/xlsx are not bundled into this always-injected content script. Open the file in the browser or an external Office-compatible application to view it.</p><p><a class="chromeuse-markdown-error-action" href="${safeUrl}">Open file in browser</a></p></div>`;
+        return `<div class="chromeuse-markdown-fallback-preview"><h1>Office preview unavailable</h1><p>This Office format is not supported by the on-demand ChromeUse preview renderer. DOCX and XLSX can render via the service worker; other Office formats are fallback-only.</p><p>Open the file in the browser or an external Office-compatible application to view it.</p><p><a class="chromeuse-markdown-error-action" href="${safeUrl}">Open file in browser</a></p></div>`;
       }
       return `<div class="chromeuse-markdown-fallback-preview"><h1>Preview unavailable</h1><p>Preview is not available for ${escapeHtml(fileType)} files.</p><p><a class="chromeuse-markdown-error-action" href="${safeUrl}">Open file in browser</a></p></div>`;
     case "markdown":
       return renderMarkdown(source);
   }
+}
+
+function createOfficePreviewModel(url: string, html: string): FileBrowserPreviewModel {
+  return {
+    title: titleFromUrl(url),
+    source: "",
+    html,
+    outline: [],
+    headings: [],
+    fileType: "office",
+    route: "office",
+  };
 }
 
 function createFileBrowserErrorModel(url: string, error: unknown): DocumentPreviewModel {
@@ -472,6 +487,16 @@ function fileExtensionFor(name: string): string {
   const dotIndex = name.lastIndexOf(".");
   if (dotIndex <= 0 || dotIndex === name.length - 1) return "";
   return name.slice(dotIndex + 1);
+}
+
+function supportedOfficePreviewType(urlOrName: string): "docx" | "xlsx" | null {
+  const extension = fileExtensionFor(fileNameFromUrlOrPath(urlOrName).toLowerCase());
+  if (extension === "docx" || extension === "xlsx") return extension;
+  return null;
+}
+
+function isSupportedOfficePreviewFile(urlOrName: string): boolean {
+  return supportedOfficePreviewType(urlOrName) !== null;
 }
 
 function isUnsafeInlinePreviewContentType(contentType: string): boolean {
@@ -1494,6 +1519,21 @@ async function fetchFilePreviewSource(fileUrl: string): Promise<string> {
   return fetchLocalFileText(fileUrl);
 }
 
+async function fetchOfficePreviewHtml(fileUrl: string): Promise<string> {
+  const fileType = supportedOfficePreviewType(fileUrl);
+  if (!fileType) throw new Error("Unsupported Office preview type");
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) throw new Error("Office preview requires the ChromeUse service worker");
+
+  const response = await chrome.runtime.sendMessage({
+    action: "chromeuse_render_office_preview",
+    url: fileUrl,
+    fileType,
+  });
+
+  if (response && typeof response === "object" && "html" in response && typeof response.html === "string") return response.html;
+  throw new Error(fetchResponseErrorMessage(response));
+}
+
 interface FetchTextUrlOptions {
   readonly action: "chromeuse_fetch_directory_listing" | "chromeuse_fetch_local_file";
   readonly failureMessage: string;
@@ -1594,9 +1634,14 @@ export async function handleFileTreeFileClick<TModel extends DocumentPreviewMode
   event.preventDefault();
   const route = routeFileBrowserPreview(entry.url);
   try {
-    const source = route === "markdown" || route === "text" ? await fetchFilePreviewSource(entry.url) : "";
-    const model = selection.renderer.createModel(entry.url, source);
-    updateDocumentPreviewContainer(doc, selection.renderer, selection.preview, model);
+    if (route === "office") {
+      const model = createOfficePreviewModel(entry.url, await fetchOfficePreviewHtml(entry.url));
+      updateDocumentPreviewContainer(doc, { shouldRender: () => true, createModel: () => model }, selection.preview, model);
+    } else {
+      const source = route === "markdown" || route === "text" ? await fetchFilePreviewSource(entry.url) : "";
+      const model = selection.renderer.createModel(entry.url, source);
+      updateDocumentPreviewContainer(doc, selection.renderer, selection.preview, model);
+    }
   } catch (error) {
     const model = createFileBrowserErrorModel(entry.url, error);
     updateDocumentPreviewContainer(doc, { shouldRender: () => true, createModel: () => model }, selection.preview, model);

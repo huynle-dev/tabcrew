@@ -23,6 +23,7 @@ import {
   setConnectionStatus,
 } from "./sidePanelHandler.js";
 import { registerTools } from "./tools/index.js";
+import { handleOfficePreviewMessage } from "./officePreviewMessages.js";
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -41,6 +42,10 @@ initSidePanelHandler();
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message !== "object") {
     return false;
+  }
+
+  if (handleOfficePreviewMessage(message, sendResponse)) {
+    return true;
   }
 
   if (message.action === "chromeuse_fetch_directory_listing") {
