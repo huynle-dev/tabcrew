@@ -8,6 +8,7 @@ import {
   getFileTreeIconPath,
   getParentDirectoryUrl,
   markdownDocumentRenderer,
+  shouldRenderFileBrowserShell,
   parseDirectoryListing,
   shouldRenderMarkdownDocument,
 } from "./markdownDocumentRenderer.js";
@@ -19,10 +20,27 @@ describe("markdown document renderer", () => {
 
   it("recognizes markdown documents opened directly in a Chrome tab", () => {
     expect(shouldRenderMarkdownDocument("file:///Users/me/notes.md", "text/plain")).toBe(true);
+    expect(shouldRenderMarkdownDocument("file:///Users/me/notes.md", "text/plain; charset=utf-8")).toBe(true);
+    expect(shouldRenderMarkdownDocument("file:///Users/me/notes.md#heading", "")).toBe(true);
+    expect(shouldRenderMarkdownDocument("file:///Users/me/notes.MDX", "application/octet-stream")).toBe(true);
     expect(shouldRenderMarkdownDocument("https://example.com/spec.markdown", "text/plain")).toBe(true);
     expect(shouldRenderMarkdownDocument("https://example.com/readme.mdx?raw=1", "text/markdown")).toBe(true);
+    expect(shouldRenderMarkdownDocument("https://example.com/download", "text/x-markdown; charset=utf-8")).toBe(true);
+    expect(shouldRenderMarkdownDocument("https://example.com/component", "text/mdx")).toBe(true);
     expect(shouldRenderMarkdownDocument("https://github.com/org/repo/blob/main/README.md", "text/html")).toBe(false);
     expect(shouldRenderMarkdownDocument("https://example.com/data.json", "application/json")).toBe(false);
+  });
+
+  it("recognizes local directory listings for the file browser shell", () => {
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/docs/", "text/html")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/docs/", "text/html; charset=utf-8")).toBe(true);
+    expect(shouldRenderFileBrowserShell("https://example.com/docs/", "text/html")).toBe(false);
+  });
+
+  it("recognizes supported local non-markdown files for the file browser shell", () => {
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/src/app.ts", "text/plain")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/package.json", "application/json")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/archive.zip", "application/zip")).toBe(false);
   });
 
   it("creates a safe rendered markdown document model", () => {
@@ -41,6 +59,8 @@ describe("markdown document renderer", () => {
 
   it("exposes markdown rendering through a generic document renderer boundary", () => {
     expect(markdownDocumentRenderer.shouldRender("file:///Users/me/notes.md", "text/plain")).toBe(true);
+    expect(markdownDocumentRenderer.shouldRender("file:///Users/me/project/docs/", "text/html")).toBe(true);
+    expect(markdownDocumentRenderer.shouldRender("file:///Users/me/project/src/app.ts", "text/plain")).toBe(true);
 
     const model = markdownDocumentRenderer.createModel("file:///Users/me/notes.md", "# Notes");
 

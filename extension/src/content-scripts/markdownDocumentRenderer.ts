@@ -34,11 +34,14 @@ export type MarkdownFileTreeEntry = FileBrowserEntry;
 export type MarkdownHeading = DocumentOutlineEntry;
 
 const MARKDOWN_DOCUMENT_RE = /\.(?:md|mdx|markdown)(?:[?#].*)?$/i;
+const FILE_BROWSER_SUPPORTED_FILE_RE = /\.(?:cjs|css|go|htm|html|js|json|jsx|md|mdx|markdown|mjs|py|rs|svelte|ts|tsx|vue)(?:[?#].*)?$/i;
 const MARKDOWN_CONTENT_TYPES = new Set([
   "text/markdown",
   "text/x-markdown",
   "text/mdx",
 ]);
+
+const DIRECTORY_LISTING_CONTENT_TYPES = new Set(["text/html"]);
 
 const PLAIN_DOCUMENT_CONTENT_TYPES = new Set([
   "",
@@ -46,12 +49,30 @@ const PLAIN_DOCUMENT_CONTENT_TYPES = new Set([
   "application/octet-stream",
 ]);
 
+const FILE_BROWSER_FILE_CONTENT_TYPES = new Set([
+  ...PLAIN_DOCUMENT_CONTENT_TYPES,
+  "application/json",
+  "application/javascript",
+  "text/css",
+  "text/html",
+  "text/javascript",
+]);
+
 let hideDotFiles = true;
 
 export function shouldRenderMarkdownDocument(url: string, contentType: string): boolean {
-  const normalizedContentType = contentType.split(";", 1)[0].trim().toLowerCase();
+  const normalizedContentType = normalizeContentType(contentType);
   if (MARKDOWN_CONTENT_TYPES.has(normalizedContentType)) return true;
   return MARKDOWN_DOCUMENT_RE.test(url) && PLAIN_DOCUMENT_CONTENT_TYPES.has(normalizedContentType);
+}
+
+export function shouldRenderFileBrowserShell(url: string, contentType: string): boolean {
+  if (!isFileUrl(url)) return false;
+
+  const normalizedContentType = normalizeContentType(contentType);
+  if (isLocalDirectoryListingUrl(url)) return DIRECTORY_LISTING_CONTENT_TYPES.has(normalizedContentType);
+
+  return FILE_BROWSER_SUPPORTED_FILE_RE.test(url) && FILE_BROWSER_FILE_CONTENT_TYPES.has(normalizedContentType);
 }
 
 export function createMarkdownDocumentModel(url: string, source: string): MarkdownDocumentModel {
@@ -66,7 +87,7 @@ export function createMarkdownDocumentModel(url: string, source: string): Markdo
 }
 
 export const markdownDocumentRenderer: DocumentPreviewRenderer<MarkdownDocumentModel> = {
-  shouldRender: shouldRenderMarkdownDocument,
+  shouldRender: (url, contentType) => shouldRenderMarkdownDocument(url, contentType) || shouldRenderFileBrowserShell(url, contentType),
   createModel: createMarkdownDocumentModel,
   renderContentEffects: (doc, _model, content) => renderMermaidDiagrams(doc, content),
 };
@@ -152,6 +173,19 @@ function isFileUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isLocalDirectoryListingUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "file:" && parsed.pathname.endsWith("/");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeContentType(contentType: string): string {
+  return contentType.split(";", 1)[0].trim().toLowerCase();
 }
 
 function parseAnchorDirectoryListing(html: string, currentHref: string): MarkdownFileTreeEntry[] {
