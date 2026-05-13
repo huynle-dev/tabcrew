@@ -167,6 +167,16 @@ describe("markdown document renderer", () => {
     expect(createFileBrowserPreviewModel("file:///Users/me/project/archive.zip", "").route).toBe("fallback");
   });
 
+  it("documents Office previews as fallback-only to keep parser dependencies out of the content-script bundle", () => {
+    const model = createFileBrowserPreviewModel("file:///Users/me/project/deck.pptx", "binary office contents");
+
+    expect(model.fileType).toBe("office");
+    expect(model.route).toBe("fallback");
+    expect(model.source).toBe("");
+    expect(model.html).toContain("Office previews are fallback-only");
+    expect(model.html).toContain("mammoth/xlsx are not bundled into this always-injected content script");
+  });
+
   it("keeps the TOC markdown-only by returning empty outlines for non-markdown previews", () => {
     for (const name of ["notes.txt", "photo.png", "movie.mp4", "song.mp3", "manual.pdf", "archive.zip"]) {
       expect(createFileBrowserPreviewModel(`file:///Users/me/project/${name}`, "# Not a markdown heading").outline).toEqual([]);
@@ -222,7 +232,7 @@ describe("markdown document renderer", () => {
   });
 
   it("renders mermaid fences as mermaid diagram containers", () => {
-    const model = createMarkdownDocumentModel(
+    const model = createFileBrowserPreviewModel(
       "file:///Users/me/diagram.md",
       "# Diagram\n\n```mermaid\nflowchart TD\n  A --> B\n```",
     );
@@ -234,7 +244,7 @@ describe("markdown document renderer", () => {
 
   it("runs mermaid effects when markdown previews are rendered or updated", () => {
     const doc = createTestDocument();
-    const model = createMarkdownDocumentModel(
+    const model = createFileBrowserPreviewModel(
       "file:///Users/me/diagram.md",
       "# Diagram\n\n```mermaid\nflowchart TD\n  A --> B\n```",
     );
@@ -575,8 +585,37 @@ describe("markdown document renderer", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchLocalFileText("file:///Users/me/project/README.md")).rejects.toThrow(
-      "Unable to load preview: extension fetch failed (Missing host permission); page fetch failed (Load blocked)",
+      "Unable to load preview: extension fetch failed (Missing host permission); page fetch failed (Load blocked). Allow access to file URLs",
     );
+  });
+
+  it("shows actionable local-file permission guidance when sidebar file preview loading fails", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({ ok: false, error: "Missing host permission" });
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Load blocked"));
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    vi.stubGlobal("fetch", fetchMock);
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const item = new TestElement("li");
+    const navigationList = new TestElement("ul");
+    const preventDefault = vi.fn();
+
+    const handled = await handleFileTreeFileClick(
+      { preventDefault },
+      doc as unknown as Document,
+      { name: "guide.md", url: "file:///Users/me/project/guide.md", type: "file" },
+      item as unknown as HTMLElement,
+      navigationList as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    );
+
+    expect(handled).toBe(true);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(preview.content.innerHTML).toContain("Preview unavailable");
+    expect(preview.content.innerHTML).toContain("Allow access to file URLs");
+    expect(preview.content.innerHTML).toContain("Open file in browser");
+    expect(item.classList.contains("active")).toBe(true);
   });
 
   it("parses Chrome file directory listings into files and folders", () => {
@@ -717,6 +756,34 @@ describe("markdown document renderer", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchDirectoryListing("file:///Users/me/project/docs/")).resolves.toBe("file directory html");
+  });
+
+  it("shows local-file permission guidance when expanded directory loading fails", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({ ok: false, error: "Missing host permission" });
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Load blocked"));
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    vi.stubGlobal("fetch", fetchMock);
+    const doc = createTestDocument();
+    const initialModel = createMarkdownDocumentModel("file:///Users/me/project/README.md", "# Readme");
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, initialModel);
+    const navigationList = new TestElement("ul");
+    const folderItem = renderFileTreeEntry(
+      doc as unknown as Document,
+      { name: "docs", url: "file:///Users/me/project/docs/", type: "directory" },
+      "file:///Users/me/project/README.md",
+      navigationList as unknown as HTMLElement,
+      { renderer: markdownDocumentRenderer, preview },
+    ) as unknown as TestElement;
+    const childList = folderItem.children[1];
+
+    folderItem.children[0].click();
+    await waitForMicrotasks();
+    await waitForMicrotasks();
+
+    expect(childList.textContent).toContain("Unable to load files");
+    expect(childList.textContent).toContain("Allow access to file URLs");
+    expect(childList.textContent).toContain("Open folder in browser");
+    expect(preview.title.textContent).toBe("README.md");
   });
 });
 

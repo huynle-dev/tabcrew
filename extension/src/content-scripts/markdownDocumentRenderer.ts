@@ -96,7 +96,6 @@ const FILE_BROWSER_UNSAFE_INLINE_CONTENT_TYPES = new Set([
   "application/octet-stream",
   "application/zip",
 ]);
-
 const FILE_BROWSER_COMPOUND_FILE_TYPES = new Map<string, FileBrowserFileType>([
   ["dockerfile", "text"],
   ["makefile", "text"],
@@ -308,6 +307,9 @@ function renderFileBrowserPreviewHtml(
     case "pdf":
       return `<iframe class="chromeuse-markdown-media-preview chromeuse-markdown-media-preview-pdf" src="${safeUrl}" title="${safeTitle}"></iframe>`;
     case "fallback":
+      if (fileType === "office") {
+        return `<div class="chromeuse-markdown-fallback-preview">Office previews are fallback-only for now. mammoth/xlsx are not bundled into this always-injected content script; open the file directly to view it.</div>`;
+      }
       return `<div class="chromeuse-markdown-fallback-preview">Preview is not available for ${escapeHtml(fileType)} files. Open the file directly to view it.</div>`;
     case "markdown":
       return renderMarkdown(source);
@@ -1214,6 +1216,17 @@ function createStyle(doc: Document): HTMLStyleElement {
       border: 1px solid #e3e7ee;
       border-radius: 12px;
       background: #ffffff;
+    }
+
+    .chromeuse-markdown-fallback-preview {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 30px;
+      border: 1px solid #f2c8c8;
+      border-radius: 16px;
+      background: #fff7f7;
+      color: #713f3f;
+      font-size: 17px;
     }
 
     .chromeuse-markdown-top-left,
