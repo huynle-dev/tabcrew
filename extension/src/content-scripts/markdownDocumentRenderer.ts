@@ -1717,8 +1717,20 @@ export function updateDocumentPreviewContainer<TModel extends DocumentPreviewMod
   preview.content.innerHTML = model.html;
   applyHeadingIds(preview.content, model.outline);
   preview.raw.textContent = model.source;
+  const hasRawSource = model.source.length > 0;
+  preview.raw.hidden = !hasRawSource;
+  if (!hasRawSource) doc.body.classList.remove("chromeuse-raw-visible");
+  syncRawToggle(doc, hasRawSource);
   preview.tocPanel?.replaceChildren(createTocList(doc, model.outline));
   renderer.renderContentEffects?.(doc, model, preview.content);
+}
+
+function syncRawToggle(doc: Document, hasRawSource: boolean): void {
+  const rawToggle = doc.body.querySelector<HTMLButtonElement>(".chromeuse-markdown-raw-toggle");
+  if (!rawToggle) return;
+
+  rawToggle.hidden = !hasRawSource;
+  rawToggle.disabled = !hasRawSource;
 }
 
 function createSideSwitch(doc: Document, filesPanel: HTMLElement, tocPanel: HTMLElement): HTMLElement {
@@ -1877,10 +1889,15 @@ function createTopControls(doc: Document, raw: HTMLElement): DocumentFragment {
 
   const code = doc.createElement("button");
   code.type = "button";
-  code.className = "chromeuse-markdown-icon-button";
+  code.className = "chromeuse-markdown-icon-button chromeuse-markdown-raw-toggle";
   code.textContent = "</>";
   code.title = "Toggle raw";
-  code.addEventListener("click", () => doc.body.classList.toggle("chromeuse-raw-visible"));
+  code.hidden = raw.textContent.length === 0;
+  code.disabled = raw.textContent.length === 0;
+  code.addEventListener("click", () => {
+    if (code.disabled || code.hidden) return;
+    doc.body.classList.toggle("chromeuse-raw-visible");
+  });
   actions.append(more, code, optionsMenu);
 
   fragment.append(left, actions, raw);

@@ -296,6 +296,42 @@ describe("markdown document renderer", () => {
     expect(darkButton?.classList.contains("active")).toBe(true);
   });
 
+  it("keeps the raw toggle available for text previews", () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
+    const doc = createTestDocument("text/plain");
+    const source = "const answer = 42;";
+    const originalPre = doc.createElement("pre");
+    originalPre.textContent = source;
+    doc.body.appendChild(originalPre);
+
+    const rendered = renderCurrentPreviewDocument(markdownDocumentRenderer, doc as unknown as Document, "file:///Users/me/app.ts");
+
+    expect(rendered).toBe(true);
+    expect(doc.body.querySelector(".chromeuse-markdown-raw-view")?.textContent).toBe(source);
+    const rawButton = doc.body.querySelector('[title="Toggle raw"]');
+    expect(rawButton?.hidden).toBe(false);
+    expect(rawButton?.disabled).toBe(false);
+
+    rawButton?.click();
+    expect(doc.body.classList.contains("chromeuse-raw-visible")).toBe(true);
+  });
+
+  it("disables raw controls for binary previews without raw source", () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
+    const doc = createTestDocument("image/png");
+
+    const rendered = renderCurrentPreviewDocument(markdownDocumentRenderer, doc as unknown as Document, "file:///Users/me/photo.png");
+
+    expect(rendered).toBe(true);
+    expect(doc.body.querySelector(".chromeuse-markdown-raw-view")?.hidden).toBe(true);
+    const rawButton = doc.body.querySelector('[title="Toggle raw"]');
+    expect(rawButton?.hidden).toBe(true);
+    expect(rawButton?.disabled).toBe(true);
+
+    rawButton?.click();
+    expect(doc.body.classList.contains("chromeuse-raw-visible")).toBe(false);
+  });
+
   it("extracts headings for a TOC side panel", () => {
     expect(extractMarkdownHeadings("# Title\n\n## Goal\n\n### Notes\n\n#### Hidden")).toEqual([
       { level: 1, text: "Title", id: "title" },
@@ -794,6 +830,7 @@ class TestElement {
   private readonly listeners: Record<string, ((event: { preventDefault: () => void }) => void)[]> = {};
   className = "";
   hidden = false;
+  disabled = false;
   href = "";
   id = "";
   rel = "";
