@@ -76,6 +76,18 @@ describe("markdown document renderer", () => {
     expect(shouldRenderFileBrowserShell("https://example.com/project/photo.png", "image/png")).toBe(false);
   });
 
+  it("recognizes local Office files for fallback file URL previews", () => {
+    expect(
+      shouldRenderFileBrowserShell(
+        "file:///Users/me/project/deck.pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ),
+    ).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/brief.doc", "application/msword")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/budget.xls", "application/vnd.ms-excel")).toBe(true);
+    expect(shouldRenderFileBrowserShell("file:///Users/me/project/archive.zip", "application/zip")).toBe(false);
+  });
+
   it("renders media and PDF previews from escaped file URLs", () => {
     const imageModel = createFileBrowserPreviewModel("file:///Users/me/project/photo%20&%20logo.png", "", "image/png");
     const videoModel = createFileBrowserPreviewModel("file:///Users/me/project/movie.mp4", "", "video/mp4");

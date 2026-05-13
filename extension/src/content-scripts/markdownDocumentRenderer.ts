@@ -208,7 +208,7 @@ export function shouldRenderFileBrowserShell(url: string, contentType: string): 
   if (isLocalDirectoryListingUrl(url)) return DIRECTORY_LISTING_CONTENT_TYPES.has(normalizedContentType);
 
   const route = routeFileBrowserPreview(url, normalizedContentType);
-  if (route === "fallback") return false;
+  if (route === "fallback") return classifyFileBrowserFile(url, normalizedContentType) === "office";
   if (route === "markdown") return shouldRenderMarkdownDocument(url, normalizedContentType);
   if (route === "text") return FILE_BROWSER_SUPPORTED_FILE_RE.test(url) && FILE_BROWSER_FILE_CONTENT_TYPES.has(normalizedContentType);
   return true;
