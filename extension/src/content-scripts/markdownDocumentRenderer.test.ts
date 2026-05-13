@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import mermaid from "mermaid";
 import type { FileBrowserEntry } from "./markdownDocumentRenderer.js";
 import {
   addParentDirectoryEntry,
@@ -17,6 +18,7 @@ import {
   limitPreviewSource,
   MAX_TEXT_PREVIEW_CHARACTERS,
   markdownDocumentRenderer,
+  renderCurrentPreviewDocument,
   renderFileTreeEntry,
   shouldRenderFileBrowserShell,
   parseDirectoryListing,
@@ -25,9 +27,19 @@ import {
   updateDocumentPreviewContainer,
 } from "./markdownDocumentRenderer.js";
 
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: vi.fn(),
+    run: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+const mockedMermaid = vi.mocked(mermaid);
+
 describe("markdown document renderer", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
   it("recognizes markdown documents opened directly in a Chrome tab", () => {
@@ -218,6 +230,60 @@ describe("markdown document renderer", () => {
     expect(model.html).toContain('class="mermaid"');
     expect(model.html).toContain("flowchart TD");
     expect(model.html).not.toContain("language-mermaid");
+  });
+
+  it("runs mermaid effects when markdown previews are rendered or updated", () => {
+    const doc = createTestDocument();
+    const model = createMarkdownDocumentModel(
+      "file:///Users/me/diagram.md",
+      "# Diagram\n\n```mermaid\nflowchart TD\n  A --> B\n```",
+    );
+    const preview = createDocumentPreviewContainer(doc as unknown as Document, model);
+
+    updateDocumentPreviewContainer(doc as unknown as Document, markdownDocumentRenderer, preview, model);
+
+    expect(mockedMermaid.initialize).toHaveBeenCalledWith({ startOnLoad: false, theme: "default" });
+    expect(mockedMermaid.run).toHaveBeenCalledWith({ nodes: expect.arrayContaining([expect.any(TestElement)]) });
+
+    mockedMermaid.initialize.mockClear();
+    mockedMermaid.run.mockClear();
+    doc.body.classList.add("chromeuse-theme-dark");
+
+    updateDocumentPreviewContainer(doc as unknown as Document, markdownDocumentRenderer, preview, model);
+
+    expect(mockedMermaid.initialize).toHaveBeenCalledWith({ startOnLoad: false, theme: "dark" });
+    expect(mockedMermaid.run).toHaveBeenCalledWith({ nodes: expect.arrayContaining([expect.any(TestElement)]) });
+  });
+
+  it("preserves markdown raw, TOC, theme, and raw controls in the full preview shell", () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
+    const doc = createTestDocument("text/plain");
+    const source = "# Title\n\n## Details\n\nBody";
+    const originalPre = doc.createElement("pre");
+    originalPre.textContent = source;
+    doc.body.appendChild(originalPre);
+
+    const rendered = renderCurrentPreviewDocument(markdownDocumentRenderer, doc as unknown as Document, "file:///Users/me/README.md");
+
+    expect(rendered).toBe(true);
+    expect(doc.title).toBe("README.md");
+    expect(doc.body.classList.contains("chromeuse-markdown-document")).toBe(true);
+    expect(doc.body.querySelector(".chromeuse-markdown-content")?.innerHTML).toContain('<h1 id="title">Title</h1>');
+    expect(doc.body.querySelector(".chromeuse-markdown-toc-list")?.textContent).toContain("Details");
+    expect(doc.body.querySelector(".chromeuse-markdown-raw-view")?.textContent).toBe(source);
+
+    const rawButton = doc.body.querySelector('[title="Toggle raw"]');
+    rawButton?.click();
+    expect(doc.body.classList.contains("chromeuse-raw-visible")).toBe(true);
+
+    const moreButton = doc.body.querySelector('[title="More"]');
+    moreButton?.click();
+    expect(doc.body.querySelector(".chromeuse-markdown-top-actions")?.classList.contains("open")).toBe(true);
+
+    const darkButton = doc.body.querySelector('[data-theme="dark"]');
+    darkButton?.click();
+    expect(doc.body.classList.contains("chromeuse-theme-dark")).toBe(true);
+    expect(darkButton?.classList.contains("active")).toBe(true);
   });
 
   it("extracts headings for a TOC side panel", () => {
@@ -663,6 +729,9 @@ class TestElement {
   hidden = false;
   href = "";
   id = "";
+  rel = "";
+  src = "";
+  title = "";
   type = "";
   private html = "";
   private text = "";
@@ -717,9 +786,16 @@ class TestElement {
   }
 
   click(): void {
-    const event = { preventDefault: vi.fn() };
+    const event = { preventDefault: vi.fn(), stopPropagation: vi.fn() };
     for (const listener of this.listeners.click ?? []) listener(event);
   }
+
+  dispatchEvent(event: { type: string; preventDefault?: () => void }): boolean {
+    for (const listener of this.listeners[event.type] ?? []) listener({ preventDefault: event.preventDefault ?? vi.fn() });
+    return true;
+  }
+
+  remove(): void {}
 
   replaceChildren(...children: TestElement[]): void {
     this.textContent = "";
@@ -736,10 +812,27 @@ class TestElement {
       span.className = match[1];
       this.children.push(span);
     }
+    for (const match of value.matchAll(/<div class="([^"]+)">([\s\S]*?)<\/div>/g)) {
+      const div = new TestElement("div");
+      div.className = match[1];
+      div.textContent = match[2].replace(/<[^>]+>/g, "");
+      this.children.push(div);
+    }
     for (const match of value.matchAll(/<h([1-3])>(.*?)<\/h\1>/g)) {
       const heading = new TestElement(`h${match[1]}`);
       heading.textContent = match[2].replace(/<[^>]+>/g, "");
       this.children.push(heading);
+    }
+    for (const match of value.matchAll(/<input\s+([^>]*?)\s*\/>/g)) {
+      const input = new TestElement("input");
+      applyHtmlAttributes(input, match[1]);
+      this.children.push(input);
+    }
+    for (const match of value.matchAll(/<button\s+([^>]*?)>(.*?)<\/button>/g)) {
+      const button = new TestElement("button");
+      applyHtmlAttributes(button, match[1]);
+      button.textContent = match[2].replace(/<[^>]+>/g, "");
+      this.children.push(button);
     }
   }
 
@@ -765,10 +858,16 @@ class TestElement {
   }
 
   querySelectorAll(selector: string): TestElement[] {
-    const selectors = selector.split(",").map((part) => part.trim().toLowerCase());
+    const selectors = selector.split(",").map((part) => part.trim());
     const matches = (element: TestElement) =>
       selectors.some((part) => {
-        const [tagName, className] = part.split(".");
+        const normalized = part.toLowerCase();
+        if (normalized === "[data-theme]") return element.dataset.theme !== undefined;
+        if (normalized === "[data-option]") return element.dataset.option !== undefined;
+        if (normalized.startsWith("[data-theme=")) return element.dataset.theme === part.match(/\[data-theme="([^"]+)"\]/)?.[1];
+        if (normalized.startsWith("[data-option=")) return element.dataset.option === part.match(/\[data-option="([^"]+)"\]/)?.[1];
+        if (normalized.startsWith("[title=")) return element.title === part.match(/\[title="([^"]+)"\]/)?.[1];
+        const [tagName, className] = normalized.split(".");
         if (tagName && tagName !== element.tagName) return false;
         return !className || element.classList.contains(className);
       });
@@ -776,14 +875,53 @@ class TestElement {
       element.children.flatMap((child) => [child, ...descendants(child)]);
     return descendants(this).filter(matches);
   }
+
+  querySelector(selector: string): TestElement | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
 }
 
-function createTestDocument(): { body: TestElement; title: string; createElement: (tagName: string) => TestElement } {
+function createTestDocument(contentType = ""): {
+  body: TestElement;
+  head: TestElement;
+  title: string;
+  contentType: string;
+  createDocumentFragment: () => TestElement;
+  createElement: (tagName: string) => TestElement;
+  addEventListener: (type: string, listener: (event: { preventDefault: () => void }) => void) => void;
+  dispatchEvent: (event: { type: string; preventDefault?: () => void }) => boolean;
+  getElementById: (id: string) => TestElement | null;
+} {
+  const body = new TestElement("body");
+  const head = new TestElement("head");
+  const listeners: Record<string, ((event: { preventDefault: () => void }) => void)[]> = {};
   return {
-    body: new TestElement("body"),
+    body,
+    head,
     title: "",
+    contentType,
+    createDocumentFragment: () => new TestElement("#fragment"),
     createElement: (tagName: string) => new TestElement(tagName.toLowerCase()),
+    addEventListener: (type, listener) => {
+      listeners[type] ??= [];
+      listeners[type].push(listener);
+    },
+    dispatchEvent: (event) => {
+      for (const listener of listeners[event.type] ?? []) listener({ preventDefault: event.preventDefault ?? vi.fn() });
+      return true;
+    },
+    getElementById: (id) => [head, body].flatMap((root) => root.querySelectorAll("*")).find((element) => element.id === id) ?? null,
   };
+}
+
+function applyHtmlAttributes(element: TestElement, attributes: string): void {
+  for (const [, name, value = ""] of attributes.matchAll(/([\w-]+)(?:="([^"]*)")?/g)) {
+    if (name.startsWith("data-")) {
+      element.dataset[name.slice(5).replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase())] = value;
+    } else if (name in element) {
+      (element as unknown as Record<string, string>)[name] = value;
+    }
+  }
 }
 
 function toEntryIdentity(entry: FileBrowserEntry): FileBrowserEntry {
