@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { AiProvider, loadAiConfig, getAiProvider } from "./aiProvider.js";
+import { AiProvider, loadAiConfig } from "./aiProvider.js";
+import { AI_TOOL_SCHEMAS, AI_TOOL_NAMES } from "./aiTools.js";
 
 describe("loadAiConfig", () => {
   const originalEnv = { ...process.env };
@@ -113,5 +114,31 @@ describe("AiProvider", () => {
     ).rejects.toThrow("AI API 401: Unauthorized");
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("no-key safety", () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("loadAiConfig returns null without key — AI tools never register", () => {
+    delete process.env.CHROMEUSE_AI_API_KEY;
+    expect(loadAiConfig()).toBeNull();
+  });
+
+  it("AI tool schemas include ai_navigate", () => {
+    const names = AI_TOOL_SCHEMAS.map((s) => s.name);
+    expect(names).toContain(AI_TOOL_NAMES.AI_ACTION);
+    expect(names).toContain(AI_TOOL_NAMES.AI_ASSERT);
+    expect(names).toContain(AI_TOOL_NAMES.AI_NAVIGATE);
+  });
+
+  it("AI tool names are correct strings", () => {
+    expect(AI_TOOL_NAMES.AI_ACTION).toBe("ai_action");
+    expect(AI_TOOL_NAMES.AI_ASSERT).toBe("ai_assert");
+    expect(AI_TOOL_NAMES.AI_NAVIGATE).toBe("ai_navigate");
   });
 });
