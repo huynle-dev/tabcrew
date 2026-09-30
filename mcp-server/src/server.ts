@@ -17,6 +17,8 @@ import { TOOL_NAMES } from "@chromeuse/shared";
 import { SocketClient } from "./socketClient.js";
 import type { BrowserTransport, ToolRequestMetadata, ToolRequestResult } from "./transport.js";
 import { WebSocketBridge } from "./webSocketBridge.js";
+import { getAiProvider, type AiProvider } from "./aiProvider.js";
+import { AI_TOOL_SCHEMAS, AI_TOOL_NAMES, handleAiTool } from "./aiTools.js";
 
 const NO_EXTENSION_CONNECTED_MESSAGE =
   "No extension connected. Open the ChromeUse side panel and click Connect, or keep a native host session running for fallback.";
@@ -1015,6 +1017,16 @@ export async function createMcpServer(
   const clientId = `chromeuse-mcp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
   if (!browserTransport) await client.connect();
 
+  // AI provider — null when CHROMEUSE_AI_API_KEY is not set
+  const aiProvider = getAiProvider();
+  const aiToolNames: ReadonlySet<string> = new Set(Object.values(AI_TOOL_NAMES));
+
+  if (aiProvider) {
+    console.error(
+      `[chromeuse-mcp] AI tools enabled (model: ${aiProvider.config.model})`
+    );
+  }
+
   const closeServer = server.close.bind(server);
   let closing = false;
   server.close = async () => {
@@ -1032,7 +1044,9 @@ export async function createMcpServer(
   // ---------------------------------------------------------------------------
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOL_SCHEMAS,
+    tools: aiProvider
+      ? [...TOOL_SCHEMAS, ...AI_TOOL_SCHEMAS]
+      : TOOL_SCHEMAS,
   }));
 
   // ---------------------------------------------------------------------------
@@ -1041,6 +1055,15 @@ export async function createMcpServer(
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+
+    // --- AI tool dispatch (handled locally, not forwarded to extension) ---
+    if (aiToolNames.has(name) && aiProvider) {
+      return handleAiTool(name, (args ?? {}) as Record<string, unknown>, {
+        ai: aiProvider,
+        browser: client,
+        clientId,
+      });
+    }
 
     // Validate tool name
     const validToolNames = TOOL_SCHEMAS.map((t) => t.name);
