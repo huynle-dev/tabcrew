@@ -14,6 +14,7 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { AiProvider } from "./aiProvider.js";
 import type { BrowserTransport, ToolRequestResult } from "./transport.js";
+import { compactTree } from "./pageCompactor.js";
 
 // ---------------------------------------------------------------------------
 // Tool names
@@ -430,39 +431,82 @@ async function handleAiAssert(
 // ai_navigate — autonomous multi-step browser agent
 // ---------------------------------------------------------------------------
 
-const NAVIGATE_SYSTEM_PROMPT = `You are an autonomous browser automation agent. You receive the current page state and a goal. Decide the single next action to take toward completing the goal.
+/**
+ * Plan-based prompt. Asking for a SEQUENCE of actions instead of one action
+ * per inference is the main latency win: a search ("type query, press Enter")
+ * costs one inference instead of two.
+ *
+ * The model must stop a plan at the first action that navigates, because refs
+ * are only valid for the page they were read from. Continuing to execute a
+ * stale plan after navigation clicks whatever now happens to own that ref.
+ */
+const NAVIGATE_SYSTEM_PROMPT = `You are an autonomous browser agent. Given page state and a goal, return a PLAN of consecutive actions.
 
 Respond with ONLY a JSON object (no markdown fences, no extra text):
 {
   "thought": "brief reasoning (1 sentence)",
-  "action": "click" | "type" | "scroll" | "navigate" | "wait" | "done",
-  "ref": "ref_N (for click/type)",
-  "value": "text to type (for type)",
-  "url": "URL (for navigate)",
-  "direction": "up" | "down" (for scroll)"
+  "plan": [
+    {"action":"click","ref":"ref_N"},
+    {"action":"type","ref":"ref_N","value":"text"},
+    {"action":"key","key":"Enter"},
+    {"action":"scroll","direction":"down"},
+    {"action":"navigate","url":"https://..."},
+    {"action":"wait"}
+  ],
+  "expectNavigation": true|false,
+  "done": false
 }
 
-Rules:
-- Return "done" when the goal is achieved based on current page state.
-- Only include fields relevant to the chosen action.
-- Be efficient — take the most direct path to the goal.
-- If the page hasn't changed after a scroll, try a different approach.
-- If you're stuck, return "done" with a thought explaining why.`;
+CRITICAL RULES:
+- Only batch actions that are ALL valid on the CURRENT page state shown.
+- Stop the plan at the first action that navigates or loads new content, and
+  set "expectNavigation": true. Element refs are INVALID after navigation.
+- Typing into a field then pressing Enter IS safe to batch.
+- Set "done": true with an empty plan when the goal is already achieved.
+- Use {"action":"key","key":"Enter"} to submit a form.
+- If an element you need is not listed, scroll to reveal it.
+- If stuck, set "done": true and explain why in "thought".`;
 
 const DEFAULT_MAX_STEPS = 10;
-const STEP_DELAY_MS = 500;
+const HARD_MAX_STEPS = 25;
+/** Settle delay after a plan that did not navigate. */
+const SETTLE_MS = 400;
+/** Longer settle after navigation so the next read sees the new page. */
+const NAVIGATION_SETTLE_MS = 1200;
+/** Cap on actionable elements sent to the model per step. */
+const MAX_ELEMENTS = 150;
+
+interface PlannedAction {
+  action: string;
+  ref?: string;
+  value?: string;
+  key?: string;
+  url?: string;
+  direction?: string;
+}
+
+interface ActionOutcome {
+  action: string;
+  ref?: string;
+  value?: string;
+  key?: string;
+  url?: string;
+  direction?: string;
+  success: boolean;
+  error?: string;
+}
 
 interface StepLog {
   step: number;
   thought: string;
-  action: string;
-  ref?: string;
-  value?: string;
-  url?: string;
-  direction?: string;
+  /** Every action executed in this step's plan. */
+  actions: ActionOutcome[];
+  expectNavigation: boolean;
   model: string;
   latencyMs: number;
-  success: boolean;
+  /** Element counts, to show how much noise compaction removed. */
+  pageElements: number;
+  pageRefsDropped: number;
   error?: string;
 }
 
@@ -473,8 +517,10 @@ async function handleAiNavigate(
   const tabId = args.tabId as number | undefined;
   const goal = args.goal as string | undefined;
   const maxSteps = Math.min(
-    typeof args.maxSteps === "number" ? args.maxSteps : DEFAULT_MAX_STEPS,
-    25 // hard cap
+    typeof args.maxSteps === "number" && args.maxSteps > 0
+      ? args.maxSteps
+      : DEFAULT_MAX_STEPS,
+    HARD_MAX_STEPS
   );
   const startUrl = args.startUrl as string | undefined;
 
@@ -488,8 +534,9 @@ async function handleAiNavigate(
   const steps: StepLog[] = [];
   let done = false;
   let finalThought = "";
+  let totalInferences = 0;
+  let totalActions = 0;
 
-  // Navigate to start URL if provided
   if (startUrl) {
     try {
       await ctx.browser.sendToolRequest(
@@ -498,7 +545,7 @@ async function handleAiNavigate(
         undefined,
         { clientId: ctx.clientId }
       );
-      await sleep(1000); // let page load
+      await sleep(NAVIGATION_SETTLE_MS);
     } catch (err) {
       return {
         content: [{
@@ -507,7 +554,7 @@ async function handleAiNavigate(
             success: false,
             error: `Failed to navigate to ${startUrl}: ${(err as Error).message}`,
             steps: [],
-          }),
+          }, null, 2),
         }],
         isError: true,
       };
@@ -515,8 +562,8 @@ async function handleAiNavigate(
   }
 
   for (let i = 0; i < maxSteps && !done; i++) {
-    // 1. Read current page state
-    let pageState: string;
+    // --- 1. Read and compact page state ---------------------------------
+    let compact;
     try {
       const result = await ctx.browser.sendToolRequest(
         "read_page",
@@ -524,34 +571,38 @@ async function handleAiNavigate(
         undefined,
         { clientId: ctx.clientId }
       );
-      pageState = extractText(result);
-    } catch {
-      try {
-        const result = await ctx.browser.sendToolRequest(
-          "get_page_text",
-          { tabId },
-          undefined,
-          { clientId: ctx.clientId }
-        );
-        pageState = extractText(result);
-      } catch (err) {
-        steps.push({
-          step: i + 1, thought: "Failed to read page", action: "error",
-          model: "", latencyMs: 0, success: false,
-          error: (err as Error).message,
-        });
-        break;
-      }
+      compact = compactTree(extractText(result), MAX_ELEMENTS);
+    } catch (readErr) {
+      steps.push({
+        step: i + 1, thought: "", actions: [], expectNavigation: false,
+        model: "", latencyMs: 0, pageElements: 0, pageRefsDropped: 0,
+        error: `Failed to read page: ${(readErr as Error).message}`,
+      });
+      break;
     }
 
-    // Build context from previous steps
-    const historyContext = steps.length > 0
-      ? "\n\nPrevious steps taken:\n" + steps.map(s =>
-          `  ${s.step}. ${s.action}${s.ref ? ` ${s.ref}` : ""}${s.value ? ` "${s.value}"` : ""} — ${s.thought}`
-        ).join("\n")
+    // --- 2. Build history context ---------------------------------------
+    const historyContext = steps.length
+      ? "\n\nSteps already taken:\n" +
+        steps
+          .map((s) => {
+            const acts = s.actions
+              .map((a) => {
+                const bits = [a.action];
+                if (a.ref) bits.push(a.ref);
+                if (a.value) bits.push(`"${a.value}"`);
+                if (a.key) bits.push(`key=${a.key}`);
+                if (a.url) bits.push(a.url);
+                if (!a.success) bits.push("(FAILED)");
+                return bits.join(" ");
+              })
+              .join("; ");
+            return `  ${s.step}. ${acts || "(none)"} — ${s.thought}`;
+          })
+          .join("\n")
       : "";
 
-    // 2. Ask AI for next action
+    // --- 3. Ask for a plan ----------------------------------------------
     let aiResult;
     try {
       aiResult = await ctx.ai.complete({
@@ -559,154 +610,230 @@ async function handleAiNavigate(
           { role: "system", content: NAVIGATE_SYSTEM_PROMPT },
           {
             role: "user",
-            content: `Goal: ${goal}${historyContext}\n\nCurrent page state:\n${truncate(pageState, 8000)}`,
+            content:
+              `Goal: ${goal}${historyContext}\n\n` +
+              `Current page actionable elements ` +
+              `(${compact.elements.length} shown, ${compact.droppedRefs} layout nodes filtered out):\n` +
+              compact.text,
           },
         ],
         temperature: 0,
-        maxTokens: 300,
+        maxTokens: 500,
       });
-    } catch (err) {
+      totalInferences++;
+    } catch (aiErr) {
       steps.push({
-        step: i + 1, thought: "AI inference failed", action: "error",
-        model: "", latencyMs: 0, success: false,
-        error: (err as Error).message,
+        step: i + 1, thought: "", actions: [], expectNavigation: false,
+        model: "", latencyMs: 0,
+        pageElements: compact.elements.length,
+        pageRefsDropped: compact.droppedRefs,
+        error: `AI inference failed: ${(aiErr as Error).message}`,
       });
       break;
     }
 
-    // 3. Parse AI response
-    let parsed: Record<string, unknown>;
+    // --- 4. Parse the plan ----------------------------------------------
+    // Jev intermittently returns null content; treat it as a retryable step
+    // rather than aborting the whole run.
+    let parsed: Record<string, unknown> | null = null;
     try {
       const cleaned = (aiResult.text ?? "")
-        .replace(/```json?\n?/g, "").replace(/```/g, "").trim();
-      parsed = JSON.parse(cleaned);
+        .replace(/```json?\n?/g, "")
+        .replace(/```/g, "")
+        .trim();
+      if (cleaned) parsed = JSON.parse(cleaned) as Record<string, unknown>;
     } catch {
+      parsed = null;
+    }
+
+    if (!parsed) {
       steps.push({
-        step: i + 1, thought: "AI returned invalid JSON", action: "error",
-        model: aiResult.model, latencyMs: aiResult.latencyMs, success: false,
-        error: `Invalid response: ${aiResult.text?.slice(0, 100)}`,
+        step: i + 1,
+        thought: "Model returned unusable output; retrying",
+        actions: [], expectNavigation: false,
+        model: aiResult.model, latencyMs: aiResult.latencyMs,
+        pageElements: compact.elements.length,
+        pageRefsDropped: compact.droppedRefs,
+        error: `Unparseable response: ${(aiResult.text ?? "(null)").slice(0, 120)}`,
       });
-      // Retry once on bad JSON (Jev occasionally returns null)
       continue;
     }
 
-    const action = parsed.action as string;
-    const thought = (parsed.thought as string) ?? "";
-    const ref = parsed.ref as string | undefined;
-    const value = parsed.value as string | undefined;
-    const url = parsed.url as string | undefined;
-    const direction = parsed.direction as string | undefined;
+    const thought = typeof parsed.thought === "string" ? parsed.thought : "";
+    const expectNavigation = parsed.expectNavigation === true;
+    const plan: PlannedAction[] = Array.isArray(parsed.plan)
+      ? (parsed.plan as PlannedAction[])
+      : [];
 
-    const stepLog: StepLog = {
-      step: i + 1, thought, action,
-      ...(ref ? { ref } : {}),
-      ...(value ? { value } : {}),
-      ...(url ? { url } : {}),
-      ...(direction ? { direction } : {}),
-      model: aiResult.model, latencyMs: aiResult.latencyMs,
-      success: true,
-    };
-
-    // 4. Check if done
-    if (action === "done") {
-      done = true;
+    // --- 5. Goal already met? -------------------------------------------
+    if (parsed.done === true || plan.length === 0) {
+      done = parsed.done === true;
       finalThought = thought;
-      steps.push(stepLog);
+      steps.push({
+        step: i + 1, thought, actions: [], expectNavigation,
+        model: aiResult.model, latencyMs: aiResult.latencyMs,
+        pageElements: compact.elements.length,
+        pageRefsDropped: compact.droppedRefs,
+        ...(done ? {} : { error: "Model returned an empty plan without done=true" }),
+      });
       break;
     }
 
-    // 5. Execute the action
-    try {
-      switch (action) {
-        case "click":
-          if (ref) {
-            await ctx.browser.sendToolRequest(
-              "computer", { tabId, action: "click", ref },
-              undefined, { clientId: ctx.clientId }
-            );
-          }
-          break;
+    // --- 6. Execute the plan --------------------------------------------
+    const outcomes: ActionOutcome[] = [];
+    let navigated = false;
 
-        case "type":
-          if (ref && value) {
-            // Click to focus first, then type
-            await ctx.browser.sendToolRequest(
-              "computer", { tabId, action: "click", ref },
-              undefined, { clientId: ctx.clientId }
-            );
-            await sleep(100);
-            await ctx.browser.sendToolRequest(
-              "computer", { tabId, action: "type", text: value },
-              undefined, { clientId: ctx.clientId }
-            );
-          } else if (ref && value === undefined) {
-            // form_input for setting values directly
-            await ctx.browser.sendToolRequest(
-              "form_input", { tabId, ref, value: value ?? "" },
-              undefined, { clientId: ctx.clientId }
-            );
-          }
-          break;
+    for (const step of plan) {
+      const outcome = await executeAction(step, tabId, ctx);
+      outcomes.push(outcome);
+      totalActions++;
 
-        case "scroll":
-          await ctx.browser.sendToolRequest(
-            "computer",
-            { tabId, action: "scroll", x: 400, y: 400, direction: direction ?? "down" },
-            undefined, { clientId: ctx.clientId }
-          );
-          break;
+      // Abandon the rest of the plan on failure — later actions assume the
+      // earlier ones landed.
+      if (!outcome.success) break;
 
-        case "navigate":
-          if (url) {
-            await ctx.browser.sendToolRequest(
-              "navigate", { tabId, url, action: "goto" },
-              undefined, { clientId: ctx.clientId }
-            );
-          }
-          break;
-
-        case "wait":
-          await sleep(1500);
-          break;
-
-        default:
-          stepLog.success = false;
-          stepLog.error = `Unknown action: ${action}`;
+      if (step.action === "navigate" || step.action === "click") {
+        navigated = true;
       }
-    } catch (err) {
-      stepLog.success = false;
-      stepLog.error = (err as Error).message;
     }
 
-    steps.push(stepLog);
+    steps.push({
+      step: i + 1, thought, actions: outcomes, expectNavigation,
+      model: aiResult.model, latencyMs: aiResult.latencyMs,
+      pageElements: compact.elements.length,
+      pageRefsDropped: compact.droppedRefs,
+    });
 
-    // Brief pause between steps for page to settle
-    await sleep(STEP_DELAY_MS);
+    await sleep(
+      expectNavigation || navigated ? NAVIGATION_SETTLE_MS : SETTLE_MS
+    );
   }
 
-  // Read final page state
+  // --- Final page snapshot ----------------------------------------------
   let finalPageText = "";
   try {
     const result = await ctx.browser.sendToolRequest(
-      "get_page_text", { tabId, maxLength: 1000 },
-      undefined, { clientId: ctx.clientId }
+      "get_page_text",
+      { tabId, maxLength: 1200 },
+      undefined,
+      { clientId: ctx.clientId }
     );
     finalPageText = extractText(result);
-  } catch { /* best effort */ }
+  } catch {
+    // Best effort — a failed final read must not mask the run's outcome.
+  }
 
   const output = {
     success: done,
     goal,
-    stepsCompleted: steps.length,
+    stepsUsed: steps.length,
     maxSteps,
+    inferences: totalInferences,
+    actionsExecuted: totalActions,
     ...(finalThought ? { finalThought } : {}),
+    ...(done
+      ? {}
+      : {
+          note:
+            steps.length >= maxSteps
+              ? `Stopped at the ${maxSteps}-step limit without reaching the goal. Raise maxSteps or narrow the goal.`
+              : "Stopped before reaching the goal; see step errors.",
+        }),
     steps,
-    finalPagePreview: truncate(finalPageText, 500),
+    finalPagePreview: truncate(finalPageText, 600),
   };
 
   return {
     content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
   };
+}
+
+/**
+ * Execute one planned action against the browser.
+ * Returns an outcome instead of throwing so a failed action degrades the
+ * step rather than the whole run.
+ */
+async function executeAction(
+  step: PlannedAction,
+  tabId: number,
+  ctx: AiToolContext
+): Promise<ActionOutcome> {
+  const base: ActionOutcome = {
+    action: step.action,
+    ...(step.ref ? { ref: step.ref } : {}),
+    ...(step.value !== undefined ? { value: step.value } : {}),
+    ...(step.key ? { key: step.key } : {}),
+    ...(step.url ? { url: step.url } : {}),
+    ...(step.direction ? { direction: step.direction } : {}),
+    success: true,
+  };
+
+  const send = (tool: string, toolArgs: Record<string, unknown>) =>
+    ctx.browser.sendToolRequest(tool, toolArgs, undefined, {
+      clientId: ctx.clientId,
+    });
+
+  try {
+    switch (step.action) {
+      case "click": {
+        if (!step.ref) {
+          return { ...base, success: false, error: "click requires a ref" };
+        }
+        await send("computer", { tabId, action: "click", ref: step.ref });
+        return base;
+      }
+
+      case "type": {
+        if (!step.ref) {
+          return { ...base, success: false, error: "type requires a ref" };
+        }
+        if (step.value === undefined) {
+          return { ...base, success: false, error: "type requires a value" };
+        }
+        // form_input sets the value directly and, unlike click-then-type,
+        // does not depend on the element being scrolled into view.
+        await send("form_input", { tabId, ref: step.ref, value: step.value });
+        return base;
+      }
+
+      case "key": {
+        const key = step.key ?? "Enter";
+        await send("computer", { tabId, action: "key", key });
+        return { ...base, key };
+      }
+
+      case "scroll": {
+        await send("computer", {
+          tabId,
+          action: "scroll",
+          direction: step.direction ?? "down",
+        });
+        return base;
+      }
+
+      case "navigate": {
+        if (!step.url) {
+          return { ...base, success: false, error: "navigate requires a url" };
+        }
+        await send("navigate", { tabId, url: step.url, action: "goto" });
+        return base;
+      }
+
+      case "wait": {
+        await sleep(1200);
+        return base;
+      }
+
+      default:
+        return {
+          ...base,
+          success: false,
+          error: `Unsupported action: ${step.action}`,
+        };
+    }
+  } catch (err) {
+    return { ...base, success: false, error: (err as Error).message };
+  }
 }
 
 function sleep(ms: number): Promise<void> {
