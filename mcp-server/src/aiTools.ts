@@ -439,6 +439,16 @@ async function handleAiAssert(
  * The model must stop a plan at the first action that navigates, because refs
  * are only valid for the page they were read from. Continuing to execute a
  * stale plan after navigation clicks whatever now happens to own that ref.
+ *
+ * The `type` action deliberately routes through form_input rather than
+ * click-then-type: form_input sets the value directly and does not depend on
+ * the element being scrolled into view or on keystroke delivery.
+ *
+ * `key` requires the automation-indicator fix in
+ * extension/src/content-scripts/visualIndicator.ts. Before that fix the
+ * indicator's capture-phase blockers swallowed every CDP-dispatched key
+ * event, so `key` reported success and delivered nothing. An extension build
+ * predating that fix cannot submit forms this way.
  */
 const NAVIGATE_SYSTEM_PROMPT = `You are an autonomous browser agent. Given page state and a goal, return a PLAN of consecutive actions.
 
