@@ -285,6 +285,52 @@ describe("ComputerTool", () => {
     ]);
   });
 
+  it("dispatches drag as a realistic left-button pointer sequence", async () => {
+    const tool = new ComputerTool();
+
+    const result = await tool.execute(
+      { action: "drag", tabId: 1, startX: 100, startY: 200, endX: 200, endY: 300 },
+      {},
+    );
+
+    expect(result.success).toBe(true);
+
+    const mouseCommands = sendCommand.mock.calls
+      .filter(([, method]) => method === "Input.dispatchMouseEvent")
+      .map(([, , params]) => params);
+
+    expect(mouseCommands[0]).toEqual(expect.objectContaining({
+      type: "mouseMoved",
+      x: 100,
+      y: 200,
+      button: "none",
+      buttons: 0,
+    }));
+    expect(mouseCommands[1]).toEqual(expect.objectContaining({
+      type: "mousePressed",
+      x: 100,
+      y: 200,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    }));
+    expect(mouseCommands.slice(2, -1)).toHaveLength(10);
+    expect(mouseCommands.slice(2, -1).every((params) =>
+      params.type === "mouseMoved" &&
+      params.button === "none" &&
+      params.buttons === 1 &&
+      params.clickCount === 0,
+    )).toBe(true);
+    expect(mouseCommands.at(-1)).toEqual(expect.objectContaining({
+      type: "mouseReleased",
+      x: 200,
+      y: 300,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    }));
+  });
+
   it("dispatches CapsLock as a recognized keyboard key", async () => {
     const tool = new ComputerTool();
 

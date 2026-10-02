@@ -42,6 +42,9 @@ const KEEPALIVE_SCREENCAST = {
   everyNthFrame: 30,
 };
 
+/** CDP domains that expose commands but no Domain.enable method. */
+const COMMAND_ONLY_DOMAINS = new Set(['Input', 'Emulation', 'Browser']);
+
 /** chrome.storage.session key for persisted CDP state */
 const STORAGE_KEY = 'cdp_attached_tabs';
 
@@ -262,6 +265,11 @@ export class CDPManager {
     }
 
     if (connection.enabledDomains.has(domain)) return;
+
+    if (COMMAND_ONLY_DOMAINS.has(domain)) {
+      connection.enabledDomains.add(domain);
+      return;
+    }
 
     try {
       await chrome.debugger.sendCommand({ tabId }, `${domain}.enable`);

@@ -37,6 +37,7 @@ ChromeUse MCP exposes browser automation tools plus workspace and document found
 | Tab management | `tabs_context`, `tabs_create`, `tabs_close`, `tab_session` | List/create/close tabs and tab groups, and save/restore named tab sessions. |
 | Browser data | `history_search`, `bookmarks` | Search browsing history and search/list/create bookmarks. |
 | Recording | `gif_creator` | Capture browser workflows as animated GIFs. |
+| Direct browser decisions | `ai_action`, `ai_assert`, `ai_navigate` | Use direct Jev structured decisions to select from deterministic ChromeUse-owned actions, evaluate page conditions, or navigate one atomic action at a time. |
 | Workspace foundation | workspace tools | Work with a user-selected local folder through the Chrome extension side panel and browser-granted File System Access handles. |
 | Document foundation | `markdown_render` | Render safe markdown from supplied text or selected workspace files. PDF and Office viewers are placeholder/extensible shells in this foundation phase. |
 
@@ -93,6 +94,7 @@ This foundation phase focuses on browser-only local workspace access and markdow
 - macOS or Linux
 - A Chromium-based browser: Chrome, Brave, Arc, Edge, Chromium, Vivaldi, or Opera
 - An MCP client that can run a local stdio server
+- An OpenRouter API key only if you want to use `ai_action`, `ai_assert`, or `ai_navigate`
 
 Windows is not currently supported because the native host and MCP server communicate over Unix domain sockets.
 
@@ -157,13 +159,18 @@ For OpenCode, add a local MCP entry to `~/.config/opencode/opencode.jsonc`:
         "node",
         "/absolute/path/to/chromeuse-mcp/gateway/dist/index.js"
       ],
-      "timeout": 15000
+      "environment": {
+        "CHROMEUSE_JEV_API_KEY": "{env:OPENROUTER_API_KEY}",
+        "CHROMEUSE_JEV_BASE_URL": "https://openrouter.ai/api/v1",
+        "CHROMEUSE_JEV_MODEL": "typesafe/jev-1.13"
+      },
+      "timeout": 120000
     }
   }
 }
 ```
 
-Use the absolute path to your checkout. For example, if you cloned this repository to `/Users/alice/projects/chromeuse-mcp`, use `/Users/alice/projects/chromeuse-mcp/gateway/dist/index.js`.
+Use the absolute path to your checkout. For example, if you cloned this repository to `/Users/alice/projects/chromeuse-mcp`, use `/Users/alice/projects/chromeuse-mcp/gateway/dist/index.js`. The two-minute timeout allows autonomous `ai_navigate` calls to complete multiple inference and browser-action steps.
 
 When OpenCode starts, the first ChromeUse MCP process becomes the gateway SERVER and listens on `127.0.0.1:8766` plus `ws://127.0.0.1:8765`. Additional OpenCode TUI instances become PROXY processes and share the same browser extension connection. Keep at least one OpenCode instance that owns the gateway running if you want the side panel to stay connected.
 
@@ -181,6 +188,30 @@ Other MCP clients commonly use this shape:
 ```
 
 Restart your MCP client after changing its config.
+
+The three optional AI tools use OpenRouter's raw `POST /api/v1/systemone`
+contract with direct `typesafe/jev-1.13`. They do not call chat completions,
+Jev Router, or a fallback model. ChromeUse constructs at most 255 deterministic
+atomic candidates; Jev can select only their opaque IDs. Text and URLs must be
+present verbatim in quoted goal text, structured context, explicit URLs/emails/
+numbers, or current page content. Missing values, visual-only tasks, low
+confidence, insufficient candidates, excessive risk, malformed responses, and
+cancellation stop safely instead of generating or inferring parameters.
+
+Optional direct-Jev settings:
+
+- `CHROMEUSE_JEV_API_KEY`: OpenRouter API key. AI tools are absent when unset.
+- `CHROMEUSE_JEV_BASE_URL`: defaults to `https://openrouter.ai/api/v1`.
+- `CHROMEUSE_JEV_MODEL`: defaults to `typesafe/jev-1.13`.
+- `CHROMEUSE_JEV_ACTION_THRESHOLD`: defaults to `0.80`.
+- `CHROMEUSE_JEV_ASSERT_THRESHOLD`: defaults to `0.80`.
+- `CHROMEUSE_JEV_SUFFICIENCY_THRESHOLD`: defaults to `0.80`.
+- `CHROMEUSE_JEV_MAX_AUTO_RISK`: defaults to `1.0` on Jev's 0–2 risk scale.
+
+Thresholds are provisional and must be calibrated against recorded browser
+evaluations. Invalid, nonnumeric, nonfinite, or out-of-range settings fail fast.
+Keep the two-minute MCP timeout until measured live multi-step runs support a
+lower value.
 
 Optional gateway environment variables:
 

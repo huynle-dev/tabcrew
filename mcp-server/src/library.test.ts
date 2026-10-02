@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  DirectJevProvider,
   WebSocketBridge,
   WebSocketFirstTransport,
+  buildActionCandidates,
   createMcpServer,
   getToolSchemas,
+  loadJevConfig,
 } from "./library.js";
 import type {
   BrowserTransport,
+  DecisionProvider,
+  DecisionRequest,
+  DecisionResult,
   ToolRequestResult,
   WebSocketBridgeOptions,
 } from "./library.js";
@@ -36,5 +42,26 @@ describe("library exports", () => {
     const options: WebSocketBridgeOptions = { host: "127.0.0.1", port: 0 };
 
     expect(options.port).toBe(0);
+  });
+
+  it("exports direct Jev provider, candidate, and decision APIs", () => {
+    expect(DirectJevProvider).toBeTypeOf("function");
+    expect(loadJevConfig).toBeTypeOf("function");
+    expect(buildActionCandidates).toBeTypeOf("function");
+
+    const request: DecisionRequest = { state: {}, questions: {} };
+    const result: DecisionResult = {
+      answers: {},
+      metadata: {
+        provider: "direct-jev",
+        requestedModel: "typesafe/jev-1.13",
+        resolvedModel: "typesafe/jev-1.13",
+        latencyMs: 0,
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+    };
+    const provider: DecisionProvider = { async decide() { return result; } };
+    expect(request.questions).toEqual({});
+    expect(provider).toBeDefined();
   });
 });

@@ -632,6 +632,10 @@ function setFormElementValue(
 } {
   const tagName = el.tagName.toLowerCase();
 
+  if (el instanceof HTMLElement) {
+    el.focus();
+  }
+
   if (el instanceof HTMLInputElement) {
     const inputType = el.type;
 

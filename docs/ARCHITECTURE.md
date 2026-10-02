@@ -16,6 +16,38 @@ Key files:
 - `mcp-server/src/server.ts`: MCP server factory and tool schemas.
 - `mcp-server/src/webSocketBridge.ts`: localhost WebSocket bridge for side panel Connect sessions.
 - `mcp-server/src/socketClient.ts`: native host socket discovery and request forwarding.
+- `mcp-server/src/directJevProvider.ts`: raw OpenRouter System One adapter, strict runtime validation, errors, cancellation, and usage metadata.
+- `mcp-server/src/actionCandidates.ts`: deterministic explicit-value extraction and bounded atomic candidates.
+- `mcp-server/src/aiTools.ts`: confidence/sufficiency/completion/risk gates and one-action navigation loop.
+
+### Direct Jev Decision Boundary
+
+`ai_action`, `ai_assert`, and `ai_navigate` are optional server-local tools. They
+are registered only when a `DecisionProvider` is injected or
+`CHROMEUSE_JEV_API_KEY` configures the production `DirectJevProvider`.
+`createMcpServer()` accepts the provider seam directly, so tests and embedders do
+not mutate process-global singleton state.
+
+The provider sends raw HTTPS requests to OpenRouter
+`POST /api/v1/systemone` using `typesafe/jev-1.13`. It validates Choice, Noul,
+Score, model resolution, usage, cost, structured HTTP errors, and cancellation.
+It has no browser refs and cannot execute actions.
+
+ChromeUse owns the executable side of the boundary:
+
+1. Read and compact the main-frame accessibility tree to at most 150 useful elements.
+2. Extract only verbatim quoted values, structured context strings, URLs, email addresses, numbers, and current page values.
+3. Construct no more than 255 deterministic atomic candidates with opaque IDs.
+4. Ask Jev to select an ID and independently judge completion, sufficiency, and risk.
+5. Apply configured gates and resolve the ID only through ChromeUse's current candidate map.
+6. Revalidate ref-based candidates against a fresh accessibility read, execute at
+   most one accepted action, reread the page, and repeat.
+
+No provider output becomes an executable ref, value, URL, key, or direction. No
+chat completion, Jev Router, generated JSON plan, or fallback model exists in
+this path. A missing explicit value, unsupported visual task, uncertain or
+conflicting decision, excessive risk, malformed response, provider failure, or
+cancellation produces a structured stop reason.
 
 ### `gateway`
 
@@ -141,6 +173,11 @@ Configuration variables:
 - `CHROMEUSE_HTTP_PORT`: local HTTP gateway port shared by all OpenCode instances. Default: `8766`, chosen as the project default to avoid common application development ports such as `3000` and to sit adjacent to the WebSocket default `8765`.
 - `CHROMEUSE_WS_PORT`: extension WebSocket bridge port. Default: `8765`.
 - `CHROMEUSE_CLIENT_ID`: optional client identifier for logs or diagnostics.
+- `CHROMEUSE_JEV_API_KEY`: enables the optional direct-Jev decision tools.
+- `CHROMEUSE_JEV_BASE_URL`: defaults to `https://openrouter.ai/api/v1`.
+- `CHROMEUSE_JEV_MODEL`: defaults to `typesafe/jev-1.13`.
+- `CHROMEUSE_JEV_ACTION_THRESHOLD`, `CHROMEUSE_JEV_ASSERT_THRESHOLD`, and `CHROMEUSE_JEV_SUFFICIENCY_THRESHOLD`: finite 0–1 gates, each defaulting to `0.80`.
+- `CHROMEUSE_JEV_MAX_AUTO_RISK`: finite 0–2 maximum accepted risk, default `1.0`.
 
 ### Direct WebSocket Connect Path (`mcp-server/dist/index.js`)
 

@@ -107,10 +107,14 @@ export class ReadPageTool implements ToolHandler {
   ): Promise<ToolResult> {
     try {
       // Try sending message to the content script
-      const response = (await chrome.tabs.sendMessage(tabId, {
-        action: "get_accessibility_tree",
-        format,
-      })) as { success: boolean; data?: string; error?: string };
+      const response = (await chrome.tabs.sendMessage(
+        tabId,
+        {
+          action: "get_accessibility_tree",
+          format,
+        },
+        { frameId: 0 },
+      )) as { success: boolean; data?: string; error?: string };
 
       if (!response || !response.success) {
         // Content script may not be loaded - try programmatic injection
@@ -155,10 +159,14 @@ export class ReadPageTool implements ToolHandler {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       // Now send the message
-      const response = (await chrome.tabs.sendMessage(tabId, {
-        action: "get_accessibility_tree",
-        format,
-      })) as { success: boolean; data?: string; error?: string };
+      const response = (await chrome.tabs.sendMessage(
+        tabId,
+        {
+          action: "get_accessibility_tree",
+          format,
+        },
+        { frameId: 0 },
+      )) as { success: boolean; data?: string; error?: string };
 
       if (!response || !response.success) {
         return {

@@ -17,8 +17,17 @@ import { TOOL_NAMES } from "@chromeuse/shared";
 import { SocketClient } from "./socketClient.js";
 import type { BrowserTransport, ToolRequestMetadata, ToolRequestResult } from "./transport.js";
 import { WebSocketBridge } from "./webSocketBridge.js";
-import { getAiProvider, type AiProvider } from "./aiProvider.js";
-import { AI_TOOL_SCHEMAS, AI_TOOL_NAMES, handleAiTool } from "./aiTools.js";
+import {
+  DirectJevProvider,
+  loadJevConfig,
+} from "./directJevProvider.js";
+import type { DecisionProvider } from "./decisionTypes.js";
+import {
+  AI_TOOL_SCHEMAS,
+  AI_TOOL_NAMES,
+  handleAiTool,
+  type DecisionThresholds,
+} from "./aiTools.js";
 
 const NO_EXTENSION_CONNECTED_MESSAGE =
   "No extension connected. Open the ChromeUse side panel and click Connect, or keep a native host session running for fallback.";
@@ -1006,7 +1015,9 @@ const TOOL_SCHEMAS: Tool[] = [
  *   If not provided, the server will create one and attempt to connect.
  */
 export async function createMcpServer(
-  browserTransport?: BrowserTransport
+  browserTransport?: BrowserTransport,
+  injectedDecisionProvider?: DecisionProvider | null,
+  injectedThresholds?: DecisionThresholds
 ): Promise<Server> {
   const server = new Server(
     { name: "chromeuse-mcp", version: "0.1.0" },
@@ -1017,14 +1028,24 @@ export async function createMcpServer(
   const clientId = `chromeuse-mcp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
   if (!browserTransport) await client.connect();
 
-  // AI provider — null when CHROMEUSE_AI_API_KEY is not set
-  const aiProvider = getAiProvider();
+  const jevConfig = injectedDecisionProvider === undefined || injectedThresholds === undefined
+    ? loadJevConfig()
+    : null;
+  const decisionProvider = injectedDecisionProvider === undefined
+    ? jevConfig
+      ? new DirectJevProvider(jevConfig)
+      : null
+    : injectedDecisionProvider;
+  const decisionThresholds: DecisionThresholds = injectedThresholds ?? {
+    action: jevConfig?.actionThreshold ?? 0.8,
+    assertion: jevConfig?.assertThreshold ?? 0.8,
+    sufficiency: jevConfig?.sufficiencyThreshold ?? 0.8,
+    maxRisk: jevConfig?.maxAutoRisk ?? 1,
+  };
   const aiToolNames: ReadonlySet<string> = new Set(Object.values(AI_TOOL_NAMES));
 
-  if (aiProvider) {
-    console.error(
-      `[chromeuse-mcp] AI tools enabled (model: ${aiProvider.config.model})`
-    );
+  if (decisionProvider) {
+    console.error("[chromeuse-mcp] Direct Jev browser decision tools enabled");
   }
 
   const closeServer = server.close.bind(server);
@@ -1044,7 +1065,7 @@ export async function createMcpServer(
   // ---------------------------------------------------------------------------
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: aiProvider
+    tools: decisionProvider
       ? [...TOOL_SCHEMAS, ...AI_TOOL_SCHEMAS]
       : TOOL_SCHEMAS,
   }));
@@ -1053,15 +1074,17 @@ export async function createMcpServer(
   // tools/call handler
   // ---------------------------------------------------------------------------
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
 
     // --- AI tool dispatch (handled locally, not forwarded to extension) ---
-    if (aiToolNames.has(name) && aiProvider) {
+    if (aiToolNames.has(name) && decisionProvider) {
       return handleAiTool(name, (args ?? {}) as Record<string, unknown>, {
-        ai: aiProvider,
+        provider: decisionProvider,
         browser: client,
         clientId,
+        thresholds: decisionThresholds,
+        signal: extra.signal,
       });
     }
 

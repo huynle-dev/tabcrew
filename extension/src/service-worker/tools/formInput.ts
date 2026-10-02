@@ -201,6 +201,10 @@ export class FormInputTool implements ToolHandler {
             };
           }
 
+          if (el instanceof HTMLElement) {
+            el.focus();
+          }
+
           const tagName = el.tagName.toLowerCase();
           let previousValue = "";
 

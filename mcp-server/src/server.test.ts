@@ -10,6 +10,8 @@ import { TOOL_NAMES, ALL_TOOL_NAMES } from "@chromeuse/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { BrowserTransport, ToolRequestResult } from "./transport.js";
+import { AI_TOOL_NAMES } from "./aiTools.js";
+import type { DecisionProvider } from "./decisionTypes.js";
 
 type TestTransport = BrowserTransport & {
   connect: ReturnType<typeof vi.fn>;
@@ -485,6 +487,91 @@ describe("createMcpServer", () => {
   it("lists all shared MCP tools via MCP protocol", async () => {
     const result = await client.listTools();
     expect(result.tools).toHaveLength(ALL_TOOL_NAMES.length);
+  });
+
+  it("registers injected direct-Jev tools and handles them locally", async () => {
+    const directJev: DecisionProvider = {
+      async decide() {
+        return {
+          answers: { assertion: { type: "noul", noul: 0.91 } },
+          metadata: {
+            provider: "direct-jev",
+            requestedModel: "typesafe/jev-1.13",
+            resolvedModel: "typesafe/jev-1.13-20260917",
+            latencyMs: 5,
+            usage: { inputTokens: 10, outputTokens: 1, cost: 0.00001 },
+          },
+        };
+      },
+    };
+    const localTransport = createTestTransport();
+    const localServer = await createMcpServer(localTransport, directJev, {
+      action: 0.8,
+      assertion: 0.8,
+      sufficiency: 0.8,
+      maxRisk: 1,
+    });
+    const localClient = new Client(
+      { name: "direct-jev-test", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      localClient.connect(clientTransport),
+      localServer.connect(serverTransport),
+    ]);
+
+    try {
+      const tools = await localClient.listTools();
+      expect(tools.tools.map(({ name }) => name)).toEqual(
+        expect.arrayContaining(Object.values(AI_TOOL_NAMES))
+      );
+      const result = await localClient.callTool({
+        name: AI_TOOL_NAMES.AI_ASSERT,
+        arguments: {
+          tabId: 7,
+          condition: "dashboard visible",
+          pageContent: "Dashboard",
+        },
+      });
+      expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({
+        pass: true,
+        probability: 0.91,
+      });
+      expect(localTransport.sendToolRequest).not.toHaveBeenCalled();
+    } finally {
+      await localClient.close();
+      await localServer.close();
+    }
+  });
+
+  it("does not load ambient Jev config when provider and thresholds are injected", async () => {
+    const previousApiKey = process.env.CHROMEUSE_JEV_API_KEY;
+    const previousThreshold = process.env.CHROMEUSE_JEV_ACTION_THRESHOLD;
+    process.env.CHROMEUSE_JEV_API_KEY = "configured-but-unused";
+    process.env.CHROMEUSE_JEV_ACTION_THRESHOLD = "invalid";
+    const directJev: DecisionProvider = {
+      async decide() {
+        throw new Error("not called");
+      },
+    };
+    let localServer: Awaited<ReturnType<typeof createMcpServer>> | undefined;
+
+    try {
+      localServer = await createMcpServer(createTestTransport(), directJev, {
+        action: 0.8,
+        assertion: 0.8,
+        sufficiency: 0.8,
+        maxRisk: 1,
+      });
+      expect(localServer).toBeDefined();
+    } finally {
+      if (localServer) await localServer.close();
+      if (previousApiKey === undefined) delete process.env.CHROMEUSE_JEV_API_KEY;
+      else process.env.CHROMEUSE_JEV_API_KEY = previousApiKey;
+      if (previousThreshold === undefined) delete process.env.CHROMEUSE_JEV_ACTION_THRESHOLD;
+      else process.env.CHROMEUSE_JEV_ACTION_THRESHOLD = previousThreshold;
+    }
   });
 
   it("tool names match shared constants", async () => {

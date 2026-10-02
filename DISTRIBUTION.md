@@ -79,7 +79,11 @@ npm run build
          "type": "local",
          "enabled": true,
          "command": ["node", "/absolute/path/to/gateway/dist/index.js"],
-         "timeout": 15000
+         "environment": {
+           "CHROMEUSE_JEV_API_KEY": "{env:OPENROUTER_API_KEY}",
+           "CHROMEUSE_JEV_MODEL": "typesafe/jev-1.13"
+         },
+          "timeout": 120000
        }
      }
    }
@@ -87,6 +91,14 @@ npm run build
 4. **Start OpenCode** (auto-launches gateway)
 5. **Click Connect** in extension side panel
 6. **Test**: Ask OpenCode to call `tabs_context`
+
+The `CHROMEUSE_JEV_*` environment is optional. Without
+`CHROMEUSE_JEV_API_KEY`, the browser tools remain available and the three
+direct-decision tools are not registered. When enabled, ChromeUse calls only
+OpenRouter `POST /api/v1/systemone` with direct `typesafe/jev-1.13`; there is no
+chat-completion or generative fallback. Never place a real key in a distributed
+archive or checked-in configuration—reference an existing secret environment
+variable instead.
 
 ## What Users DON'T Need
 

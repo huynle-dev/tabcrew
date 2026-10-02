@@ -462,26 +462,29 @@ async function dispatchMouseEvent(
   type: "mousePressed" | "mouseReleased" | "mouseMoved",
   x: number,
   y: number,
-  button: "left" | "right" | "middle" = "left",
+  button: "none" | "left" | "right" | "middle" = "none",
   clickCount = 1,
   modifiers = 0,
 ): Promise<void> {
   // CDP button enum: left=0, middle=1, right=2
-  const buttonMap = { left: "left", middle: "middle", right: "right" } as const;
+  const buttonMap = { none: "none", left: "left", middle: "middle", right: "right" } as const;
+  const buttons = type === "mouseReleased" || button === "none"
+    ? 0
+    : button === "left"
+      ? 1
+      : button === "right"
+        ? 2
+        : 4;
 
   await cdpManager.sendCommand(tabId, "Input.dispatchMouseEvent", {
     type,
     x,
     y,
-    button: buttonMap[button],
+    button: type === "mouseMoved" ? "none" : buttonMap[button],
     clickCount,
     modifiers,
     // buttons bitmask: 1=left, 2=right, 4=middle
-    ...(type === "mousePressed" || type === "mouseMoved"
-      ? {
-          buttons: button === "left" ? 1 : button === "right" ? 2 : 4,
-        }
-      : {}),
+    buttons,
   });
 }
 

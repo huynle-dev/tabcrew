@@ -1,69 +1,50 @@
-/**
- * AI-powered MCP tools for ChromeUse.
- *
- * These tools run in the MCP server process and compose existing browser
- * tools with AI inference (via OpenRouter / Jev Router) to provide
- * higher-level automation capabilities:
- *
- *   ai_action   — Given page state, suggest the next browser action as JSON.
- *   ai_assert   — Assert a condition about the page using natural language.
- *
- * These tools are only registered when CHROMEUSE_AI_API_KEY is set.
- */
-
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { AiProvider } from "./aiProvider.js";
+import { buildActionCandidates, type CandidateSet } from "./actionCandidates.js";
+import {
+  InvalidJevResponseError,
+  JevProviderError,
+} from "./directJevProvider.js";
+import type {
+  ActionCandidate,
+  BrowserAction,
+  ChoiceAnswer,
+  DecisionProvider,
+  DecisionRequest,
+  DecisionResult,
+  DecisionStopReason,
+  NoulAnswer,
+  ScoreAnswer,
+} from "./decisionTypes.js";
+import {
+  compactTree,
+  isActionable,
+  parseTree,
+  type CompactElement,
+} from "./pageCompactor.js";
 import type { BrowserTransport, ToolRequestResult } from "./transport.js";
-import { compactTree } from "./pageCompactor.js";
-
-// ---------------------------------------------------------------------------
-// Tool names
-// ---------------------------------------------------------------------------
 
 export const AI_TOOL_NAMES = {
-  /** Given page state, return a structured next-action recommendation */
   AI_ACTION: "ai_action",
-  /** Assert a natural-language condition about the current page */
   AI_ASSERT: "ai_assert",
-  /** Autonomous multi-step browser agent — drives the browser until the goal is met */
   AI_NAVIGATE: "ai_navigate",
 } as const;
-
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
 
 export const AI_TOOL_SCHEMAS: Tool[] = [
   {
     name: AI_TOOL_NAMES.AI_ACTION,
     description:
-      "Given a page's current state, use AI to recommend the next browser action. " +
-      "Reads the page accessibility tree or text automatically, sends it to an AI model, " +
-      "and returns a structured JSON action: { thought, action, ref, value, url, direction }. " +
-      "The AI sees the full page context and returns the most logical next step toward the goal. " +
-      "Requires CHROMEUSE_AI_API_KEY to be set.",
+      "Given a page's current state, use direct Jev to select one deterministic ChromeUse-owned atomic candidate. " +
+      "Returns the selected action or a structured stop reason; provider output cannot invent refs or values. " +
+      "Requires CHROMEUSE_JEV_API_KEY.",
     inputSchema: {
       type: "object",
       properties: {
-        tabId: {
-          type: "number",
-          description: "Target tab ID",
-        },
-        goal: {
-          type: "string",
-          description:
-            'What you want to accomplish (e.g. "log in with user@test.com", "find the pricing page")',
-        },
-        context: {
-          type: "string",
-          description:
-            "Optional additional context about what has been done so far",
-        },
+        tabId: { type: "number", description: "Target tab ID" },
+        goal: { type: "string", description: "What you want to accomplish" },
+        context: { type: "string", description: "Optional explicit structured context" },
         pageContent: {
           type: "string",
-          description:
-            "Optional pre-fetched page content (accessibility tree or text). " +
-            "If not provided, the tool will fetch the accessibility tree automatically.",
+          description: "Optional pre-fetched accessibility tree or page text",
         },
       },
       required: ["tabId", "goal"],
@@ -72,27 +53,14 @@ export const AI_TOOL_SCHEMAS: Tool[] = [
   {
     name: AI_TOOL_NAMES.AI_ASSERT,
     description:
-      "Assert a natural-language condition about the current page using AI. " +
-      "Reads the page text and asks the AI to evaluate whether a condition holds. " +
-      'Returns { pass: boolean, reason: string }. Example condition: "the user is logged in", ' +
-      '"the search results contain at least 3 items". Requires CHROMEUSE_AI_API_KEY.',
+      "Evaluate a natural-language page condition with one direct-Jev Noul decision. " +
+      "Returns a deterministic threshold result without generated prose. Requires CHROMEUSE_JEV_API_KEY.",
     inputSchema: {
       type: "object",
       properties: {
-        tabId: {
-          type: "number",
-          description: "Target tab ID",
-        },
-        condition: {
-          type: "string",
-          description:
-            'Natural language condition to check (e.g. "the login form is visible")',
-        },
-        pageContent: {
-          type: "string",
-          description:
-            "Optional pre-fetched page content. If not provided, fetches page text automatically.",
-        },
+        tabId: { type: "number", description: "Target tab ID" },
+        condition: { type: "string", description: "Condition to evaluate" },
+        pageContent: { type: "string", description: "Optional pre-fetched visible page text" },
       },
       required: ["tabId", "condition"],
     },
@@ -100,34 +68,21 @@ export const AI_TOOL_SCHEMAS: Tool[] = [
   {
     name: AI_TOOL_NAMES.AI_NAVIGATE,
     description:
-      "Autonomous browser agent — give it a goal and it drives the browser through multiple steps " +
-      "(read page, decide action, execute, repeat) until the goal is achieved or the step limit is reached. " +
-      "Returns a log of every step taken plus the final page state. " +
-      "This is the fastest way to accomplish multi-step browser tasks in a single tool call. " +
-      "Example goals: 'search for TypeScript on Hacker News and open the first result', " +
-      "'navigate to the pricing page and find the enterprise plan price'. " +
-      "Requires CHROMEUSE_AI_API_KEY to be set.",
+      "Drive the browser toward a goal with direct Jev selecting one ChromeUse-owned atomic action per step. " +
+      "Stops on uncertainty, missing explicit values, visual-only tasks, risk, cancellation, or provider errors. " +
+      "Requires CHROMEUSE_JEV_API_KEY.",
     inputSchema: {
       type: "object",
       properties: {
-        tabId: {
-          type: "number",
-          description: "Target tab ID",
-        },
-        goal: {
-          type: "string",
-          description:
-            'What to accomplish (e.g. "find the pricing page", "search for rust and open the first result")',
-        },
+        tabId: { type: "number", description: "Target tab ID" },
+        goal: { type: "string", description: "What to accomplish" },
         maxSteps: {
           type: "number",
-          description:
-            "Maximum steps before stopping (default: 10). Each step is one browser action.",
+          description: "Maximum decision steps before stopping (default 10, maximum 25)",
         },
         startUrl: {
           type: "string",
-          description:
-            "Optional URL to navigate to before starting. If not set, works with whatever page is currently loaded.",
+          description: "Optional explicit URL to navigate to before the first decision",
         },
       },
       required: ["tabId", "goal"],
@@ -135,25 +90,37 @@ export const AI_TOOL_SCHEMAS: Tool[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-
-interface AiToolContext {
-  ai: AiProvider;
-  browser: BrowserTransport;
-  clientId: string;
+export interface DecisionThresholds {
+  action: number;
+  assertion: number;
+  sufficiency: number;
+  maxRisk: number;
 }
 
-/**
- * Handle an AI tool call.
- * Returns the MCP-style result { content, isError? }.
- */
+interface AiToolContext {
+  provider: DecisionProvider;
+  browser: BrowserTransport;
+  clientId: string;
+  thresholds: DecisionThresholds;
+  signal?: AbortSignal;
+}
+
+type McpTextResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+};
+
+const DEFAULT_MAX_STEPS = 10;
+const HARD_MAX_STEPS = 25;
+const SETTLE_MS = 400;
+const NAVIGATION_SETTLE_MS = 1200;
+const MAX_ELEMENTS = 150;
+
 export async function handleAiTool(
   toolName: string,
   args: Record<string, unknown>,
   ctx: AiToolContext
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+): Promise<McpTextResult> {
   switch (toolName) {
     case AI_TOOL_NAMES.AI_ACTION:
       return handleAiAction(args, ctx);
@@ -162,701 +129,714 @@ export async function handleAiTool(
     case AI_TOOL_NAMES.AI_NAVIGATE:
       return handleAiNavigate(args, ctx);
     default:
-      return {
-        content: [{ type: "text", text: `Unknown AI tool: ${toolName}` }],
-        isError: true,
-      };
+      return textResult(`Unknown AI tool: ${toolName}`, true);
   }
 }
-
-// ---------------------------------------------------------------------------
-// ai_action
-// ---------------------------------------------------------------------------
-
-const ACTION_SYSTEM_PROMPT = `You are a browser automation assistant. You receive the current page state (accessibility tree or page text) and a goal. Decide the single next action to take.
-
-Respond with ONLY a JSON object (no markdown fences, no extra text):
-{
-  "thought": "brief reasoning (1 sentence)",
-  "action": "click" | "type" | "scroll" | "navigate" | "wait" | "done",
-  "ref": "ref_N (for click/type - the element reference from the accessibility tree)",
-  "value": "text to type (for type action only)",
-  "url": "URL (for navigate action only)",
-  "direction": "up" | "down" (for scroll action only)
-}
-
-Rules:
-- "done" means the goal appears to be achieved based on the page state.
-- Only include fields relevant to the chosen action.
-- For "click", always provide "ref".
-- For "type", provide both "ref" and "value".
-- For "navigate", provide "url".
-- For "scroll", optionally provide "direction" (default: "down").
-- For "wait", no extra fields needed.`;
 
 async function handleAiAction(
   args: Record<string, unknown>,
   ctx: AiToolContext
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
-  const tabId = args.tabId as number | undefined;
-  const goal = args.goal as string | undefined;
-
+): Promise<McpTextResult> {
+  const tabId = numberArg(args.tabId);
+  const goal = stringArg(args.goal);
   if (tabId === undefined || !goal) {
-    return {
-      content: [{ type: "text", text: "Missing required arguments: tabId, goal" }],
-      isError: true,
-    };
+    return textResult("Missing required arguments: tabId, goal", true);
   }
-
-  // Get page state — use provided content or fetch accessibility tree
-  let pageState = args.pageContent as string | undefined;
-  if (!pageState) {
-    try {
-      const result = await ctx.browser.sendToolRequest(
-        "read_page",
-        { tabId, format: "accessibility" },
-        undefined,
-        { clientId: ctx.clientId }
-      );
-      pageState = extractText(result);
-    } catch (err) {
-      // Fall back to page text
-      try {
-        const result = await ctx.browser.sendToolRequest(
-          "get_page_text",
-          { tabId },
-          undefined,
-          { clientId: ctx.clientId }
-        );
-        pageState = extractText(result);
-      } catch {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Failed to read page state: ${(err as Error).message}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-  }
-
-  const contextNote = args.context
-    ? `\n\nAdditional context: ${args.context}`
-    : "";
 
   try {
-    const result = await ctx.ai.complete({
-      messages: [
-        { role: "system", content: ACTION_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Goal: ${goal}${contextNote}\n\nCurrent page state:\n${truncate(pageState ?? "(empty)", 8000)}`,
-        },
-      ],
-      temperature: 0,
-      maxTokens: 300,
+    ctx.signal?.throwIfAborted();
+    const page = await readActionPage(tabId, args.pageContent, ctx);
+    const compact = compactTree(page, MAX_ELEMENTS);
+    const decision = await decideNextAction({
+      goal,
+      context: stringArg(args.context),
+      page: compact.text || page,
+      elements: compact.elements,
+      history: [],
+      ctx,
     });
-
-    const responseText = result.text ?? "null";
-
-    // Try to parse and validate the JSON
-    let parsed: Record<string, unknown>;
-    try {
-      const cleaned = responseText
-        .replace(/```json?\n?/g, "")
-        .replace(/```/g, "")
-        .trim();
-      parsed = JSON.parse(cleaned);
-    } catch {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "AI returned invalid JSON",
-              raw: responseText,
-              model: result.model,
-              latencyMs: result.latencyMs,
-            }),
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    // Augment with metadata
-    const output = {
-      ...parsed,
-      _meta: {
-        model: result.model,
-        latencyMs: result.latencyMs,
-        tokens: result.usage,
-      },
-    };
-
-    return {
-      content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
-    };
-  } catch (err) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `AI inference failed: ${(err as Error).message}`,
-        },
-      ],
-      isError: true,
-    };
+    return jsonResult(decision.output);
+  } catch (error) {
+    return jsonResult(
+      stopOutput(stopReasonForError(error, ctx.signal), error),
+      !isCancellation(error, ctx.signal)
+    );
   }
 }
-
-// ---------------------------------------------------------------------------
-// ai_assert
-// ---------------------------------------------------------------------------
-
-const ASSERT_SYSTEM_PROMPT = `You are a browser testing assistant. Given the current page content and a condition to check, determine if the condition is true or false.
-
-Respond with ONLY a JSON object (no markdown fences, no extra text):
-{
-  "pass": true | false,
-  "reason": "brief explanation of why the condition does or does not hold"
-}`;
 
 async function handleAiAssert(
   args: Record<string, unknown>,
   ctx: AiToolContext
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
-  const tabId = args.tabId as number | undefined;
-  const condition = args.condition as string | undefined;
-
+): Promise<McpTextResult> {
+  const tabId = numberArg(args.tabId);
+  const condition = stringArg(args.condition);
   if (tabId === undefined || !condition) {
-    return {
-      content: [
-        { type: "text", text: "Missing required arguments: tabId, condition" },
-      ],
-      isError: true,
-    };
-  }
-
-  let pageState = args.pageContent as string | undefined;
-  if (!pageState) {
-    try {
-      const result = await ctx.browser.sendToolRequest(
-        "get_page_text",
-        { tabId },
-        undefined,
-        { clientId: ctx.clientId }
-      );
-      pageState = extractText(result);
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to read page: ${(err as Error).message}`,
-          },
-        ],
-        isError: true,
-      };
-    }
+    return textResult("Missing required arguments: tabId, condition", true);
   }
 
   try {
-    const result = await ctx.ai.complete({
-      messages: [
-        { role: "system", content: ASSERT_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Condition to check: ${condition}\n\nPage content:\n${truncate(pageState ?? "(empty)", 8000)}`,
-        },
-      ],
-      temperature: 0,
-      maxTokens: 200,
-    });
-
-    const responseText = result.text ?? "null";
-
-    let parsed: Record<string, unknown>;
-    try {
-      const cleaned = responseText
-        .replace(/```json?\n?/g, "")
-        .replace(/```/g, "")
-        .trim();
-      parsed = JSON.parse(cleaned);
-    } catch {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "AI returned invalid JSON",
-              raw: responseText,
-              model: result.model,
-            }),
+    ctx.signal?.throwIfAborted();
+    const page = typeof args.pageContent === "string"
+      ? args.pageContent
+      : extractText(await send(ctx, "get_page_text", { tabId }));
+    const result = await ctx.provider.decide(
+      {
+        state: { condition: truncate(condition, 2000), page: truncate(page, 8000) },
+        questions: {
+          assertion: {
+            type: "noul",
+            instructions: "Does the supplied condition hold on the current page?",
           },
-        ],
-        isError: true,
-      };
-    }
-
-    const output = {
-      ...parsed,
-      _meta: {
-        model: result.model,
-        latencyMs: result.latencyMs,
-        tokens: result.usage,
-      },
-    };
-
-    return {
-      content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
-    };
-  } catch (err) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `AI inference failed: ${(err as Error).message}`,
         },
-      ],
-      isError: true,
-    };
+      },
+      ctx.signal
+    );
+    ctx.signal?.throwIfAborted();
+    const answer = requireNoul(result, "assertion");
+    const pass = answer.noul >= ctx.thresholds.assertion;
+    return jsonResult({
+      pass,
+      probability: answer.noul,
+      threshold: ctx.thresholds.assertion,
+      reason:
+        `probability ${answer.noul.toFixed(2)} ${pass ? "met" : "did not meet"} ` +
+        `threshold ${ctx.thresholds.assertion.toFixed(2)}`,
+      _meta: result.metadata,
+    });
+  } catch (error) {
+    return jsonResult({
+      pass: false,
+      error: stopReasonForError(error, ctx.signal),
+      message: safeErrorMessage(error),
+    }, true);
   }
 }
 
-// ---------------------------------------------------------------------------
-// ai_navigate — autonomous multi-step browser agent
-// ---------------------------------------------------------------------------
-
-/**
- * Plan-based prompt. Asking for a SEQUENCE of actions instead of one action
- * per inference is the main latency win: a search ("type query, press Enter")
- * costs one inference instead of two.
- *
- * The model must stop a plan at the first action that navigates, because refs
- * are only valid for the page they were read from. Continuing to execute a
- * stale plan after navigation clicks whatever now happens to own that ref.
- *
- * The `type` action deliberately routes through form_input rather than
- * click-then-type: form_input sets the value directly and does not depend on
- * the element being scrolled into view or on keystroke delivery.
- *
- * `key` requires the automation-indicator fix in
- * extension/src/content-scripts/visualIndicator.ts. Before that fix the
- * indicator's capture-phase blockers swallowed every CDP-dispatched key
- * event, so `key` reported success and delivered nothing. An extension build
- * predating that fix cannot submit forms this way.
- */
-const NAVIGATE_SYSTEM_PROMPT = `You are an autonomous browser agent. Given page state and a goal, return a PLAN of consecutive actions.
-
-Respond with ONLY a JSON object (no markdown fences, no extra text):
-{
-  "thought": "brief reasoning (1 sentence)",
-  "plan": [
-    {"action":"click","ref":"ref_N"},
-    {"action":"type","ref":"ref_N","value":"text"},
-    {"action":"key","key":"Enter"},
-    {"action":"scroll","direction":"down"},
-    {"action":"navigate","url":"https://..."},
-    {"action":"wait"}
-  ],
-  "expectNavigation": true|false,
-  "done": false
+interface NextActionInput {
+  goal: string;
+  context?: string;
+  page: string;
+  elements: CompactElement[];
+  history: BrowserAction[];
+  ctx: AiToolContext;
 }
 
-CRITICAL RULES:
-- Only batch actions that are ALL valid on the CURRENT page state shown.
-- Stop the plan at the first action that navigates or loads new content, and
-  set "expectNavigation": true. Element refs are INVALID after navigation.
-- Typing into a field then pressing Enter IS safe to batch.
-- Set "done": true with an empty plan when the goal is already achieved.
-- Use {"action":"key","key":"Enter"} to submit a form.
-- If an element you need is not listed, scroll to reveal it.
-- If stuck, set "done": true and explain why in "thought".`;
-
-const DEFAULT_MAX_STEPS = 10;
-const HARD_MAX_STEPS = 25;
-/** Settle delay after a plan that did not navigate. */
-const SETTLE_MS = 400;
-/** Longer settle after navigation so the next read sees the new page. */
-const NAVIGATION_SETTLE_MS = 1200;
-/** Cap on actionable elements sent to the model per step. */
-const MAX_ELEMENTS = 150;
-
-interface PlannedAction {
-  action: string;
-  ref?: string;
-  value?: string;
-  key?: string;
-  url?: string;
-  direction?: string;
+interface NextActionDecision {
+  candidate?: ActionCandidate;
+  candidateSet: CandidateSet;
+  result: DecisionResult;
+  output: Record<string, unknown>;
+  selectedProbability?: number;
+  confidence?: number;
+  goalComplete?: number;
+  candidatesSufficient?: number;
+  risk?: number;
 }
 
-interface ActionOutcome {
-  action: string;
-  ref?: string;
-  value?: string;
-  key?: string;
-  url?: string;
-  direction?: string;
-  success: boolean;
-  error?: string;
+async function decideNextAction(input: NextActionInput): Promise<NextActionDecision> {
+  const candidateSet = buildActionCandidates({
+    elements: input.elements,
+    goal: input.goal,
+    context: input.context,
+    history: input.history,
+  });
+  if (isUnsupportedVisualGoal(input.goal)) {
+    const result = emptyDecisionResult();
+    return {
+      candidateSet,
+      result,
+      output: { action: "stop", reason: "unsupported_visual_task", _meta: result.metadata },
+    };
+  }
+
+  const request: DecisionRequest = {
+    state: {
+      goal: truncate(input.goal, 2000),
+      page: truncate(input.page, 8000),
+      history: input.history,
+      candidates: candidateSet.criteria,
+    },
+    questions: {
+      next_action: {
+        type: "choice",
+        instructions: "Select the single best next action using only the supplied opaque candidate IDs.",
+        criteria: candidateSet.criteria,
+      },
+      goal_complete: {
+        type: "noul",
+        instructions: "Is the user's goal already satisfied by the current page?",
+      },
+      candidates_sufficient: {
+        type: "noul",
+        instructions: "Does the candidate set contain a safe action that makes progress or correctly completes the goal?",
+      },
+      action_risk: {
+        type: "score",
+        instructions: "Rate the operational risk of the most appropriate next action.",
+        criteria: [
+          "Read-only or harmless navigation",
+          "Reversible interaction or text entry",
+          "External, destructive, financial, or account-changing action",
+        ],
+      },
+    },
+  };
+
+  input.ctx.signal?.throwIfAborted();
+  const result = await input.ctx.provider.decide(request, input.ctx.signal);
+  input.ctx.signal?.throwIfAborted();
+  const choice = requireChoice(result, "next_action");
+  const goalComplete = requireNoul(result, "goal_complete").noul;
+  const candidatesSufficient = requireNoul(result, "candidates_sufficient").noul;
+  const risk = requireScore(result, "action_risk").score;
+  const candidate = candidateSet.candidates.find(({ id }) => id === choice.choice);
+  const selectedProbability = choice.probabilities?.[choice.choice];
+
+  const stop = (reason: DecisionStopReason) => stopped(
+    reason,
+    candidateSet,
+    result,
+    choice,
+    goalComplete,
+    candidatesSufficient,
+    risk
+  );
+  if (!candidate) return stop("invalid_provider_response");
+  if (choice.probabilities && selectedProbability === undefined) {
+    return stop("invalid_provider_response");
+  }
+  if (
+    selectedProbability !== undefined &&
+    Object.entries(choice.probabilities ?? {}).some(
+      ([id, probability]) => id !== choice.choice && probability >= selectedProbability
+    )
+  ) {
+    return stop("decision_conflict");
+  }
+  if (choice.confidence === undefined || choice.confidence < input.ctx.thresholds.action) {
+    return stop("low_confidence");
+  }
+  if (candidate.action.type === "done" && goalComplete < input.ctx.thresholds.assertion) {
+    return stop("decision_conflict");
+  }
+  if (candidate.action.type !== "done" && goalComplete >= input.ctx.thresholds.assertion) {
+    return stop("decision_conflict");
+  }
+  if (candidate.action.type === "stop") {
+    if (candidatesSufficient >= input.ctx.thresholds.sufficiency) {
+      return stop("decision_conflict");
+    }
+    return stop(
+      candidateSet.omitted.some(({ reason }) => reason === "explicit_value_required")
+        ? "explicit_value_required"
+        : "no_safe_candidates"
+    );
+  }
+  if (
+    candidate.action.type === "done" &&
+    candidatesSufficient < input.ctx.thresholds.sufficiency
+  ) {
+    return stop("decision_conflict");
+  }
+  if (candidatesSufficient < input.ctx.thresholds.sufficiency) {
+    return stop("candidates_insufficient");
+  }
+  if (risk > input.ctx.thresholds.maxRisk) return stop("risk_exceeded");
+
+  return {
+    candidate,
+    candidateSet,
+    result,
+    selectedProbability,
+    confidence: choice.confidence,
+    goalComplete,
+    candidatesSufficient,
+    risk,
+    output: {
+      action: candidate.action.type,
+      ...actionParameters(candidate.action),
+      candidateId: candidate.id,
+      selectedProbability,
+      confidence: choice.confidence,
+      alternatives: topAlternatives(choice),
+      goalComplete,
+      candidatesSufficient,
+      risk,
+      _meta: result.metadata,
+    },
+  };
 }
 
-interface StepLog {
+function stopped(
+  reason: DecisionStopReason,
+  candidateSet: CandidateSet,
+  result: DecisionResult,
+  choice: ChoiceAnswer,
+  goalComplete: number,
+  candidatesSufficient: number,
+  risk: number
+): NextActionDecision {
+  return {
+    candidateSet,
+    result,
+    selectedProbability: choice.probabilities?.[choice.choice],
+    confidence: choice.confidence,
+    goalComplete,
+    candidatesSufficient,
+    risk,
+    output: {
+      action: "stop",
+      reason,
+      selectedCandidateId: choice.choice,
+      selectedProbability: choice.probabilities?.[choice.choice],
+      confidence: choice.confidence,
+      alternatives: topAlternatives(choice),
+      goalComplete,
+      candidatesSufficient,
+      risk,
+      _meta: result.metadata,
+    },
+  };
+}
+
+interface NavigationStep {
   step: number;
-  thought: string;
-  /** Every action executed in this step's plan. */
-  actions: ActionOutcome[];
-  expectNavigation: boolean;
-  model: string;
-  latencyMs: number;
-  /** Element counts, to show how much noise compaction removed. */
+  candidateId?: string;
+  action?: BrowserAction;
+  success: boolean;
+  stopReason?: DecisionStopReason;
+  error?: string;
+  selectedProbability?: number;
+  confidence?: number;
+  goalComplete?: number;
+  candidatesSufficient?: number;
+  risk?: number;
+  alternatives?: Array<{ id: string; probability: number }>;
+  metadata?: DecisionResult["metadata"];
   pageElements: number;
   pageRefsDropped: number;
-  error?: string;
 }
 
 async function handleAiNavigate(
   args: Record<string, unknown>,
   ctx: AiToolContext
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
-  const tabId = args.tabId as number | undefined;
-  const goal = args.goal as string | undefined;
-  const maxSteps = Math.min(
-    typeof args.maxSteps === "number" && args.maxSteps > 0
-      ? args.maxSteps
-      : DEFAULT_MAX_STEPS,
-    HARD_MAX_STEPS
-  );
-  const startUrl = args.startUrl as string | undefined;
-
+): Promise<McpTextResult> {
+  const tabId = numberArg(args.tabId);
+  const goal = stringArg(args.goal);
   if (tabId === undefined || !goal) {
-    return {
-      content: [{ type: "text", text: "Missing required arguments: tabId, goal" }],
-      isError: true,
-    };
+    return textResult("Missing required arguments: tabId, goal", true);
   }
+  const maxSteps = normalizeMaxSteps(args.maxSteps);
+  const startUrl = stringArg(args.startUrl);
+  const steps: NavigationStep[] = [];
+  const history: BrowserAction[] = [];
+  let inferences = 0;
+  let actionsExecuted = 0;
+  let stopReason: DecisionStopReason = "step_limit";
+  let startUrlAction:
+    | { action: BrowserAction; success: boolean; error?: string }
+    | undefined;
+  let startUrlInProgress = false;
 
-  const steps: StepLog[] = [];
-  let done = false;
-  let finalThought = "";
-  let totalInferences = 0;
-  let totalActions = 0;
-
-  if (startUrl) {
-    try {
-      await ctx.browser.sendToolRequest(
-        "navigate",
-        { tabId, url: startUrl, action: "goto" },
-        undefined,
-        { clientId: ctx.clientId }
-      );
-      await sleep(NAVIGATION_SETTLE_MS);
-    } catch (err) {
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            success: false,
-            error: `Failed to navigate to ${startUrl}: ${(err as Error).message}`,
-            steps: [],
-          }, null, 2),
-        }],
-        isError: true,
-      };
-    }
-  }
-
-  for (let i = 0; i < maxSteps && !done; i++) {
-    // --- 1. Read and compact page state ---------------------------------
-    let compact;
-    try {
-      const result = await ctx.browser.sendToolRequest(
-        "read_page",
-        { tabId, format: "accessibility" },
-        undefined,
-        { clientId: ctx.clientId }
-      );
-      compact = compactTree(extractText(result), MAX_ELEMENTS);
-    } catch (readErr) {
-      steps.push({
-        step: i + 1, thought: "", actions: [], expectNavigation: false,
-        model: "", latencyMs: 0, pageElements: 0, pageRefsDropped: 0,
-        error: `Failed to read page: ${(readErr as Error).message}`,
-      });
-      break;
-    }
-
-    // --- 2. Build history context ---------------------------------------
-    const historyContext = steps.length
-      ? "\n\nSteps already taken:\n" +
-        steps
-          .map((s) => {
-            const acts = s.actions
-              .map((a) => {
-                const bits = [a.action];
-                if (a.ref) bits.push(a.ref);
-                if (a.value) bits.push(`"${a.value}"`);
-                if (a.key) bits.push(`key=${a.key}`);
-                if (a.url) bits.push(a.url);
-                if (!a.success) bits.push("(FAILED)");
-                return bits.join(" ");
-              })
-              .join("; ");
-            return `  ${s.step}. ${acts || "(none)"} — ${s.thought}`;
-          })
-          .join("\n")
-      : "";
-
-    // --- 3. Ask for a plan ----------------------------------------------
-    let aiResult;
-    try {
-      aiResult = await ctx.ai.complete({
-        messages: [
-          { role: "system", content: NAVIGATE_SYSTEM_PROMPT },
-          {
-            role: "user",
-            content:
-              `Goal: ${goal}${historyContext}\n\n` +
-              `Current page actionable elements ` +
-              `(${compact.elements.length} shown, ${compact.droppedRefs} layout nodes filtered out):\n` +
-              compact.text,
-          },
-        ],
-        temperature: 0,
-        maxTokens: 500,
-      });
-      totalInferences++;
-    } catch (aiErr) {
-      steps.push({
-        step: i + 1, thought: "", actions: [], expectNavigation: false,
-        model: "", latencyMs: 0,
-        pageElements: compact.elements.length,
-        pageRefsDropped: compact.droppedRefs,
-        error: `AI inference failed: ${(aiErr as Error).message}`,
-      });
-      break;
-    }
-
-    // --- 4. Parse the plan ----------------------------------------------
-    // Jev intermittently returns null content; treat it as a retryable step
-    // rather than aborting the whole run.
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      const cleaned = (aiResult.text ?? "")
-        .replace(/```json?\n?/g, "")
-        .replace(/```/g, "")
-        .trim();
-      if (cleaned) parsed = JSON.parse(cleaned) as Record<string, unknown>;
-    } catch {
-      parsed = null;
-    }
-
-    if (!parsed) {
-      steps.push({
-        step: i + 1,
-        thought: "Model returned unusable output; retrying",
-        actions: [], expectNavigation: false,
-        model: aiResult.model, latencyMs: aiResult.latencyMs,
-        pageElements: compact.elements.length,
-        pageRefsDropped: compact.droppedRefs,
-        error: `Unparseable response: ${(aiResult.text ?? "(null)").slice(0, 120)}`,
-      });
-      continue;
-    }
-
-    const thought = typeof parsed.thought === "string" ? parsed.thought : "";
-    const expectNavigation = parsed.expectNavigation === true;
-    const plan: PlannedAction[] = Array.isArray(parsed.plan)
-      ? (parsed.plan as PlannedAction[])
-      : [];
-
-    // --- 5. Goal already met? -------------------------------------------
-    if (parsed.done === true || plan.length === 0) {
-      done = parsed.done === true;
-      finalThought = thought;
-      steps.push({
-        step: i + 1, thought, actions: [], expectNavigation,
-        model: aiResult.model, latencyMs: aiResult.latencyMs,
-        pageElements: compact.elements.length,
-        pageRefsDropped: compact.droppedRefs,
-        ...(done ? {} : { error: "Model returned an empty plan without done=true" }),
-      });
-      break;
-    }
-
-    // --- 6. Execute the plan --------------------------------------------
-    const outcomes: ActionOutcome[] = [];
-    let navigated = false;
-
-    for (const step of plan) {
-      const outcome = await executeAction(step, tabId, ctx);
-      outcomes.push(outcome);
-      totalActions++;
-
-      // Abandon the rest of the plan on failure — later actions assume the
-      // earlier ones landed.
-      if (!outcome.success) break;
-
-      if (step.action === "navigate" || step.action === "click") {
-        navigated = true;
-      }
-    }
-
-    steps.push({
-      step: i + 1, thought, actions: outcomes, expectNavigation,
-      model: aiResult.model, latencyMs: aiResult.latencyMs,
-      pageElements: compact.elements.length,
-      pageRefsDropped: compact.droppedRefs,
-    });
-
-    await sleep(
-      expectNavigation || navigated ? NAVIGATION_SETTLE_MS : SETTLE_MS
-    );
-  }
-
-  // --- Final page snapshot ----------------------------------------------
-  let finalPageText = "";
   try {
-    const result = await ctx.browser.sendToolRequest(
-      "get_page_text",
-      { tabId, maxLength: 1200 },
-      undefined,
-      { clientId: ctx.clientId }
-    );
-    finalPageText = extractText(result);
-  } catch {
-    // Best effort — a failed final read must not mask the run's outcome.
+    if (startUrl) {
+      ctx.signal?.throwIfAborted();
+      startUrlInProgress = true;
+      await send(ctx, "navigate", { tabId, url: startUrl, action: "goto" });
+      startUrlAction = {
+        action: { type: "navigate", url: startUrl },
+        success: true,
+      };
+      actionsExecuted++;
+      await abortableSleep(NAVIGATION_SETTLE_MS, ctx.signal);
+      startUrlInProgress = false;
+    }
+
+    for (let index = 0; index < maxSteps; index++) {
+      ctx.signal?.throwIfAborted();
+      let compact;
+      let sourceElements: CompactElement[] = [];
+      try {
+        const page = extractText(await send(ctx, "read_page", {
+          tabId,
+          format: "accessibility",
+        }));
+        compact = compactTree(page, MAX_ELEMENTS);
+        sourceElements = actionableElements(page);
+      } catch (error) {
+        if (isCancellation(error, ctx.signal)) throw error;
+        stopReason = "browser_action_failed";
+        steps.push({
+          step: index + 1,
+          success: false,
+          stopReason,
+          error: safeErrorMessage(error),
+          pageElements: 0,
+          pageRefsDropped: 0,
+        });
+        break;
+      }
+
+      let decision: NextActionDecision;
+      try {
+        decision = await decideNextAction({
+          goal,
+          page: compact.text,
+          elements: compact.elements,
+          history,
+          ctx,
+        });
+        if (decision.result.metadata.resolvedModel !== "not-called") inferences++;
+      } catch (error) {
+        if (isCancellation(error, ctx.signal)) throw error;
+        stopReason = stopReasonForError(error, ctx.signal);
+        steps.push({
+          step: index + 1,
+          success: false,
+          stopReason,
+          error: safeErrorMessage(error),
+          pageElements: compact.elements.length,
+          pageRefsDropped: compact.droppedRefs,
+        });
+        break;
+      }
+
+      const common = {
+        step: index + 1,
+        selectedProbability: decision.selectedProbability,
+        confidence: decision.confidence,
+        goalComplete: decision.goalComplete,
+        candidatesSufficient: decision.candidatesSufficient,
+        risk: decision.risk,
+        alternatives: extractAlternatives(decision.output),
+        metadata: decision.result.metadata,
+        pageElements: compact.elements.length,
+        pageRefsDropped: compact.droppedRefs,
+      };
+      if (!decision.candidate) {
+        stopReason = decision.output.reason as DecisionStopReason;
+        steps.push({ ...common, success: false, stopReason });
+        break;
+      }
+      if (decision.candidate.action.type === "done") {
+        stopReason = "completed";
+        steps.push({
+          ...common,
+          candidateId: decision.candidate.id,
+          success: true,
+          stopReason,
+        });
+        break;
+      }
+
+      ctx.signal?.throwIfAborted();
+      let currentElements = compact.elements;
+      if (candidateNeedsRefValidation(decision.candidate)) {
+        try {
+          const currentPage = extractText(await send(ctx, "read_page", {
+            tabId,
+            format: "accessibility",
+          }));
+          currentElements = actionableElements(currentPage);
+          ctx.signal?.throwIfAborted();
+        } catch (error) {
+          if (isCancellation(error, ctx.signal)) throw error;
+          stopReason = "browser_action_failed";
+          steps.push({
+            ...common,
+            candidateId: decision.candidate.id,
+            action: decision.candidate.action,
+            success: false,
+            stopReason,
+            error: `Could not revalidate candidate: ${safeErrorMessage(error)}`,
+          });
+          break;
+        }
+      }
+      if (!candidateStillValid(decision.candidate, sourceElements, currentElements)) {
+        stopReason = "browser_action_failed";
+        steps.push({
+          ...common,
+          candidateId: decision.candidate.id,
+          action: decision.candidate.action,
+          success: false,
+          stopReason,
+          error: "Candidate became stale before dispatch",
+        });
+        break;
+      }
+
+      ctx.signal?.throwIfAborted();
+      actionsExecuted++;
+      let outcome: { success: boolean; error?: string };
+      try {
+        outcome = await executeCandidate(decision.candidate, tabId, ctx);
+      } catch (error) {
+        if (isCancellation(error, ctx.signal)) {
+          steps.push({
+            ...common,
+            candidateId: decision.candidate.id,
+            action: decision.candidate.action,
+            success: false,
+            stopReason: "cancelled",
+            error: "Action outcome unknown after cancellation",
+          });
+        }
+        throw error;
+      }
+      steps.push({
+        ...common,
+        candidateId: decision.candidate.id,
+        action: decision.candidate.action,
+        success: outcome.success,
+        ...(outcome.error ? { error: outcome.error } : {}),
+      });
+      if (!outcome.success) {
+        stopReason = "browser_action_failed";
+        steps.at(-1)!.stopReason = stopReason;
+        break;
+      }
+      history.push(decision.candidate.action);
+      await abortableSleep(
+        decision.candidate.action.type === "click" ||
+          decision.candidate.action.type === "navigate" ||
+          decision.candidate.action.type === "key"
+          ? NAVIGATION_SETTLE_MS
+          : SETTLE_MS,
+        ctx.signal
+      );
+    }
+  } catch (error) {
+    if (isCancellation(error, ctx.signal)) {
+      stopReason = "cancelled";
+    } else if (startUrlInProgress && startUrl) {
+      stopReason = "browser_action_failed";
+      startUrlAction = {
+        action: { type: "navigate", url: startUrl },
+        success: false,
+        error: safeErrorMessage(error),
+      };
+    } else {
+      throw error;
+    }
   }
 
-  const output = {
-    success: done,
+  const finalPagePreview = stopReason === "cancelled"
+    ? ""
+    : await readFinalPreview(tabId, ctx);
+  return jsonResult({
+    success: stopReason === "completed",
+    stopReason,
     goal,
     stepsUsed: steps.length,
     maxSteps,
-    inferences: totalInferences,
-    actionsExecuted: totalActions,
-    ...(finalThought ? { finalThought } : {}),
-    ...(done
-      ? {}
-      : {
-          note:
-            steps.length >= maxSteps
-              ? `Stopped at the ${maxSteps}-step limit without reaching the goal. Raise maxSteps or narrow the goal.`
-              : "Stopped before reaching the goal; see step errors.",
-        }),
+    inferences,
+    actionsExecuted,
+    ...(startUrlAction ? { startUrlAction } : {}),
     steps,
-    finalPagePreview: truncate(finalPageText, 600),
-  };
-
-  return {
-    content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
-  };
+    finalPagePreview,
+  });
 }
 
-/**
- * Execute one planned action against the browser.
- * Returns an outcome instead of throwing so a failed action degrades the
- * step rather than the whole run.
- */
-async function executeAction(
-  step: PlannedAction,
+async function executeCandidate(
+  candidate: ActionCandidate,
   tabId: number,
   ctx: AiToolContext
-): Promise<ActionOutcome> {
-  const base: ActionOutcome = {
-    action: step.action,
-    ...(step.ref ? { ref: step.ref } : {}),
-    ...(step.value !== undefined ? { value: step.value } : {}),
-    ...(step.key ? { key: step.key } : {}),
-    ...(step.url ? { url: step.url } : {}),
-    ...(step.direction ? { direction: step.direction } : {}),
-    success: true,
-  };
-
-  const send = (tool: string, toolArgs: Record<string, unknown>) =>
-    ctx.browser.sendToolRequest(tool, toolArgs, undefined, {
-      clientId: ctx.clientId,
-    });
-
+): Promise<{ success: boolean; error?: string }> {
   try {
-    switch (step.action) {
-      case "click": {
-        if (!step.ref) {
-          return { ...base, success: false, error: "click requires a ref" };
-        }
-        await send("computer", { tabId, action: "click", ref: step.ref });
-        return base;
-      }
-
-      case "type": {
-        if (!step.ref) {
-          return { ...base, success: false, error: "type requires a ref" };
-        }
-        if (step.value === undefined) {
-          return { ...base, success: false, error: "type requires a value" };
-        }
-        // form_input sets the value directly and, unlike click-then-type,
-        // does not depend on the element being scrolled into view.
-        await send("form_input", { tabId, ref: step.ref, value: step.value });
-        return base;
-      }
-
-      case "key": {
-        const key = step.key ?? "Enter";
-        await send("computer", { tabId, action: "key", key });
-        return { ...base, key };
-      }
-
-      case "scroll": {
-        await send("computer", {
+    switch (candidate.action.type) {
+      case "click":
+        await send(ctx, "computer", { tabId, action: "click", ref: candidate.action.ref });
+        break;
+      case "type":
+        await send(ctx, "form_input", {
+          tabId,
+          ref: candidate.action.ref,
+          value: candidate.action.value,
+        });
+        break;
+      case "key":
+        await send(ctx, "computer", { tabId, action: "key", key: candidate.action.key });
+        break;
+      case "scroll":
+        await send(ctx, "computer", {
           tabId,
           action: "scroll",
-          direction: step.direction ?? "down",
+          direction: candidate.action.direction,
         });
-        return base;
-      }
-
-      case "navigate": {
-        if (!step.url) {
-          return { ...base, success: false, error: "navigate requires a url" };
-        }
-        await send("navigate", { tabId, url: step.url, action: "goto" });
-        return base;
-      }
-
-      case "wait": {
-        await sleep(1200);
-        return base;
-      }
-
-      default:
-        return {
-          ...base,
-          success: false,
-          error: `Unsupported action: ${step.action}`,
-        };
+        break;
+      case "navigate":
+        await send(ctx, "navigate", { tabId, action: "goto", url: candidate.action.url });
+        break;
+      case "wait":
+        await abortableSleep(NAVIGATION_SETTLE_MS, ctx.signal);
+        break;
+      case "done":
+      case "stop":
+        return { success: false, error: `${candidate.action.type} is not executable` };
     }
-  } catch (err) {
-    return { ...base, success: false, error: (err as Error).message };
+    return { success: true };
+  } catch (error) {
+    if (isCancellation(error, ctx.signal)) throw error;
+    return { success: false, error: safeErrorMessage(error) };
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function candidateNeedsRefValidation(candidate: ActionCandidate): boolean {
+  return candidate.action.type === "click" || candidate.action.type === "type";
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+function candidateStillValid(
+  candidate: ActionCandidate,
+  originalElements: CompactElement[],
+  currentElements: CompactElement[]
+): boolean {
+  const action = candidate.action;
+  if (action.type !== "click" && action.type !== "type") return true;
+  const original = originalElements.find(({ ref }) => ref === action.ref);
+  const current = currentElements.find(({ ref }) => ref === action.ref);
+  if (!original || !current) return false;
+  const sameIdentity = ({ role, name }: CompactElement) =>
+    role === original.role && name === original.name;
+  return Boolean(
+    original.role === current.role &&
+    original.name === current.name &&
+    originalElements.filter(({ ref }) => ref === action.ref).length === 1 &&
+    currentElements.filter(({ ref }) => ref === action.ref).length === 1 &&
+    originalElements.filter(sameIdentity).length === 1 &&
+    currentElements.filter(sameIdentity).length === 1 &&
+    !/\b(disabled|hidden|stale)\b/i.test(current.state ?? "")
+  );
+}
+
+function actionableElements(page: string): CompactElement[] {
+  return parseTree(page).all.filter(isActionable);
+}
+
+async function readActionPage(
+  tabId: number,
+  supplied: unknown,
+  ctx: AiToolContext
+): Promise<string> {
+  if (typeof supplied === "string") return supplied;
+  try {
+    return extractText(await send(ctx, "read_page", { tabId, format: "accessibility" }));
+  } catch (error) {
+    if (isCancellation(error, ctx.signal)) throw error;
+    return extractText(await send(ctx, "get_page_text", { tabId }));
+  }
+}
+
+async function readFinalPreview(tabId: number, ctx: AiToolContext): Promise<string> {
+  try {
+    return truncate(extractText(await send(ctx, "get_page_text", {
+      tabId,
+      maxLength: 1200,
+    })), 600);
+  } catch {
+    return "";
+  }
+}
+
+async function send(
+  ctx: AiToolContext,
+  tool: string,
+  args: Record<string, unknown>
+): Promise<ToolRequestResult> {
+  const result = await ctx.browser.sendToolRequest(
+    tool,
+    args,
+    undefined,
+    { clientId: ctx.clientId }
+  );
+  if (result.isError) {
+    throw new Error(extractText(result) || `${tool} failed`);
+  }
+  return result;
+}
+
+function topAlternatives(answer: ChoiceAnswer): Array<{ id: string; probability: number }> {
+  return Object.entries(answer.probabilities ?? {})
+    .filter(([id]) => id !== answer.choice)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 5)
+    .map(([id, probability]) => ({ id, probability }));
+}
+
+function extractAlternatives(output: Record<string, unknown>) {
+  return Array.isArray(output.alternatives)
+    ? output.alternatives as Array<{ id: string; probability: number }>
+    : undefined;
+}
+
+function requireChoice(result: DecisionResult, name: string): ChoiceAnswer {
+  const answer = result.answers[name];
+  if (answer?.type !== "choice") throw new InvalidJevResponseError(`${name} must be choice`);
+  return answer;
+}
+
+function requireNoul(result: DecisionResult, name: string): NoulAnswer {
+  const answer = result.answers[name];
+  if (answer?.type !== "noul") throw new InvalidJevResponseError(`${name} must be Noul`);
+  return answer;
+}
+
+function requireScore(result: DecisionResult, name: string): ScoreAnswer {
+  const answer = result.answers[name];
+  if (answer?.type !== "score") throw new InvalidJevResponseError(`${name} must be Score`);
+  return answer;
+}
+
+function stopReasonForError(error: unknown, signal?: AbortSignal): DecisionStopReason {
+  if (isCancellation(error, signal)) return "cancelled";
+  if (error instanceof InvalidJevResponseError) return "invalid_provider_response";
+  if (error instanceof JevProviderError) return "provider_error";
+  return "provider_error";
+}
+
+function stopOutput(reason: DecisionStopReason, error: unknown) {
+  return { action: "stop", reason, message: safeErrorMessage(error) };
+}
+
+function isUnsupportedVisualGoal(goal: string): boolean {
+  return /\b(screenshot|image|picture|photo|pixel|canvas|color|colou?r|icon shown|looks like|leftmost|rightmost|topmost|bottommost|on the left|on the right|left side|right side|at the top|at the bottom|top of|bottom of|upper|lower|above|below|beside|next to|nearest|farthest|visually)\b/i.test(goal);
+}
+
+function emptyDecisionResult(): DecisionResult {
+  return {
+    answers: {},
+    metadata: {
+      provider: "direct-jev",
+      requestedModel: "typesafe/jev-1.13",
+      resolvedModel: "not-called",
+      latencyMs: 0,
+      usage: { inputTokens: 0, outputTokens: 0 },
+    },
+  };
+}
+
+function actionParameters(action: BrowserAction): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(action).filter(([key]) => key !== "type"));
+}
+
+function normalizeMaxSteps(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_MAX_STEPS;
+  }
+  return Math.min(Math.floor(value), HARD_MAX_STEPS);
+}
+
+function stringArg(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberArg(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
 
 function extractText(result: ToolRequestResult): string {
   for (const block of result.content) {
-    if ((block as { type: string }).type === "text") {
+    if ((block as { type?: string }).type === "text") {
       return (block as { type: "text"; text: string }).text;
     }
   }
@@ -865,5 +845,40 @@ function extractText(result: ToolRequestResult): string {
 
 function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars) + `\n...(truncated at ${maxChars} chars)`;
+  return `${text.slice(0, maxChars)}\n...(truncated at ${maxChars} chars)`;
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (!signal) return;
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Aborted"));
+    }, { once: true });
+  });
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && /abort|cancel/i.test(`${error.name} ${error.message}`))
+  );
+}
+
+function isCancellation(error: unknown, signal?: AbortSignal): boolean {
+  return signal?.aborted === true || isAbortError(error);
+}
+
+function safeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function textResult(text: string, isError = false): McpTextResult {
+  return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
+}
+
+function jsonResult(value: unknown, isError = false): McpTextResult {
+  return textResult(JSON.stringify(value, null, 2), isError);
 }

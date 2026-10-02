@@ -259,6 +259,67 @@ save_resource({
 })
 ```
 
+## Direct Jev Decision Tools
+
+These optional server-local tools are registered only when
+`CHROMEUSE_JEV_API_KEY` is configured. They call OpenRouter's raw
+`POST /api/v1/systemone` endpoint with `typesafe/jev-1.13`. They never call a
+chat model or generative fallback.
+
+ChromeUse compacts the main-frame accessibility tree, extracts only explicit
+verbatim values, and constructs at most 255 deterministic atomic candidates.
+Jev sees descriptions keyed by opaque IDs and may select one ID; it cannot
+provide executable refs, text, URLs, keys, or directions. Visual-only tasks and
+missing explicit values stop rather than guess.
+
+### `ai_action`
+
+Returns one validated candidate without executing it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tabId` | number | yes | Target tab ID. |
+| `goal` | string | yes | Goal used to rank deterministic candidates. |
+| `context` | string | no | Additional explicit structured context. |
+| `pageContent` | string | no | Pre-fetched accessibility tree or page text. |
+
+The result includes the action or `action: "stop"`, a structured reason,
+selected probability, choice confidence, up to five alternatives, completion
+and sufficiency probabilities, risk score, latency, resolved model, token usage,
+and cost.
+
+### `ai_assert`
+
+Evaluates one condition with a Jev Noul probability.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tabId` | number | yes | Target tab ID. |
+| `condition` | string | yes | Condition to evaluate against current page text. |
+| `pageContent` | string | no | Pre-fetched visible page text. |
+
+`pass` is reproducibly computed as `probability >= threshold`. The `reason` is
+deterministic (for example, `probability 0.91 met threshold 0.80`), not generated
+prose.
+
+### `ai_navigate`
+
+Runs a bounded decision loop and executes exactly one accepted atomic action per
+step, then rereads the page before asking again.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tabId` | number | yes | Target tab ID. |
+| `goal` | string | yes | Goal for the navigation loop. Quote text that must be typed. |
+| `maxSteps` | number | no | Decision-step limit; defaults to 10 and caps at 25. |
+| `startUrl` | string | no | Explicit URL visited before the first decision. |
+
+Terminal stop reasons include `completed`, `low_confidence`,
+`no_safe_candidates`, `explicit_value_required`, `unsupported_visual_task`,
+`goal_not_verifiable`, `candidates_insufficient`, `decision_conflict`,
+`risk_exceeded`, `step_limit`, `cancelled`, `provider_error`,
+`invalid_provider_response`, and `browser_action_failed`.
+
 ## Workspace and Document Tools
 
 The unified workspace/document foundation extends ChromeUse without bundling the Chrome Reader extension. Workspace state belongs to the ChromeUse side panel, and MCP tools communicate with that state through the existing extension transport.

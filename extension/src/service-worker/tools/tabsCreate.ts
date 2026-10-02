@@ -15,6 +15,29 @@ import type {
 import { recordAutomationTab } from "../sidePanelHandler.js";
 import { tabGroupManager } from "../tabGroups.js";
 
+const GROUP_MOVE_TIMEOUT_MS = 1_000;
+const GROUP_MOVE_POLL_MS = 10;
+
+async function waitForTabWindow(
+  tabId: number,
+  windowId: number,
+): Promise<chrome.tabs.Tab> {
+  const deadline = Date.now() + GROUP_MOVE_TIMEOUT_MS;
+
+  while (true) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.windowId === windowId) return tab;
+
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for tab ${tabId} to move to window ${windowId}`,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, GROUP_MOVE_POLL_MS));
+  }
+}
+
 export class TabsCreateTool implements ToolHandler {
   async execute(
     args: Record<string, unknown>,
@@ -56,11 +79,25 @@ export class TabsCreateTool implements ToolHandler {
         // Tab grouping is best-effort; don't fail the tool if it errors
       }
 
+      let resultTab = tab;
+      if (groupId !== undefined) {
+        const group = await chrome.tabGroups.get(groupId);
+        resultTab = await waitForTabWindow(tab.id, group.windowId);
+      }
+
+      if (active && groupId !== undefined) {
+        await chrome.windows.update(resultTab.windowId, { focused: true });
+        resultTab = {
+          ...resultTab,
+          ...(await chrome.tabs.update(tab.id, { active: true })),
+        };
+      }
+
       const result = {
         tabId: tab.id,
-        url: tab.url ?? tab.pendingUrl ?? url ?? "chrome://newtab",
-        windowId: tab.windowId,
-        active: tab.active,
+        url: resultTab.url ?? resultTab.pendingUrl ?? url ?? "chrome://newtab",
+        windowId: resultTab.windowId,
+        active: resultTab.active,
         groupId: groupId ?? null,
       };
 
