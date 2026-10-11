@@ -69,6 +69,10 @@ async function stopSession(shortId: string | null): Promise<void> {
     : `Stop failed: ${result.error}`;
 }
 
+$<HTMLInputElement>("token").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("save-token").click();
+});
+
 $("save-token").addEventListener("click", async () => {
   const input = $<HTMLInputElement>("token");
   const token = input.value.trim();
