@@ -1,4 +1,4 @@
-export type LogLevel = "info" | "warn" | "error";
+export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogSink = (level: LogLevel, message: string) => void;
 
 const stderrSink: LogSink = (level, message) => {
@@ -16,7 +16,12 @@ export function setLogSink(next: LogSink | null): void {
  * One-line logs. Never pass tokens, session handles, page text or typed values here;
  * use a session's short_id to identify it.
  */
+const debugEnabled = process.env.CHROMEUSE_LOG === "debug";
+
 export const log = {
+  debug: (message: string) => {
+    if (debugEnabled) sink("debug", message);
+  },
   info: (message: string) => sink("info", message),
   warn: (message: string) => sink("warn", message),
   error: (message: string) => sink("error", message),

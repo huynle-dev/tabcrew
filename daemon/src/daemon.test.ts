@@ -91,11 +91,11 @@ describe("HTTP endpoint", () => {
     expect(allowed.status).toBe(200);
   });
 
-  it("lists exactly the phase-1/2 tools", async () => {
+  it("lists exactly the phase-1..4 tools", async () => {
     const { client } = await setup();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["screenshot", "session_close", "session_open", "tab_close", "tab_create", "tab_list"].sort(),
+      ["act", "observe", "screenshot", "session_close", "session_open", "tab_close", "tab_create", "tab_list"].sort(),
     );
   });
 });
@@ -225,9 +225,12 @@ describe("tools", () => {
     const ext = await connectExtension(d);
     const s = await call(client, "session_open", {});
     const S = s.ok && s.value.session;
+    // A second session: tab_list in the same session would queue behind tab_create.
+    const s2 = await call(client, "session_open", {});
+    const S2 = s2.ok && s2.value.session;
     ext.handler = () => HOLD;
     const create = call(client, "tab_create", { session: S });
-    const list = call(client, "tab_list", { session: S });
+    const list = call(client, "tab_list", { session: S2 });
     await ext.waitForRequests(2);
     ext.ws.terminate();
     expect((await create).ok === false && ((await create) as { error: { code: string } }).error.code).toBe(

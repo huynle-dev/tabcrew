@@ -11,6 +11,8 @@ export interface Session {
   readonly label: string;
   readonly created_at: number;
   last_used_at: number;
+  /** Set when the user pressed Stop; every call then fails with `stopped_by_user`. */
+  stopped: boolean;
   readonly tabs: Set<number>;
 }
 
@@ -28,8 +30,12 @@ interface PersistedSession {
   label: string;
   created_at: number;
   last_used_at: number;
+  stopped?: boolean;
   tabs: number[];
 }
+
+/** Called whenever a session loses a tab (closed, gone, reconciled away, or session closed). */
+export type TabRemovedListener = (tabId: number, shortId: string) => void;
 
 const SHORT_ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
 const HANDLE_RE = /^s_[A-Za-z0-9_-]{22}$/;
@@ -44,6 +50,10 @@ function hashHandle(handle: string): string {
 function newShortId(): string {
   // 64-symbol alphabet: each random byte maps uniformly via its low 6 bits.
   return Array.from(randomBytes(8), (b) => SHORT_ID_ALPHABET[b & 63]).join("");
+}
+
+function isTabId(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
 }
 
 /** Make a label safe for a tab-group title (`<label> · <short_id>`). */
@@ -72,6 +82,7 @@ export class SessionRegistry {
   private readonly byShortId = new Map<string, Session>();
   /** tab id -> owning session short_id. A tab belongs to at most one session. */
   private readonly tabOwner = new Map<number, string>();
+  private readonly tabListeners: TabRemovedListener[] = [];
   private readonly now: () => number;
 
   constructor(private readonly options: SessionRegistryOptions) {
@@ -80,6 +91,10 @@ export class SessionRegistry {
 
   get size(): number {
     return this.byKey.size;
+  }
+
+  onTabRemoved(listener: TabRemovedListener): void {
+    this.tabListeners.push(listener);
   }
 
   open(label?: string): { handle: string; session: Session } {
@@ -93,6 +108,7 @@ export class SessionRegistry {
       label: normaliseLabel(label),
       created_at: t,
       last_used_at: t,
+      stopped: false,
       tabs: new Set(),
     };
     this.insert(session);
@@ -100,14 +116,28 @@ export class SessionRegistry {
     return { handle, session };
   }
 
-  /** Resolve a handle to its session and mark it used. Throws `bad_session`. */
+  /** Resolve a handle to its session and mark it used. Throws `bad_session` or `stopped_by_user`. */
   use(handle: unknown): Session {
     const session = typeof handle === "string" && HANDLE_RE.test(handle) ? this.byKey.get(hashHandle(handle)) : undefined;
     if (!session) {
       throw new DaemonError("bad_session", "unknown or closed session; call session_open and use the returned handle");
     }
+    this.requireActive(session);
     session.last_used_at = this.now();
     return session;
+  }
+
+  /** Throws unless the session is still registered and not stopped (re-checked when queued work starts). */
+  requireActive(session: Session): void {
+    if (this.byKey.get(session.key) !== session) {
+      throw new DaemonError("bad_session", "session was closed; call session_open for a new session");
+    }
+    if (session.stopped) {
+      throw new DaemonError(
+        "stopped_by_user",
+        "the user pressed Stop for this session in Chrome; ask the user before continuing (a new session_open is required)",
+      );
+    }
   }
 
   getByShortId(shortId: string): Session | undefined {
@@ -124,9 +154,21 @@ export class SessionRegistry {
 
   /** Throws `tab_not_owned` unless the session owns the tab. */
   requireTab(session: Session, tabId: number): void {
-    if (!session.tabs.has(tabId)) {
+    if (!session.tabs.has(tabId) || this.tabOwner.get(tabId) !== session.short_id) {
       throw new DaemonError("tab_not_owned", `tab ${tabId} is not owned by this session; use tab_list or tab_create`);
     }
+  }
+
+  /**
+   * Mark sessions stopped (one short_id, or every session for null). Their tabs stay open and
+   * owned. Returns the sessions that were newly stopped.
+   */
+  stop(shortId: string | null): Session[] {
+    const targets = shortId === null ? this.list() : [this.byShortId.get(shortId)].filter((s): s is Session => !!s);
+    const stopped = targets.filter((s) => !s.stopped);
+    for (const s of stopped) s.stopped = true;
+    if (stopped.length) this.save();
+    return stopped;
   }
 
   /** Remove the session. Returns it (with its tab set) or undefined if already gone. */
@@ -134,22 +176,42 @@ export class SessionRegistry {
     if (this.byKey.get(session.key) !== session) return undefined;
     this.byKey.delete(session.key);
     this.byShortId.delete(session.short_id);
+    const removed: number[] = [];
     for (const tabId of session.tabs) {
-      if (this.tabOwner.get(tabId) === session.short_id) this.tabOwner.delete(tabId);
+      if (this.tabOwner.get(tabId) === session.short_id) {
+        this.tabOwner.delete(tabId);
+        removed.push(tabId);
+      }
     }
     this.save();
+    for (const tabId of removed) this.emitRemoved(tabId, session.short_id);
     return session;
   }
 
-  addTab(shortId: string, tabId: number): boolean {
+  /**
+   * Record that a session's group holds `tabId`. With `steal: false` (unsolicited extension
+   * events) a tab already owned by another session is never moved; `tab_create` results are
+   * authoritative and may take over a stale entry.
+   */
+  addTab(shortId: string, tabId: number, { steal = true }: { steal?: boolean } = {}): boolean {
     const session = this.byShortId.get(shortId);
-    if (!session) return false;
+    if (!session || !isTabId(tabId)) return false;
     const previous = this.tabOwner.get(tabId);
-    if (previous === shortId) return true;
-    if (previous !== undefined) this.byShortId.get(previous)?.tabs.delete(tabId);
+    if (previous === shortId) {
+      session.tabs.add(tabId);
+      return true;
+    }
+    if (previous !== undefined) {
+      if (!steal) {
+        log.warn(`ignored adoption of tab ${tabId} by ${shortId}: owned by another session`);
+        return false;
+      }
+      this.byShortId.get(previous)?.tabs.delete(tabId);
+    }
     session.tabs.add(tabId);
     this.tabOwner.set(tabId, shortId);
     this.save();
+    if (previous !== undefined) this.emitRemoved(tabId, previous);
     return true;
   }
 
@@ -158,6 +220,7 @@ export class SessionRegistry {
     if (!session?.tabs.delete(tabId)) return;
     if (this.tabOwner.get(tabId) === shortId) this.tabOwner.delete(tabId);
     this.save();
+    this.emitRemoved(tabId, shortId);
   }
 
   /**
@@ -166,12 +229,16 @@ export class SessionRegistry {
    */
   setTabs(session: Session, tabs: readonly V2TabInfo[]): V2TabInfo[] {
     const kept = tabs.filter((t) => {
+      if (!isTabId(t?.tab_id)) return false;
       const owner = this.tabOwner.get(t.tab_id);
       return owner === undefined || owner === session.short_id;
     });
     const next = new Set(kept.map((t) => t.tab_id));
+    const removed: number[] = [];
     for (const tabId of session.tabs) {
-      if (!next.has(tabId) && this.tabOwner.get(tabId) === session.short_id) this.tabOwner.delete(tabId);
+      if (next.has(tabId)) continue;
+      if (this.tabOwner.get(tabId) === session.short_id) this.tabOwner.delete(tabId);
+      removed.push(tabId);
     }
     session.tabs.clear();
     for (const tabId of next) {
@@ -179,28 +246,43 @@ export class SessionRegistry {
       this.tabOwner.set(tabId, session.short_id);
     }
     this.save();
+    for (const tabId of removed) this.emitRemoved(tabId, session.short_id);
     return kept;
   }
 
   /**
-   * Reconcile with the extension's `groups` event after (re)connecting. Every known session
-   * is kept; its tabs become exactly those in its group (none if it has no group). Groups
-   * for unknown sessions are ignored.
+   * Reconcile with the extension's `groups` event after (re)connecting. The extension is the
+   * source of truth for which tabs exist: every known session is kept and its tabs become
+   * exactly those in its group (none if it has no group). Groups for unknown sessions are
+   * left alone and their tabs are never adopted by any session.
    */
-  reconcile(groups: readonly { short_id: string; tabs: readonly V2TabInfo[] }[]): void {
-    const byShort = new Map(groups.map((g) => [g.short_id, g.tabs]));
+  reconcile(groups: unknown): void {
+    const valid = (Array.isArray(groups) ? groups : []).filter(
+      (g): g is { short_id: string; tabs: unknown[] } =>
+        !!g && typeof g === "object" && typeof g.short_id === "string" && Array.isArray(g.tabs),
+    );
+    const byShort = new Map<string, number[]>();
+    for (const g of valid) {
+      const ids = g.tabs.map((t) => (t as { tab_id?: unknown } | null)?.tab_id).filter(isTabId);
+      byShort.set(g.short_id, [...(byShort.get(g.short_id) ?? []), ...ids]);
+    }
+
+    const before = new Map(this.tabOwner);
     this.tabOwner.clear();
     for (const session of this.byKey.values()) {
       session.tabs.clear();
-      for (const tab of byShort.get(session.short_id) ?? []) {
-        if (this.tabOwner.has(tab.tab_id)) continue;
-        session.tabs.add(tab.tab_id);
-        this.tabOwner.set(tab.tab_id, session.short_id);
+      for (const tabId of byShort.get(session.short_id) ?? []) {
+        if (this.tabOwner.has(tabId)) continue;
+        session.tabs.add(tabId);
+        this.tabOwner.set(tabId, session.short_id);
       }
     }
-    const unknown = groups.filter((g) => !this.byShortId.has(g.short_id)).length;
-    if (unknown > 0) log.info(`reconcile: ignored ${unknown} group(s) for unknown sessions`);
+    const unknown = [...byShort.keys()].filter((id) => !this.byShortId.has(id)).length;
+    if (unknown > 0) log.info(`reconcile: left ${unknown} group(s) of unknown sessions alone`);
     this.save();
+    for (const [tabId, owner] of before) {
+      if (this.tabOwner.get(tabId) !== owner) this.emitRemoved(tabId, owner);
+    }
   }
 
   /** Sessions whose last use is older than the idle timeout. */
@@ -231,7 +313,8 @@ export class SessionRegistry {
         typeof raw.key !== "string" ||
         typeof raw.short_id !== "string" ||
         !SHORT_ID_RE.test(raw.short_id) ||
-        this.byShortId.has(raw.short_id)
+        this.byShortId.has(raw.short_id) ||
+        this.byKey.has(raw.key)
       ) {
         continue;
       }
@@ -241,11 +324,12 @@ export class SessionRegistry {
         label: normaliseLabel(raw.label),
         created_at: Number(raw.created_at) || this.now(),
         last_used_at: Number(raw.last_used_at) || this.now(),
+        stopped: raw.stopped === true,
         tabs: new Set(),
       };
       this.insert(session);
       for (const tabId of Array.isArray(raw.tabs) ? raw.tabs : []) {
-        if (Number.isInteger(tabId) && !this.tabOwner.has(tabId)) {
+        if (isTabId(tabId) && !this.tabOwner.has(tabId)) {
           session.tabs.add(tabId);
           this.tabOwner.set(tabId, session.short_id);
         }
@@ -253,6 +337,10 @@ export class SessionRegistry {
     }
   }
 
+  /**
+   * Write sessions.json atomically: synchronous write to a temp file, then rename. Saves run on
+   * the single JS thread, so concurrent tool calls can never interleave a write.
+   */
   save(): void {
     const file = this.options.file;
     if (!file) return;
@@ -262,6 +350,7 @@ export class SessionRegistry {
       label: s.label,
       created_at: s.created_at,
       last_used_at: s.last_used_at,
+      ...(s.stopped && { stopped: true }),
       tabs: [...s.tabs],
     }));
     const tmp = `${file}.${process.pid}.tmp`;
@@ -271,6 +360,16 @@ export class SessionRegistry {
       renameSync(tmp, file);
     } catch (err) {
       log.error(`failed to save sessions.json: ${(err as NodeJS.ErrnoException).code ?? "error"}`);
+    }
+  }
+
+  private emitRemoved(tabId: number, shortId: string): void {
+    for (const listener of this.tabListeners) {
+      try {
+        listener(tabId, shortId);
+      } catch (err) {
+        log.error(`tab listener failed: ${(err as Error).message}`);
+      }
     }
   }
 

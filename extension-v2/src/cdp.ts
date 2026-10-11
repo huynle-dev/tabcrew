@@ -1,8 +1,9 @@
 /**
- * chrome.debugger per tab: attached lazily and kept attached.
+ * chrome.debugger per tab: attached on tab_create (or lazily on first use) and kept attached.
  *
  * On attach we enable focus emulation (so background tabs in the unfocused Agents window
- * keep rendering and running timers, as in jev-ultrafast) and the Page domain. All state is
+ * keep rendering and running timers, as in jev-ultrafast) and the Page domain. `tab_create`
+ * starts the attach eagerly; every other op awaits the same pending attach. All state is
  * per tab; nothing is shared across tabs.
  */
 
@@ -85,15 +86,18 @@ export class CdpManager {
       }
       quality = Math.round(args.quality);
     }
-    const metrics = await this.send<LayoutMetrics>(tabId, "Page.getLayoutMetrics");
-    const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
     const params: Record<string, unknown> = { format };
     if (format === "jpeg") params.quality = quality;
-    const shot = await withTimeout(
-      this.send<{ data: string }>(tabId, "Page.captureScreenshot", params),
-      SCREENSHOT_TIMEOUT_MS,
-      `screenshot of tab ${tabId} timed out`,
-    );
+    // Independent reads: issue both at once instead of serially.
+    const [metrics, shot] = await Promise.all([
+      this.send<LayoutMetrics>(tabId, "Page.getLayoutMetrics"),
+      withTimeout(
+        this.send<{ data: string }>(tabId, "Page.captureScreenshot", params),
+        SCREENSHOT_TIMEOUT_MS,
+        `screenshot of tab ${tabId} timed out`,
+      ),
+    ]);
+    const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
     return {
       media_type: format === "png" ? "image/png" : "image/jpeg",
       data: shot.data,
@@ -113,8 +117,13 @@ export class CdpManager {
         throw new OpError("internal", `cannot attach debugger to tab ${tabId}: ${msg}`);
       }
     }
-    await chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true });
-    await chrome.debugger.sendCommand({ tabId }, "Page.enable");
+    // Focus emulation keeps the hidden background tab awake and rendering, so screenshots and
+    // rAF-based settle waits do not stall. Page.enable delivers Page.frameNavigated, used to
+    // drop stale snapshots. Both are sent together rather than one after the other.
+    await Promise.all([
+      chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true }),
+      chrome.debugger.sendCommand({ tabId }, "Page.enable"),
+    ]);
   }
 }
 

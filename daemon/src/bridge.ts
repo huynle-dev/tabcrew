@@ -40,6 +40,7 @@ interface Pending {
   readonly resolve: (value: unknown) => void;
   readonly reject: (err: DaemonError) => void;
   readonly timer: NodeJS.Timeout;
+  readonly sentAt: number;
 }
 
 function rawToString(data: RawData): string {
@@ -123,7 +124,7 @@ export class ExtensionBridge {
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) reject(lostError(op, `extension did not answer within ${Math.round(timeoutMs / 1000)} s`));
       }, timeoutMs);
-      this.pending.set(id, { op, socket, resolve: resolve as (v: unknown) => void, reject, timer });
+      this.pending.set(id, { op, socket, resolve: resolve as (v: unknown) => void, reject, timer, sentAt: performance.now() });
       const frame: V2DaemonFrame = { type: "request", id, op, session, args };
       socket.send(JSON.stringify(frame), (err) => {
         if (err && this.pending.has(id)) {
@@ -229,6 +230,7 @@ export class ExtensionBridge {
         if (!entry) return;
         this.pending.delete(id);
         clearTimeout(entry.timer);
+        log.debug(`bridge ${entry.op} ${Math.round(performance.now() - entry.sentAt)} ms ${frame.ok === true ? "ok" : "error"}`);
         if (frame.ok === true) entry.resolve(frame.result);
         else entry.reject(fromWireError(frame.error));
         return;

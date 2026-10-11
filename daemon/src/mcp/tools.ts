@@ -3,11 +3,23 @@ import { z } from "zod";
 import type { ExtensionBridge } from "../bridge.js";
 import { DaemonError, toV2Error } from "../errors.js";
 import { log } from "../log.js";
-import { sessionRef, type SessionRegistry } from "../sessions.js";
+import {
+  actionSpace,
+  checkSnapshot,
+  MAX_TYPE_TEXT,
+  OPERATIONS,
+  resolveAct,
+  toObservation,
+  type ObservationCache,
+} from "../observe.js";
+import type { Scheduler } from "../scheduler.js";
+import { sessionRef, type Session, type SessionRegistry } from "../sessions.js";
 
 export interface ToolContext {
   readonly registry: SessionRegistry;
   readonly bridge: ExtensionBridge;
+  readonly scheduler: Scheduler;
+  readonly observations: ObservationCache;
 }
 
 const SESSION_HINT = "Your session handle from session_open. Never share it with other agents.";
@@ -31,6 +43,15 @@ const schemas = {
     tab_id: tabIdArg,
     format: z.enum(["jpeg", "png"]).optional(),
     quality: z.number().int().min(1).max(100).optional(),
+  }),
+  observe: z.object({ session: sessionArg, tab_id: tabIdArg }),
+  act: z.object({
+    session: sessionArg,
+    tab_id: tabIdArg,
+    fingerprint: z.string().min(1).max(200),
+    operation: z.enum(OPERATIONS),
+    target: z.union([z.string().max(32), z.number().int().nonnegative()]).optional(),
+    text: z.string().max(MAX_TYPE_TEXT).optional(),
   }),
 };
 type ToolName = keyof typeof schemas;
@@ -90,6 +111,36 @@ export const TOOL_DEFINITIONS: Tool[] = [
       required: ["session", "tab_id"],
     },
   },
+  {
+    name: "observe",
+    description:
+      "Read one of your tabs: URL, title, visible text, a numbered element table (each element lists the operations it supports; selects list options as \"<index>:<n>\"), available controls, and a fingerprint to pass to act.",
+    inputSchema: {
+      type: "object",
+      properties: { session: sessionProp, tab_id: tabIdProp },
+      required: ["session", "tab_id"],
+    },
+  },
+  {
+    name: "act",
+    description:
+      "Do one operation on a tab, using the fingerprint and element indices from your latest observe of that tab. CLICK/TYPE_TEXT take an element index, SELECT takes an option index like \"3:2\", SCROLL_UP/SCROLL_DOWN/WAIT take no target. Returns stale_page (nothing done) if the page changed. Always observe again after act.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: sessionProp,
+        tab_id: tabIdProp,
+        fingerprint: { type: "string", description: "fingerprint from your latest observe of this tab." },
+        operation: { type: "string", enum: [...OPERATIONS] },
+        target: {
+          type: ["string", "integer"],
+          description: "Element index (CLICK, TYPE_TEXT) or option index like \"3:2\" (SELECT).",
+        },
+        text: { type: "string", maxLength: MAX_TYPE_TEXT, description: "Text to enter; required for TYPE_TEXT." },
+      },
+      required: ["session", "tab_id", "fingerprint", "operation"],
+    },
+  },
 ];
 
 function ok(value: unknown): CallToolResult {
@@ -121,8 +172,61 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
   }
 }
 
+function isCode(err: unknown, ...codes: string[]): boolean {
+  return err instanceof DaemonError && codes.includes(err.code);
+}
+
+/** Queue `fn` on the tab's FIFO lane; ownership and session state are re-checked when it starts. */
+function onTab<T>(ctx: ToolContext, session: Session, tabId: number, fn: () => Promise<T>): Promise<T> {
+  const { registry, scheduler } = ctx;
+  registry.requireTab(session, tabId);
+  return scheduler.runTab(tabId, async () => {
+    registry.requireActive(session);
+    registry.requireTab(session, tabId);
+    try {
+      return await fn();
+    } catch (err) {
+      if (isCode(err, "tab_gone")) registry.removeTab(session.short_id, tabId);
+      throw err;
+    }
+  });
+}
+
+/** Queue `fn` on the session's lane (tab creation and listing). */
+function onSession<T>(ctx: ToolContext, session: Session, fn: () => Promise<T>): Promise<T> {
+  return ctx.scheduler.runSession(session.short_id, async () => {
+    ctx.registry.requireActive(session);
+    return fn();
+  });
+}
+
+export interface CloseResult {
+  closed: boolean;
+  closed_tabs: number;
+  tabs_left_open?: number;
+}
+
+/**
+ * Forget a session now (later calls get bad_session, queued work is rejected), then close its
+ * tabs in the browser after any in-flight session-level op. `closeTabs: false` leaves them open.
+ */
+export async function closeSession(ctx: ToolContext, session: Session, closeTabs = true): Promise<CloseResult> {
+  const { registry, scheduler, observations, bridge } = ctx;
+  const ref = sessionRef(session);
+  const owned = session.tabs.size;
+  if (!registry.close(session)) return { closed: false, closed_tabs: 0 };
+  scheduler.dropSession(ref.short_id, new DaemonError("bad_session", "session was closed"));
+  observations.forgetSession(ref.short_id);
+  if (!closeTabs) return { closed: true, closed_tabs: 0, tabs_left_open: owned };
+  return scheduler.runSession(ref.short_id, async () => {
+    if (!bridge.connected) return { closed: true, closed_tabs: 0, tabs_left_open: owned };
+    const result = await bridge.request(ref, "session_close", {});
+    return { closed: true, closed_tabs: result.closed_tabs };
+  });
+}
+
 async function dispatch(ctx: ToolContext, name: ToolName, rawArgs: unknown): Promise<CallToolResult> {
-  const { registry, bridge } = ctx;
+  const { registry, bridge, observations } = ctx;
   switch (name) {
     case "session_open": {
       const args = parseArgs(name, rawArgs);
@@ -133,66 +237,100 @@ async function dispatch(ctx: ToolContext, name: ToolName, rawArgs: unknown): Pro
     case "session_close": {
       const args = parseArgs(name, rawArgs);
       const session = registry.use(args.session);
-      const ref = sessionRef(session);
-      const ownedTabs = session.tabs.size;
-      registry.close(session);
-      log.info(`session ${ref.short_id} closed`);
-      if (!bridge.connected) {
-        return ok({ closed: true, closed_tabs: 0, tabs_left_open: ownedTabs });
-      }
-      const result = await bridge.request(ref, "session_close", {});
-      return ok({ closed: true, closed_tabs: result.closed_tabs });
+      const result = await closeSession(ctx, session);
+      log.info(`session ${session.short_id} closed`);
+      return ok(result);
     }
     case "tab_create": {
       const args = parseArgs(name, rawArgs);
       const session = registry.use(args.session);
-      const tab = await bridge.request(sessionRef(session), "tab_create", args.url ? { url: args.url } : {});
-      if (registry.getByShortId(session.short_id) !== session) {
-        throw new DaemonError("bad_session", "session was closed while the tab was being created");
-      }
-      registry.addTab(session.short_id, tab.tab_id);
+      const tab = await onSession(ctx, session, async () => {
+        const created = await bridge.request(sessionRef(session), "tab_create", args.url ? { url: args.url } : {});
+        if (registry.getByShortId(session.short_id) !== session) {
+          throw new DaemonError("bad_session", "session was closed while the tab was being created");
+        }
+        registry.addTab(session.short_id, created.tab_id);
+        return created;
+      });
       return ok(tab);
     }
     case "tab_list": {
       const args = parseArgs(name, rawArgs);
       const session = registry.use(args.session);
-      const { tabs } = await bridge.request(sessionRef(session), "tab_list", {});
-      if (registry.getByShortId(session.short_id) !== session) return ok({ tabs: [] });
-      return ok({ tabs: registry.setTabs(session, tabs) });
+      const tabs = await onSession(ctx, session, async () => {
+        const { tabs: listed } = await bridge.request(sessionRef(session), "tab_list", {});
+        if (registry.getByShortId(session.short_id) !== session) return [];
+        return registry.setTabs(session, listed);
+      });
+      return ok({ tabs });
     }
     case "tab_close": {
       const args = parseArgs(name, rawArgs);
       const session = registry.use(args.session);
-      registry.requireTab(session, args.tab_id);
-      try {
-        const result = await bridge.request(sessionRef(session), "tab_close", { tab_id: args.tab_id });
+      const result = await onTab(ctx, session, args.tab_id, async () => {
+        const closed = await bridge.request(sessionRef(session), "tab_close", { tab_id: args.tab_id });
         registry.removeTab(session.short_id, args.tab_id);
-        return ok(result);
-      } catch (err) {
-        if (err instanceof DaemonError && err.code === "tab_gone") registry.removeTab(session.short_id, args.tab_id);
-        throw err;
-      }
+        return closed;
+      });
+      return ok(result);
     }
     case "screenshot": {
       const args = parseArgs(name, rawArgs);
       const session = registry.use(args.session);
-      registry.requireTab(session, args.tab_id);
       const opArgs: { tab_id: number; format?: "jpeg" | "png"; quality?: number } = { tab_id: args.tab_id };
       if (args.format) opArgs.format = args.format;
       if (args.quality !== undefined) opArgs.quality = args.quality;
-      let shot;
-      try {
-        shot = await bridge.request(sessionRef(session), "screenshot", opArgs);
-      } catch (err) {
-        if (err instanceof DaemonError && err.code === "tab_gone") registry.removeTab(session.short_id, args.tab_id);
-        throw err;
-      }
+      const shot = await onTab(ctx, session, args.tab_id, () => bridge.request(sessionRef(session), "screenshot", opArgs));
       return {
         content: [
           { type: "image", data: shot.data, mimeType: shot.media_type },
           { type: "text", text: JSON.stringify({ width: shot.width, height: shot.height, media_type: shot.media_type }) },
         ],
       };
+    }
+    case "observe": {
+      const args = parseArgs(name, rawArgs);
+      const session = registry.use(args.session);
+      const observation = await onTab(ctx, session, args.tab_id, async () => {
+        const snapshot = checkSnapshot(await bridge.request(sessionRef(session), "snapshot", { tab_id: args.tab_id }));
+        const space = actionSpace(snapshot.actions);
+        observations.set(session.short_id, args.tab_id, snapshot.fingerprint, space);
+        return toObservation(snapshot, space);
+      });
+      return ok(observation);
+    }
+    case "act": {
+      const args = parseArgs(name, rawArgs);
+      const session = registry.use(args.session);
+      registry.requireTab(session, args.tab_id);
+      if (args.operation === "TYPE_TEXT" && !args.text) {
+        throw new DaemonError("invalid_args", "TYPE_TEXT needs non-empty text");
+      }
+      const executed = await onTab(ctx, session, args.tab_id, async () => {
+        const space = observations.require(session.short_id, args.tab_id, args.fingerprint);
+        const { action, target } = resolveAct(space, args.operation, args.target);
+        const opArgs: { tab_id: number; fingerprint: string; action_id: string; text?: string } = {
+          tab_id: args.tab_id,
+          fingerprint: args.fingerprint,
+          action_id: action.id,
+        };
+        if (action.kind === "fill") opArgs.text = args.text;
+        let result;
+        try {
+          // Browser actions are never retried.
+          result = await bridge.request(sessionRef(session), "act", opArgs);
+        } catch (err) {
+          // Nothing executed on target_covered/target_invalid, so the observation stays usable.
+          if (!isCode(err, "target_covered", "target_invalid")) observations.forget(session.short_id, args.tab_id);
+          throw err;
+        }
+        observations.forget(session.short_id, args.tab_id);
+        return {
+          executed: { operation: args.operation, target, label: action.label },
+          page_changed: typeof result?.page_changed === "boolean" ? result.page_changed : null,
+        };
+      });
+      return ok(executed);
     }
   }
 }

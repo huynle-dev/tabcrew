@@ -11,6 +11,7 @@ import {
   type V2Error,
   type V2Event,
   type V2Request,
+  type V2Snapshot,
   type V2TabInfo,
   type V2Welcome,
 } from "@chromeuse/shared/v2";
@@ -90,6 +91,8 @@ export class FakeExtension {
   welcome: V2Welcome | null = null;
   respondToPings = true;
   handler: Handler;
+  /** Snapshot returned for a tab; defaults to `simpleSnapshot`. */
+  readonly snapshots = new Map<number, V2Snapshot>();
   private nextTabId = 100;
   readonly closed: Promise<{ code: number }>;
 
@@ -179,10 +182,34 @@ export class FakeExtension {
       case "screenshot":
         if (!tabs.some((t) => t.tab_id === args.tab_id)) throw new WireError({ code: "tab_not_owned", message: "x" });
         return { media_type: "image/png", data: "iVBORw0KGgo=", width: 800, height: 600 };
+      case "snapshot": {
+        if (!tabs.some((t) => t.tab_id === args.tab_id)) throw new WireError({ code: "tab_not_owned", message: "x" });
+        return this.snapshots.get(args.tab_id as number) ?? simpleSnapshot(args.tab_id as number);
+      }
+      case "act":
+        if (!tabs.some((t) => t.tab_id === args.tab_id)) throw new WireError({ code: "tab_not_owned", message: "x" });
+        return { executed: String(args.action_id), page_changed: true };
       default:
         throw new WireError({ code: "internal", message: "unsupported" });
     }
   }
+}
+
+/** A small page: one link and the wait control. */
+export function simpleSnapshot(tabId: number, fingerprint = `fp-${tabId}`): V2Snapshot {
+  return {
+    url: `https://example.test/${tabId}`,
+    title: `Tab ${tabId}`,
+    viewport: { w: 1280, h: 800 },
+    scroll: { y: 0, height: 800 },
+    text: "Example",
+    actions: [
+      { id: "e1", kind: "click", label: "More information", node: 1, role: "link", value: "" },
+      { id: "wait", kind: "wait", label: "Wait for the page to update" },
+    ],
+    omitted_actions: 0,
+    fingerprint,
+  };
 }
 
 /** Return from a handler to never answer the request. */

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Guard fixture</title>
+    <!--
+      Browser guard fixture for daemon/scripts/guards.mjs (adapted from jev-ultrafast
+      scripts/check_guards.py). The test can only drive the page through observe/act, so every
+      mutation is armed by clicking an "Arm …" button: the click itself changes nothing that a
+      snapshot observes, and the mutation lands ARM_DELAY_MS later. The test observes right
+      after arming, waits, then acts on that (now outdated) observation.
+    -->
+    <style>
+      body { margin: 8px 16px; font: 13px system-ui, sans-serif; }
+      #arms { display: flex; flex-wrap: wrap; gap: 4px; max-width: 900px; }
+      #arms button { font-size: 11px; padding: 1px 6px; }
+      #status { margin: 6px 0; }
+      #target-box { height: 40px; }
+      #target { width: 140px; height: 32px; }
+      form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 6px 0; max-width: 900px; }
+      form p { margin: 0; }
+      #suggestions { min-height: 18px; }
+      #suggestions [role="option"] { display: inline-block; padding: 0 6px; border: 1px solid #ccc; }
+      #outside { position: absolute; top: 3000px; }
+      p { margin: 4px 0; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      const ARM_DELAY_MS = 400;
+      const app = document.getElementById("app");
+      const state = { clicks: 0, purchases: 0 };
+      const $ = (sel) => document.querySelector(sel);
+
+      function render() {
+        state.clicks = 0;
+        state.purchases = 0;
+        window.scrollTo(0, 0);
+        document.querySelectorAll(".cover").forEach((e) => e.remove());
+        app.innerHTML = `
+          <div id="arms">
+            <button type="button" id="reset">Reset fixture</button>
+            <button type="button" data-arm="move">Arm move</button>
+            <button type="button" data-arm="cover">Arm cover</button>
+            <button type="button" data-arm="disable">Arm disable</button>
+            <button type="button" data-arm="hide">Arm hide</button>
+            <button type="button" data-arm="replace">Arm replace</button>
+            <button type="button" data-arm="relabel">Arm relabel</button>
+            <button type="button" data-arm="ancestor">Arm ancestor disabled</button>
+            <button type="button" data-arm="offscreen-move">Arm push offscreen</button>
+            <button type="button" data-arm="price">Arm price</button>
+            <button type="button" data-arm="news">Arm news</button>
+            <button type="button" data-arm="outside">Arm offscreen text</button>
+            <button type="button" data-arm="city">Arm city value</button>
+            <button type="button" data-arm="toggle">Arm toggle</button>
+            <button type="button" data-arm="readonly">Arm readonly</button>
+            <button type="button" data-arm="option">Arm option</button>
+          </div>
+          <p id="status"></p>
+          <div id="target-box"><button type="button" id="target">Continue</button></div>
+          <form id="order" onsubmit="return false">
+            <p id="price">Total $10</p>
+            <button type="button" id="buy">Buy</button>
+            <label>City <input id="city" value="Zurich" /></label>
+            <label>Search <input id="query" role="combobox" aria-controls="suggestions" aria-autocomplete="list" autocomplete="off" /></label>
+            <div role="listbox" id="suggestions" aria-label="Suggestions"></div>
+            <label><input id="toggle" type="checkbox" /> Refundable</label>
+            <select id="category" aria-label="Category">
+              <option value="all">All</option>
+              <option value="Design">Design</option>
+              <option value="Coastal">Coastal</option>
+              <option value="Unavailable" disabled>Unavailable</option>
+            </select>
+            <input id="readonly" aria-label="Read only" value="fixed" readonly />
+            <input id="secret" type="password" aria-label="Secret" value="never expose this" />
+            <button type="button" id="off" disabled>Disabled action</button>
+          </form>
+          <aside id="news">News: nothing new</aside>
+          <p><a id="next" href="next.html">Next page</a></p>
+          <p id="outside">Unrelated offscreen text</p>`;
+        $("#query").addEventListener("input", (e) => {
+          const value = e.target.value;
+          setTimeout(() => {
+            $("#suggestions").innerHTML = value
+              ? `<div role="option">${value} City</div><div role="option">${value} Airport</div>`
+              : "";
+          }, 60);
+        });
+        for (const sel of ["#city", "#toggle", "#category"]) $(sel).addEventListener("change", status);
+        $("#city").addEventListener("input", status);
+        status();
+      }
+
+      function status() {
+        $("#status").textContent =
+          `Continue clicks: ${state.clicks} · Purchases: ${state.purchases} · ` +
+          `City: ${$("#city").value} · Refundable: ${$("#toggle").checked ? "yes" : "no"} · ` +
+          `Category: ${$("#category").value}`;
+      }
+
+      const mutations = {
+        move: () => ($("#target").style.transform = "translateX(200px)"),
+        cover: () => {
+          const r = $("#target").getBoundingClientRect();
+          const cover = document.createElement("div");
+          cover.className = "cover";
+          cover.style.cssText = `position:fixed;left:${r.left - 4}px;top:${r.top - 4}px;width:${r.width + 8}px;height:${r.height + 8}px;z-index:9999;background:rgba(255,255,255,0.6)`;
+          document.body.append(cover);
+        },
+        disable: () => ($("#target").disabled = true),
+        hide: () => ($("#target").style.display = "none"),
+        replace: () => ($("#target").outerHTML = $("#target").outerHTML),
+        relabel: () => $("#target").setAttribute("aria-label", "Delete account"),
+        ancestor: () => $("#target-box").setAttribute("aria-disabled", "true"),
+        "offscreen-move": () => ($("#target").style.transform = "translateY(3000px)"),
+        price: () => ($("#price").textContent = "Total $100"),
+        news: () => ($("#news").textContent = "News: something new"),
+        outside: () => ($("#outside").textContent = "Updated outside the viewport"),
+        city: () => ($("#city").value = "London"),
+        toggle: () => ($("#toggle").checked = true),
+        readonly: () => ($("#city").readOnly = true),
+        option: () => ($("#category").querySelector('option[value="Coastal"]').disabled = true),
+      };
+
+      // Delegated, so replaced nodes keep working.
+      document.addEventListener("click", (e) => {
+        const el = e.target instanceof Element ? e.target : null;
+        if (!el) return;
+        if (el.closest("#reset")) return render();
+        const arm = el.closest("[data-arm]");
+        if (arm) return void setTimeout(mutations[arm.dataset.arm], ARM_DELAY_MS);
+        if (el.closest("#target")) {
+          state.clicks++;
+          status();
+        } else if (el.closest("#buy")) {
+          state.purchases++;
+          status();
+        }
+      });
+
+      render();
+    </script>
+  </body>
+</html>

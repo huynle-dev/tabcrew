@@ -69,9 +69,12 @@ function bearer(req: IncomingMessage): string | null {
 function createProtocolServer(opts: McpHttpOptions): Server {
   const server = new Server({ name: "chromeuse", version: opts.version }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) =>
-    callTool(opts, request.params.name, request.params.arguments),
-  );
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const started = performance.now();
+    const result = await callTool(opts, request.params.name, request.params.arguments);
+    log.debug(`tool ${request.params.name} ${Math.round(performance.now() - started)} ms${result.isError ? " error" : ""}`);
+    return result;
+  });
   return server;
 }
 

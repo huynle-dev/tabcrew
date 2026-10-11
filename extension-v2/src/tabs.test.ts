@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { V2Event, V2Request } from "@chromeuse/shared/v2";
 import { CdpManager } from "./cdp.js";
 import { handleRequest } from "./ops.js";
+import { PageController } from "./snapshot/controller.js";
 import { TabManager } from "./tabs.js";
 import { createFakeChrome, type FakeChrome } from "./test/fakes.js";
 
@@ -12,12 +13,13 @@ let fake: FakeChrome;
 let events: V2Event[];
 let tabs: TabManager;
 let cdp: CdpManager;
+let page: PageController;
 
 function req(session: typeof alice, op: V2Request["op"], args: object = {}): V2Request {
   return { type: "request", id: "x", op, session, args } as V2Request;
 }
 const call = (session: typeof alice, op: V2Request["op"], args: object = {}) =>
-  handleRequest(req(session, op, args), { tabs, cdp });
+  handleRequest(req(session, op, args), { tabs, cdp, page });
 
 beforeEach(() => {
   fake = createFakeChrome();
@@ -25,6 +27,7 @@ beforeEach(() => {
   events = [];
   tabs = new TabManager((e) => events.push(e));
   cdp = new CdpManager();
+  page = new PageController({ send: (t, m, p) => cdp.send(t, m, p), isMac: async () => true });
 });
 
 function expectNoFocusOrActivation() {
@@ -249,7 +252,7 @@ describe("screenshot", () => {
 });
 
 describe("not-yet ops", () => {
-  it.each(["snapshot", "act", "navigate", "read_text", "debug_logs"] as const)("%s → internal", async (op) => {
+  it.each(["navigate", "read_text", "debug_logs"] as const)("%s → internal", async (op) => {
     await expect(call(alice, op, { tab_id: 1 })).rejects.toMatchObject({
       code: "internal",
       message: "not implemented in this phase",
