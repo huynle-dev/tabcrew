@@ -53,6 +53,53 @@ export interface V2TabInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Page observation (phase 4). Mirrors jev-ultrafast snapshot.js semantics.
+// ---------------------------------------------------------------------------
+
+export type V2ActionKind = "click" | "fill" | "select" | "scroll" | "wait";
+
+/**
+ * One executable action. Element actions share `node` (an opaque per-document integer that
+ * refers to a live DOM node held by the extension); one node may yield several actions
+ * (e.g. "fill" + "Open <label>" click, or one "select" per selectable option).
+ */
+export interface V2Action {
+  /** "e1".."e250" for element actions; "scroll_down" | "scroll_up" | "wait" for controls. */
+  readonly id: string;
+  readonly kind: V2ActionKind;
+  readonly label: string;
+  readonly node?: number;
+  readonly role?: string;
+  /** Current value (fill/click), or the option value to select (select). */
+  readonly value?: string;
+  /** Select only: the currently selected option label(s). */
+  readonly current_value?: string;
+  readonly checked?: string;
+  readonly selected?: string;
+  readonly expanded?: string;
+}
+
+export interface V2Snapshot {
+  readonly url: string;
+  readonly title: string;
+  readonly viewport: { readonly w: number; readonly h: number };
+  readonly scroll: { readonly y: number; readonly height: number };
+  /** Visible text only, at most 6000 chars. Never includes password/file/hidden inputs. */
+  readonly text: string;
+  /** At most 250 element actions, then scroll/wait controls. */
+  readonly actions: readonly V2Action[];
+  readonly omitted_actions: number;
+  /** sha256 hex over {url, text, actions, scroll}; quote it back to `act`. */
+  readonly fingerprint: string;
+}
+
+export interface V2ActResult {
+  readonly executed: string;
+  /** Fingerprint of a fresh snapshot taken after the post-input settle wait, if readable. */
+  readonly page_changed: boolean | null;
+}
+
+// ---------------------------------------------------------------------------
 // Operations (daemon -> extension). Each has typed args and result.
 // Phase 2 implements: tab_create, tab_list, tab_close, session_close, screenshot.
 // Later phases add: snapshot, act, navigate, read_text, debug_logs.
@@ -68,8 +115,16 @@ export interface V2OpMap {
     args: { tab_id: number; format?: "jpeg" | "png"; quality?: number };
     result: { media_type: "image/jpeg" | "image/png"; data: string; width: number; height: number };
   };
-  snapshot: { args: { tab_id: number }; result: unknown };
-  act: { args: { tab_id: number; fingerprint: string; [k: string]: unknown }; result: unknown };
+  /** Atomic read of visible text + indexed controls (port of jev-ultrafast snapshot.js). */
+  snapshot: { args: { tab_id: number }; result: V2Snapshot };
+  /**
+   * Execute one action from the snapshot identified by `fingerprint`. The extension re-checks
+   * freshness (page key + per-node guard for click/select, full marker otherwise) and occlusion
+   * immediately before input, and never retries. `text` is required for kind "fill".
+   * Errors: stale_page (nothing executed), target_covered / target_invalid (nothing executed),
+   * outcome_unknown (input may have been delivered but the result could not be confirmed).
+   */
+  act: { args: { tab_id: number; fingerprint: string; action_id: string; text?: string }; result: V2ActResult };
   navigate: {
     args: { tab_id: number; url?: string; action?: "url" | "back" | "forward" | "reload" };
     result: V2TabInfo;
