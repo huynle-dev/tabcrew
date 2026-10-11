@@ -5,7 +5,7 @@ export const TOKEN_KEY = "v2:token";
 export const PORT_KEY = "v2:port";
 
 /** chrome.storage.session keys (rebuildable runtime state). */
-export const AGENTS_WINDOW_KEY = "v2:agentsWindowId";
+export const SESSION_WINDOWS_KEY = "v2:sessionWindows";
 export const GROUPS_KEY = "v2:groups";
 export const TAB_SESSIONS_KEY = "v2:tabSessions";
 

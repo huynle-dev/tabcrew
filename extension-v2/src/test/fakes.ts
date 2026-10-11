@@ -67,6 +67,18 @@ export function createFakeChrome() {
   const tabOut = (t: FakeTab) => ({ ...t, pinned: false, highlighted: false, incognito: false, selected: false, discarded: false, autoDiscardable: true, frozen: false });
   const notFound = (what: string, id: number) => new Error(`No ${what} with id: ${id}.`);
 
+  /** Chrome keeps exactly one active tab per window. */
+  const setActive = (tab: FakeTab) => {
+    for (const t of tabs.values()) if (t.windowId === tab.windowId) t.active = false;
+    tab.active = true;
+  };
+  const ensureActive = () => {
+    for (const w of windows.values()) {
+      const inWin = [...tabs.values()].filter((t) => t.windowId === w.id);
+      if (inWin.length > 0 && !inWin.some((t) => t.active)) inWin[inWin.length - 1]!.active = true;
+    }
+  };
+
   const dropEmpty = () => {
     for (const g of [...groups.values()]) {
       if (![...tabs.values()].some((t) => t.groupId === g.id)) groups.delete(g.id);
@@ -74,6 +86,7 @@ export function createFakeChrome() {
     for (const w of [...windows.values()]) {
       if (![...tabs.values()].some((t) => t.windowId === w.id)) windows.delete(w.id);
     }
+    ensureActive();
   };
 
   const addTab = (props: Partial<FakeTab> & { windowId: number }): FakeTab => {
@@ -87,6 +100,7 @@ export function createFakeChrome() {
       ...props,
     };
     tabs.set(tab.id, tab);
+    if (tab.active) setActive(tab);
     return tab;
   };
 
@@ -148,7 +162,10 @@ export function createFakeChrome() {
           const t = tabs.get(id);
           if (!t) throw notFound("tab", id);
           t.groupId = group.id;
-          t.windowId = group.windowId;
+          if (t.windowId !== group.windowId) {
+            t.windowId = group.windowId;
+            t.active = false;
+          }
         }
         dropEmpty();
         return group.id;
@@ -156,11 +173,19 @@ export function createFakeChrome() {
       move: vi.fn(async (id: number, props: { windowId?: number }) => {
         const t = tabs.get(id);
         if (!t) throw notFound("tab", id);
-        if (props.windowId !== undefined) t.windowId = props.windowId;
+        if (props.windowId !== undefined && props.windowId !== t.windowId) {
+          t.windowId = props.windowId;
+          t.active = false;
+        }
         dropEmpty();
         return tabOut(t);
       }),
-      update: vi.fn(async () => ({})),
+      update: vi.fn(async (id: number, props: { active?: boolean }) => {
+        const t = tabs.get(id);
+        if (!t) throw notFound("tab", id);
+        if (props.active) setActive(t);
+        return tabOut(t);
+      }),
       onCreated: event<[chrome.tabs.Tab]>(),
       onRemoved: event<[number]>(),
     },

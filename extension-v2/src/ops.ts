@@ -32,17 +32,17 @@ export async function handleRequest(req: V2Request, deps: OpDeps): Promise<unkno
       return deps.tabs.sessionClose(session);
     case "screenshot": {
       const tabId = requireTabId(args);
-      await deps.tabs.assertOwned(session, tabId);
+      await deps.tabs.prepareForPage(session, tabId);
       return deps.cdp.screenshot(tabId, args);
     }
     case "snapshot": {
       const tabId = requireTabId(args);
-      await deps.tabs.assertOwned(session, tabId);
+      await deps.tabs.prepareForPage(session, tabId);
       return deps.page.snapshot(tabId);
     }
     case "act": {
       const tabId = requireTabId(args);
-      await deps.tabs.assertOwned(session, tabId);
+      await deps.tabs.prepareForPage(session, tabId);
       return deps.page.act(tabId, args);
     }
     default:

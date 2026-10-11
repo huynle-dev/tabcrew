@@ -1,8 +1,8 @@
 /**
  * chrome.debugger per tab: attached on tab_create (or lazily on first use) and kept attached.
  *
- * On attach we enable focus emulation (so background tabs in the unfocused Agents window
- * keep rendering and running timers, as in jev-ultrafast) and the Page domain. `tab_create`
+ * On attach we enable focus emulation (so tabs in the unfocused per-session windows keep
+ * rendering and running timers, as in jev-ultrafast) and the Page domain. `tab_create`
  * starts the attach eagerly; every other op awaits the same pending attach. All state is
  * per tab; nothing is shared across tabs.
  */
