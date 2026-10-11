@@ -1,0 +1,281 @@
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import type { V2SessionRef, V2TabInfo } from "@chromeuse/shared/v2";
+import { DaemonError } from "./errors.js";
+import { log } from "./log.js";
+
+export interface Session {
+  /** sha256 of the secret handle; the handle itself is never stored. */
+  readonly key: string;
+  readonly short_id: string;
+  readonly label: string;
+  readonly created_at: number;
+  last_used_at: number;
+  readonly tabs: Set<number>;
+}
+
+export interface SessionRegistryOptions {
+  /** Path of sessions.json; omit to keep the registry in memory only. */
+  readonly file?: string;
+  /** Sessions unused this long are closed by `sweepIdle`. 0 disables. */
+  readonly idleTimeoutMs: number;
+  readonly now?: () => number;
+}
+
+interface PersistedSession {
+  key: string;
+  short_id: string;
+  label: string;
+  created_at: number;
+  last_used_at: number;
+  tabs: number[];
+}
+
+const SHORT_ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+const HANDLE_RE = /^s_[A-Za-z0-9_-]{22}$/;
+const SHORT_ID_RE = /^[A-Za-z0-9_-]{8}$/;
+export const DEFAULT_LABEL = "agent";
+const MAX_LABEL = 40;
+
+function hashHandle(handle: string): string {
+  return createHash("sha256").update(handle).digest("base64url");
+}
+
+function newShortId(): string {
+  // 64-symbol alphabet: each random byte maps uniformly via its low 6 bits.
+  return Array.from(randomBytes(8), (b) => SHORT_ID_ALPHABET[b & 63]).join("");
+}
+
+/** Make a label safe for a tab-group title (`<label> · <short_id>`). */
+export function normaliseLabel(label: string | undefined): string {
+  const clean = (label ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/·/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_LABEL)
+    .trim();
+  return clean || DEFAULT_LABEL;
+}
+
+export function sessionRef(session: Session): V2SessionRef {
+  return { short_id: session.short_id, label: session.label };
+}
+
+/**
+ * Browser sessions and their tab ownership. A session is identified by a secret handle
+ * (`s_` + 128 random bits) that agents pass on every call, and by an independent public
+ * `short_id` that the extension sees.
+ */
+export class SessionRegistry {
+  private readonly byKey = new Map<string, Session>();
+  private readonly byShortId = new Map<string, Session>();
+  /** tab id -> owning session short_id. A tab belongs to at most one session. */
+  private readonly tabOwner = new Map<number, string>();
+  private readonly now: () => number;
+
+  constructor(private readonly options: SessionRegistryOptions) {
+    this.now = options.now ?? Date.now;
+  }
+
+  get size(): number {
+    return this.byKey.size;
+  }
+
+  open(label?: string): { handle: string; session: Session } {
+    const handle = `s_${randomBytes(16).toString("base64url")}`;
+    let shortId = newShortId();
+    while (this.byShortId.has(shortId)) shortId = newShortId();
+    const t = this.now();
+    const session: Session = {
+      key: hashHandle(handle),
+      short_id: shortId,
+      label: normaliseLabel(label),
+      created_at: t,
+      last_used_at: t,
+      tabs: new Set(),
+    };
+    this.insert(session);
+    this.save();
+    return { handle, session };
+  }
+
+  /** Resolve a handle to its session and mark it used. Throws `bad_session`. */
+  use(handle: unknown): Session {
+    const session = typeof handle === "string" && HANDLE_RE.test(handle) ? this.byKey.get(hashHandle(handle)) : undefined;
+    if (!session) {
+      throw new DaemonError("bad_session", "unknown or closed session; call session_open and use the returned handle");
+    }
+    session.last_used_at = this.now();
+    return session;
+  }
+
+  getByShortId(shortId: string): Session | undefined {
+    return this.byShortId.get(shortId);
+  }
+
+  list(): Session[] {
+    return [...this.byKey.values()];
+  }
+
+  refs(): V2SessionRef[] {
+    return this.list().map(sessionRef);
+  }
+
+  /** Throws `tab_not_owned` unless the session owns the tab. */
+  requireTab(session: Session, tabId: number): void {
+    if (!session.tabs.has(tabId)) {
+      throw new DaemonError("tab_not_owned", `tab ${tabId} is not owned by this session; use tab_list or tab_create`);
+    }
+  }
+
+  /** Remove the session. Returns it (with its tab set) or undefined if already gone. */
+  close(session: Session): Session | undefined {
+    if (this.byKey.get(session.key) !== session) return undefined;
+    this.byKey.delete(session.key);
+    this.byShortId.delete(session.short_id);
+    for (const tabId of session.tabs) {
+      if (this.tabOwner.get(tabId) === session.short_id) this.tabOwner.delete(tabId);
+    }
+    this.save();
+    return session;
+  }
+
+  addTab(shortId: string, tabId: number): boolean {
+    const session = this.byShortId.get(shortId);
+    if (!session) return false;
+    const previous = this.tabOwner.get(tabId);
+    if (previous === shortId) return true;
+    if (previous !== undefined) this.byShortId.get(previous)?.tabs.delete(tabId);
+    session.tabs.add(tabId);
+    this.tabOwner.set(tabId, shortId);
+    this.save();
+    return true;
+  }
+
+  removeTab(shortId: string, tabId: number): void {
+    const session = this.byShortId.get(shortId);
+    if (!session?.tabs.delete(tabId)) return;
+    if (this.tabOwner.get(tabId) === shortId) this.tabOwner.delete(tabId);
+    this.save();
+  }
+
+  /**
+   * Replace a session's tab set with the tabs the extension reports for its group.
+   * Tabs owned by another session are excluded. Returns the tabs that remain.
+   */
+  setTabs(session: Session, tabs: readonly V2TabInfo[]): V2TabInfo[] {
+    const kept = tabs.filter((t) => {
+      const owner = this.tabOwner.get(t.tab_id);
+      return owner === undefined || owner === session.short_id;
+    });
+    const next = new Set(kept.map((t) => t.tab_id));
+    for (const tabId of session.tabs) {
+      if (!next.has(tabId) && this.tabOwner.get(tabId) === session.short_id) this.tabOwner.delete(tabId);
+    }
+    session.tabs.clear();
+    for (const tabId of next) {
+      session.tabs.add(tabId);
+      this.tabOwner.set(tabId, session.short_id);
+    }
+    this.save();
+    return kept;
+  }
+
+  /**
+   * Reconcile with the extension's `groups` event after (re)connecting. Every known session
+   * is kept; its tabs become exactly those in its group (none if it has no group). Groups
+   * for unknown sessions are ignored.
+   */
+  reconcile(groups: readonly { short_id: string; tabs: readonly V2TabInfo[] }[]): void {
+    const byShort = new Map(groups.map((g) => [g.short_id, g.tabs]));
+    this.tabOwner.clear();
+    for (const session of this.byKey.values()) {
+      session.tabs.clear();
+      for (const tab of byShort.get(session.short_id) ?? []) {
+        if (this.tabOwner.has(tab.tab_id)) continue;
+        session.tabs.add(tab.tab_id);
+        this.tabOwner.set(tab.tab_id, session.short_id);
+      }
+    }
+    const unknown = groups.filter((g) => !this.byShortId.has(g.short_id)).length;
+    if (unknown > 0) log.info(`reconcile: ignored ${unknown} group(s) for unknown sessions`);
+    this.save();
+  }
+
+  /** Sessions whose last use is older than the idle timeout. */
+  idleSessions(): Session[] {
+    const timeout = this.options.idleTimeoutMs;
+    if (!(timeout > 0)) return [];
+    const cutoff = this.now() - timeout;
+    return this.list().filter((s) => s.last_used_at <= cutoff);
+  }
+
+  load(): void {
+    const file = this.options.file;
+    if (!file || !existsSync(file)) return;
+    let data: { version?: unknown; sessions?: unknown };
+    try {
+      data = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      log.warn("sessions.json is not valid JSON; starting with no sessions");
+      return;
+    }
+    if (data.version !== 1 || !Array.isArray(data.sessions)) {
+      log.warn("sessions.json has an unknown format; starting with no sessions");
+      return;
+    }
+    for (const raw of data.sessions as PersistedSession[]) {
+      if (
+        !raw ||
+        typeof raw.key !== "string" ||
+        typeof raw.short_id !== "string" ||
+        !SHORT_ID_RE.test(raw.short_id) ||
+        this.byShortId.has(raw.short_id)
+      ) {
+        continue;
+      }
+      const session: Session = {
+        key: raw.key,
+        short_id: raw.short_id,
+        label: normaliseLabel(raw.label),
+        created_at: Number(raw.created_at) || this.now(),
+        last_used_at: Number(raw.last_used_at) || this.now(),
+        tabs: new Set(),
+      };
+      this.insert(session);
+      for (const tabId of Array.isArray(raw.tabs) ? raw.tabs : []) {
+        if (Number.isInteger(tabId) && !this.tabOwner.has(tabId)) {
+          session.tabs.add(tabId);
+          this.tabOwner.set(tabId, session.short_id);
+        }
+      }
+    }
+  }
+
+  save(): void {
+    const file = this.options.file;
+    if (!file) return;
+    const sessions: PersistedSession[] = this.list().map((s) => ({
+      key: s.key,
+      short_id: s.short_id,
+      label: s.label,
+      created_at: s.created_at,
+      last_used_at: s.last_used_at,
+      tabs: [...s.tabs],
+    }));
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+      writeFileSync(tmp, `${JSON.stringify({ version: 1, sessions }, null, 2)}\n`, { mode: 0o600 });
+      chmodSync(tmp, 0o600);
+      renameSync(tmp, file);
+    } catch (err) {
+      log.error(`failed to save sessions.json: ${(err as NodeJS.ErrnoException).code ?? "error"}`);
+    }
+  }
+
+  private insert(session: Session): void {
+    this.byKey.set(session.key, session);
+    this.byShortId.set(session.short_id, session);
+  }
+}

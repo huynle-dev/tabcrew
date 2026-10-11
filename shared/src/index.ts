@@ -6,3 +6,4 @@ export {
   MAX_MESSAGE_SIZE,
   type DecodeResult,
 } from "./lengthPrefixed.js";
+export * from "./v2.js";

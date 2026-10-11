@@ -23,6 +23,10 @@
     "./length-prefixed": {
       "types": "./dist/lengthPrefixed.d.ts",
       "import": "./dist/lengthPrefixed.js"
+    },
+    "./v2": {
+      "types": "./dist/v2.d.ts",
+      "import": "./dist/v2.js"
     }
   },
   "scripts": {

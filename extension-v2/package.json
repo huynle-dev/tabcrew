@@ -1,0 +1,25 @@
+{
+  "name": "@chromeuse/extension-v2",
+  "version": "0.3.0",
+  "private": true,
+  "description": "ChromeUse v2 Chrome extension (MV3): session tab groups, CDP, observe/act only",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsx esbuild.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@chromeuse/shared": "*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@types/node": "^25.5.2",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
+  }
+}

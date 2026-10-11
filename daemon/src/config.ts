@@ -1,0 +1,129 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { V2_EXTENSION_PORT, V2_MCP_PORT } from "@chromeuse/shared/v2";
+import { parse as parseToml } from "smol-toml";
+import { z } from "zod";
+import { log } from "./log.js";
+
+export interface DaemonConfig {
+  readonly home: string;
+  readonly mcpPort: number;
+  readonly extensionPort: number;
+  /** 0 disables idle closing. */
+  readonly idleTimeoutMinutes: number;
+  readonly browseConcurrency: number;
+  readonly jevModel: string;
+  readonly textModel: string;
+  /** Exact `Origin` header values allowed on the MCP endpoint. Requests without Origin are always allowed. */
+  readonly allowedOrigins: readonly string[];
+  /** From the environment only; never read from config.toml. */
+  readonly openrouterApiKey: string | undefined;
+}
+
+type Env = Record<string, string | undefined>;
+
+const port = z.coerce.number().int().min(0).max(65535);
+
+const fileSchema = z
+  .object({
+    mcp_port: port.optional(),
+    extension_port: port.optional(),
+    idle_timeout_minutes: z.coerce.number().min(0).optional(),
+    browse_concurrency: z.coerce.number().int().min(1).max(64).optional(),
+    jev_model: z.string().min(1).optional(),
+    text_model: z.string().min(1).optional(),
+    allowed_origins: z.array(z.string().min(1)).optional(),
+  })
+  .passthrough();
+
+export function resolveHome(env: Env = process.env): string {
+  const fromEnv = env.CHROMEUSE_HOME?.trim();
+  return fromEnv ? resolve(fromEnv) : join(homedir(), ".chromeuse");
+}
+
+function readConfigFile(home: string): z.infer<typeof fileSchema> {
+  const path = join(home, "config.toml");
+  if (!existsSync(path)) return {};
+  let raw: unknown;
+  try {
+    raw = parseToml(readFileSync(path, "utf8"));
+  } catch (err) {
+    throw new Error(`invalid config.toml: ${(err as Error).message.split("\n")[0]}`);
+  }
+  if (raw && typeof raw === "object" && "openrouter_api_key" in raw) {
+    log.warn("config.toml: openrouter_api_key is ignored; set OPENROUTER_API_KEY in the environment or <home>/env");
+  }
+  const parsed = fileSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(`invalid config.toml: ${issue.path.join(".")}: ${issue.message}`);
+  }
+  return parsed.data;
+}
+
+function envValue<T>(env: Env, name: string, schema: z.ZodType<T>): T | undefined {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = schema.safeParse(raw.trim());
+  if (!parsed.success) throw new Error(`invalid ${name}: ${parsed.error.issues[0].message}`);
+  return parsed.data;
+}
+
+export function loadConfig(env: Env = process.env): DaemonConfig {
+  const home = resolveHome(env);
+  const file = readConfigFile(home);
+  const origins = envValue(env, "CHROMEUSE_ALLOWED_ORIGINS", z.string());
+  return {
+    home,
+    mcpPort: envValue(env, "CHROMEUSE_MCP_PORT", port) ?? file.mcp_port ?? V2_MCP_PORT,
+    extensionPort: envValue(env, "CHROMEUSE_EXTENSION_PORT", port) ?? file.extension_port ?? V2_EXTENSION_PORT,
+    idleTimeoutMinutes:
+      envValue(env, "CHROMEUSE_IDLE_TIMEOUT_MINUTES", z.coerce.number().min(0)) ?? file.idle_timeout_minutes ?? 30,
+    browseConcurrency:
+      envValue(env, "CHROMEUSE_BROWSE_CONCURRENCY", z.coerce.number().int().min(1).max(64)) ??
+      file.browse_concurrency ??
+      8,
+    jevModel: envValue(env, "JEV_MODEL", z.string().min(1)) ?? file.jev_model ?? "typesafe/jev-1.13",
+    textModel: envValue(env, "TEXT_MODEL", z.string().min(1)) ?? file.text_model ?? "inception/mercury-2.5",
+    allowedOrigins:
+      origins !== undefined
+        ? origins
+            .split(",")
+            .map((o) => o.trim())
+            .filter(Boolean)
+        : (file.allowed_origins ?? []),
+    openrouterApiKey: env.OPENROUTER_API_KEY?.trim() || undefined,
+  };
+}
+
+/**
+ * Load `<home>/env` (simple KEY=VALUE lines) into `env` without overriding existing values.
+ * The file must not be readable by group/other; otherwise it is skipped with a warning.
+ * Returns the names of the variables that were set.
+ */
+export function loadEnvFile(home: string, env: Env = process.env): string[] {
+  const path = join(home, "env");
+  if (!existsSync(path)) return [];
+  if ((statSync(path).mode & 0o077) !== 0) {
+    log.warn(`${path} is readable by other users; skipped (run: chmod 600 ${path})`);
+    return [];
+  }
+  const set: string[] = [];
+  for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const [, key, rawValue] = m;
+    let value = rawValue.trim();
+    if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.at(-1) === value[0]) {
+      value = value.slice(1, -1);
+    }
+    if (env[key] === undefined) {
+      env[key] = value;
+      set.push(key);
+    }
+  }
+  return set;
+}

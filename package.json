@@ -25,7 +25,9 @@
     "extension",
     "native-host",
     "mcp-server",
-    "gateway"
+    "gateway",
+    "daemon",
+    "extension-v2"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
