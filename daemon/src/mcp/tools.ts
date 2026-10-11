@@ -2,6 +2,8 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { ExtensionBridge } from "../bridge.js";
 import { DaemonError, toV2Error } from "../errors.js";
+import { DEFAULT_MAX_STEPS, MAX_GOAL, MAX_MAX_STEPS, runBrowse, type JevRuntime } from "../jev/browse.js";
+import { isCode, onTab } from "../lanes.js";
 import { log } from "../log.js";
 import {
   actionSpace,
@@ -20,6 +22,7 @@ export interface ToolContext {
   readonly bridge: ExtensionBridge;
   readonly scheduler: Scheduler;
   readonly observations: ObservationCache;
+  readonly jev: JevRuntime;
 }
 
 const SESSION_HINT = "Your session handle from session_open. Never share it with other agents.";
@@ -52,6 +55,15 @@ const schemas = {
     operation: z.enum(OPERATIONS),
     target: z.union([z.string().max(32), z.number().int().nonnegative()]).optional(),
     text: z.string().max(MAX_TYPE_TEXT).optional(),
+  }),
+  browse: z.object({
+    session: sessionArg,
+    tab_id: tabIdArg,
+    goal: z
+      .string()
+      .max(MAX_GOAL)
+      .refine((v) => v.trim().length > 0, "must not be empty"),
+    max_steps: z.number().int().min(1).max(MAX_MAX_STEPS).optional(),
   }),
 };
 type ToolName = keyof typeof schemas;
@@ -141,6 +153,21 @@ export const TOOL_DEFINITIONS: Tool[] = [
       required: ["session", "tab_id", "fingerprint", "operation"],
     },
   },
+  {
+    name: "browse",
+    description:
+      "Let Jev pursue a natural-language goal on one of your tabs: it repeatedly observes, chooses one operation (CLICK, TYPE_TEXT, SELECT, scroll, WAIT) and acts, until DONE, BLOCKED, no progress, max_steps, or Stop. Returns a status, the step trace, the final URL/title and a short element table, and model usage/cost. DONE is only Jev's claim: verify the result with observe or screenshot.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: sessionProp,
+        tab_id: tabIdProp,
+        goal: { type: "string", maxLength: MAX_GOAL, description: "What to achieve on this tab, in plain language, with every required value." },
+        max_steps: { type: "integer", minimum: 1, maximum: MAX_MAX_STEPS, description: `Maximum actions (default ${DEFAULT_MAX_STEPS}).` },
+      },
+      required: ["session", "tab_id", "goal"],
+    },
+  },
 ];
 
 function ok(value: unknown): CallToolResult {
@@ -170,26 +197,6 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
     if (!(err instanceof DaemonError)) log.error(`tool ${name} failed: ${(err as Error)?.message ?? "error"}`);
     return fail(err);
   }
-}
-
-function isCode(err: unknown, ...codes: string[]): boolean {
-  return err instanceof DaemonError && codes.includes(err.code);
-}
-
-/** Queue `fn` on the tab's FIFO lane; ownership and session state are re-checked when it starts. */
-function onTab<T>(ctx: ToolContext, session: Session, tabId: number, fn: () => Promise<T>): Promise<T> {
-  const { registry, scheduler } = ctx;
-  registry.requireTab(session, tabId);
-  return scheduler.runTab(tabId, async () => {
-    registry.requireActive(session);
-    registry.requireTab(session, tabId);
-    try {
-      return await fn();
-    } catch (err) {
-      if (isCode(err, "tab_gone")) registry.removeTab(session.short_id, tabId);
-      throw err;
-    }
-  });
 }
 
 /** Queue `fn` on the session's lane (tab creation and listing). */
@@ -331,6 +338,12 @@ async function dispatch(ctx: ToolContext, name: ToolName, rawArgs: unknown): Pro
         };
       });
       return ok(executed);
+    }
+    case "browse": {
+      const args = parseArgs(name, rawArgs);
+      const session = registry.use(args.session);
+      registry.requireTab(session, args.tab_id);
+      return ok(await runBrowse(ctx, session, args.tab_id, args.goal.trim(), args.max_steps ?? DEFAULT_MAX_STEPS));
     }
   }
 }

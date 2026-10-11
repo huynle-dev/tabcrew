@@ -19,6 +19,10 @@ export interface DaemonConfig {
   readonly allowedOrigins: readonly string[];
   /** From the environment only; never read from config.toml. */
   readonly openrouterApiKey: string | undefined;
+  /** Text helper overrides (environment only): key, OpenAI-compatible base URL, reasoning effort or "none". */
+  readonly textModelApiKey: string | undefined;
+  readonly textModelBaseUrl: string | undefined;
+  readonly textModelReasoning: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -94,6 +98,9 @@ export function loadConfig(env: Env = process.env): DaemonConfig {
             .filter(Boolean)
         : (file.allowed_origins ?? []),
     openrouterApiKey: env.OPENROUTER_API_KEY?.trim() || undefined,
+    textModelApiKey: env.TEXT_MODEL_API_KEY?.trim() || undefined,
+    textModelBaseUrl: envValue(env, "TEXT_MODEL_BASE_URL", z.string().url()),
+    textModelReasoning: envValue(env, "TEXT_MODEL_REASONING", z.string().min(1)) ?? "none",
   };
 }
 

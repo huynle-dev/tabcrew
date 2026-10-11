@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { V2Event } from "@chromeuse/shared/v2";
 import { ExtensionBridge } from "./bridge.js";
+import { Limiter } from "./jev/browse.js";
 import type { DaemonConfig } from "./config.js";
 import { DaemonError } from "./errors.js";
 import { log } from "./log.js";
@@ -21,6 +22,8 @@ export interface DaemonOverrides {
   /** Overrides `idle_timeout_minutes`. */
   readonly idleTimeoutMs?: number;
   readonly sweepIntervalMs?: number;
+  /** Backoff base for model-call retries (default 500 ms). */
+  readonly modelRetryBaseMs?: number;
 }
 
 export interface RunningDaemon {
@@ -102,7 +105,19 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
     onEvent,
   });
 
-  const ctx: ToolContext = { registry, bridge, scheduler, observations };
+  const jev = {
+    settings: {
+      jevModel: config.jevModel,
+      textModel: config.textModel,
+      openrouterApiKey: config.openrouterApiKey,
+      textModelApiKey: config.textModelApiKey,
+      textModelBaseUrl: config.textModelBaseUrl,
+      textModelReasoning: config.textModelReasoning,
+      retryBaseMs: overrides.modelRetryBaseMs,
+    },
+    limiter: new Limiter(config.browseConcurrency),
+  };
+  const ctx: ToolContext = { registry, bridge, scheduler, observations, jev };
   const version = daemonVersion();
   const mcp = new McpHttpServer({
     ...ctx,

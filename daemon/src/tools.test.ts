@@ -317,7 +317,7 @@ describe("stop", () => {
   });
 
   it("forgets an idle stopped session without closing its tabs", async () => {
-    const { d, client, ext } = await setup({ idleTimeoutMs: 80, sweepIntervalMs: 20 });
+    const { d, client, ext } = await setup({ idleTimeoutMs: 400, sweepIntervalMs: 20 });
     const a = await openWithTab(client, "A");
     ext.send({ type: "event", event: "stop", short_id: a.short_id });
     await until(() => d.registry.size === 0);
