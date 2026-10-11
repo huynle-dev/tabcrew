@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { V2Request } from "@chromeuse/shared/v2";
+import type { V2Request, V2Response } from "@chromeuse/shared/v2";
 import { Bridge, type BridgeDeps } from "./bridge.js";
 import type { BridgeConfig } from "./config.js";
-import { OpError } from "./errors.js";
 import { FakeSocket, flush } from "./test/fakes.js";
 
 const session = { short_id: "abcd1234", label: "agent" };
@@ -12,8 +11,9 @@ function makeBridge(config: { current: BridgeConfig }, overrides: Partial<Bridge
     loadConfig: async () => config.current,
     createSocket: (url) => new FakeSocket(url),
     extensionVersion: "0.3.0",
-    handleRequest: vi.fn(async () => ({ ok: 1 })),
+    onRequest: vi.fn(),
     onWelcome: vi.fn(),
+    onPing: vi.fn(),
     ...overrides,
   };
   return { bridge: new Bridge(deps), deps };
@@ -110,11 +110,13 @@ describe("Bridge", () => {
     expect(FakeSocket.instances).toHaveLength(13);
   });
 
-  it("replies pong to ping", async () => {
-    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } });
+  it("replies pong to ping itself, then notifies onPing", async () => {
+    const { bridge, deps } = makeBridge({ current: { token: "t", port: 8771 } });
     const ws = await connected(bridge);
     ws.serverSend({ type: "ping", t: 42 });
     expect(ws.frames().at(-1)).toEqual({ type: "pong", t: 42 });
+    expect(deps.onPing).toHaveBeenCalledTimes(1);
+    expect(deps.onRequest).not.toHaveBeenCalled();
   });
 
   it("calls onWelcome after welcome", async () => {
@@ -123,58 +125,70 @@ describe("Bridge", () => {
     expect(deps.onWelcome).toHaveBeenCalledWith({ type: "welcome", protocol: 2, sessions: [] });
   });
 
-  it("handles requests concurrently and answers each by id", async () => {
-    const resolvers: Record<string, (v: unknown) => void> = {};
-    const started: string[] = [];
-    const { bridge } = makeBridge(
-      { current: { token: "t", port: 8771 } },
-      {
-        handleRequest: (req) =>
-          new Promise((resolve) => {
-            started.push(req.id);
-            resolvers[req.id] = resolve;
-          }),
-      },
-    );
+  it("forwards requests without waiting and writes each response by id", async () => {
+    const forwarded: string[] = [];
+    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } }, { onRequest: (req) => void forwarded.push(req.id) });
     const ws = await connected(bridge);
     ws.serverSend(request("r1"));
     ws.serverSend(request("r2"));
-    await flush();
-    expect(started).toEqual(["r1", "r2"]); // both in flight before either finished
+    expect(forwarded).toEqual(["r1", "r2"]);
 
-    resolvers.r2!({ tabs: [] });
-    await flush();
-    resolvers.r1!({ tabs: [1] });
-    await flush();
-    const responses = ws.frames().filter((f) => f.type === "response");
-    expect(responses).toEqual([
+    expect(bridge.sendResponse({ type: "response", id: "r2", ok: true, result: { tabs: [] } } as V2Response)).toBe(true);
+    expect(bridge.sendResponse({ type: "response", id: "r1", ok: false, error: { code: "internal", message: "boom" } })).toBe(true);
+    expect(ws.frames().filter((f) => f.type === "response")).toEqual([
       { type: "response", id: "r2", ok: true, result: { tabs: [] } },
-      { type: "response", id: "r1", ok: true, result: { tabs: [1] } },
+      { type: "response", id: "r1", ok: false, error: { code: "internal", message: "boom" } },
     ]);
   });
 
-  it("maps thrown errors to typed error responses without stacks", async () => {
+  it("answers each request once, and only on the socket it arrived on", async () => {
+    const { bridge } = makeBridge({ current: { token: "t", port: 8771 } });
+    const ws = await connected(bridge);
+    ws.serverSend(request("r1"));
+    ws.serverSend(request("r2"));
+    const ok = (id: string) => ({ type: "response", id, ok: true, result: {} }) as V2Response;
+    expect(bridge.sendResponse(ok("r1"))).toBe(true);
+    expect(bridge.sendResponse(ok("r1"))).toBe(false);
+    expect(bridge.sendResponse(ok("never-asked"))).toBe(false);
+
+    ws.serverClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = FakeSocket.instances.at(-1)!;
+    ws2.serverOpen();
+    ws2.serverSend({ type: "welcome", protocol: 2, sessions: [] });
+    expect(bridge.sendResponse(ok("r2"))).toBe(false); // r2 belonged to the closed socket
+    expect(ws2.frames().filter((f) => f.type === "response")).toEqual([]);
+  });
+
+  it("ignores requests without an id", async () => {
+    const { bridge, deps } = makeBridge({ current: { token: "t", port: 8771 } });
+    const ws = await connected(bridge);
+    ws.serverSend({ type: "request", op: "tab_list", session, args: {} });
+    expect(deps.onRequest).not.toHaveBeenCalled();
+  });
+
+  it("records send timing", async () => {
+    let clock = 0;
+    const durations = [5, 250, 1200, 0];
     const { bridge } = makeBridge(
       { current: { token: "t", port: 8771 } },
       {
-        handleRequest: async (req) => {
-          if (req.id === "a") throw new OpError("tab_not_owned", "tab 5 is not in this session's tab group");
-          throw new Error("boom\n    at stack line");
+        now: () => clock,
+        createSocket: (url) => {
+          const ws = new FakeSocket(url);
+          const send = ws.send.bind(ws);
+          ws.send = (data) => {
+            clock += durations.shift() ?? 0;
+            send(data);
+          };
+          return ws;
         },
       },
     );
-    const ws = await connected(bridge);
-    ws.serverSend(request("a"));
-    ws.serverSend(request("b"));
-    await flush();
-    const responses = ws.frames().filter((f) => f.type === "response");
-    expect(responses).toContainEqual({
-      type: "response",
-      id: "a",
-      ok: false,
-      error: { code: "tab_not_owned", message: "tab 5 is not in this session's tab group" },
-    });
-    expect(responses).toContainEqual({ type: "response", id: "b", ok: false, error: { code: "internal", message: "boom" } });
+    const ws = await connected(bridge); // hello: 5 ms
+    ws.serverSend({ type: "ping", t: 1 }); // 250 ms
+    bridge.sendEvent({ type: "event", event: "stop", short_id: null }); // 1200 ms
+    expect(bridge.stats()).toEqual({ sends: 3, slow_sends_over_200ms: 2, max_send_ms: 1200 });
   });
 
   it("drops events when not connected", async () => {

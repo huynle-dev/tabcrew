@@ -3,7 +3,7 @@
   "name": "ChromeUse v2",
   "version": "0.3.0",
   "description": "ChromeUse v2: isolated agent sessions as tab groups, driven by the local ChromeUse daemon",
-  "permissions": ["debugger", "tabs", "tabGroups", "storage", "alarms"],
+  "permissions": ["debugger", "tabs", "tabGroups", "storage", "alarms", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "service-worker.js",

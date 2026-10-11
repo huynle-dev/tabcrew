@@ -1,9 +1,10 @@
 /**
- * ChromeUse v2 service worker: wires the daemon bridge, session tab groups, and CDP.
+ * ChromeUse v2 service worker: wires the daemon bridge relay, session tab groups, and CDP.
+ * The daemon WebSocket itself lives in the offscreen document (see offscreen/), so a blocked
+ * socket cannot stall request handling here.
  * All Chrome listeners are registered synchronously at top level (MV3 requirement).
  */
 
-import { Bridge, type SocketLike } from "./bridge.js";
 import { CdpManager } from "./cdp.js";
 import {
   PORT_KEY,
@@ -13,7 +14,10 @@ import {
   type PopupState,
   type PopupStopResult,
 } from "./config.js";
+import { ensureOffscreenDocument } from "./offscreen-client.js";
 import { handleRequest } from "./ops.js";
+import { BRIDGE_PORT_NAME } from "./relay-protocol.js";
+import { BridgeRelay } from "./relay.js";
 import { PageController } from "./snapshot/controller.js";
 import { TabManager } from "./tabs.js";
 
@@ -27,10 +31,9 @@ const page = new PageController({
 const tabs = new TabManager((event) => {
   bridge.sendEvent(event);
 });
-const bridge: Bridge = new Bridge({
+const bridge: BridgeRelay = new BridgeRelay({
   loadConfig,
-  createSocket: (url) => new WebSocket(url) as unknown as SocketLike,
-  extensionVersion: chrome.runtime.getManifest().version,
+  ensureOffscreen: ensureOffscreenDocument,
   handleRequest: (req) => handleRequest(req, { tabs, cdp, page }),
   onWelcome: async () => {
     const groups = await tabs.reconcile();
@@ -61,11 +64,17 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && (TOKEN_KEY in changes || PORT_KEY in changes)) void bridge.reconfigure();
+  if (area === "local" && (TOKEN_KEY in changes || PORT_KEY in changes)) void bridge.pushConfig(true);
 });
 
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === BRIDGE_PORT_NAME) bridge.attach(port);
+});
+chrome.runtime.onStartup.addListener(() => void bridge.ensure());
+chrome.runtime.onInstalled.addListener(() => void bridge.ensure());
+
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === KEEPALIVE_ALARM) void bridge.ensureConnected();
+  if (alarm.name === KEEPALIVE_ALARM) void bridge.ensure();
 });
 void chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
 
@@ -86,4 +95,4 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
   return false;
 });
 
-void bridge.start();
+void bridge.ensure();

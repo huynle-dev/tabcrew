@@ -1,12 +1,14 @@
 /**
- * Connect-out WebSocket bridge to the ChromeUse v2 daemon.
+ * Connect-out WebSocket bridge to the ChromeUse v2 daemon. Runs in the offscreen document so a
+ * blocked socket can never freeze the service worker.
  *
  * - Sends `hello` (protocol 2 + token) as the first frame; the daemon answers `welcome`
  *   or closes with 4401 if the token is wrong.
- * - Requests are dispatched concurrently: there is no queue here. Per-tab ordering is the
- *   daemon's job.
- * - Reconnects with exponential backoff (capped at 30 s). The service worker also calls
- *   `ensureConnected()` from a 1-minute alarm in case it was suspended while offline.
+ * - Answers `ping` itself. `request` frames are handed to `onRequest` (the service-worker relay)
+ *   without waiting: there is no queue here. Per-tab ordering is the daemon's job.
+ * - A response is written only to the socket its request arrived on.
+ * - Reconnects with exponential backoff (capped at 30 s). The keepalive alarm also calls
+ *   `ensureConnected()` in case timers were throttled.
  * - No token → status `needs_token`, no connection. 4401 → status `unauthorized` and no
  *   retries until the token changes.
  */
@@ -17,13 +19,15 @@ import {
   type V2Event,
   type V2ExtensionFrame,
   type V2Request,
+  type V2Response,
   type V2Welcome,
 } from "@chromeuse/shared/v2";
 import type { BridgeConfig, BridgeStatus } from "./config.js";
-import { toWireError } from "./errors.js";
+import type { BridgeStats } from "./relay-protocol.js";
 
 export const UNAUTHORIZED_CLOSE_CODE = 4401;
 export const MAX_BACKOFF_MS = 30_000;
+export const SLOW_SEND_MS = 200;
 const BASE_BACKOFF_MS = 1_000;
 const OPEN = 1;
 
@@ -42,10 +46,15 @@ export interface BridgeDeps {
   loadConfig(): Promise<BridgeConfig>;
   createSocket(url: string): SocketLike;
   extensionVersion: string;
-  handleRequest(req: V2Request): Promise<unknown>;
-  /** Called once per connection after `welcome`. Use it to reconcile and send `groups`. */
-  onWelcome(welcome: V2Welcome): Promise<void> | void;
+  /** A daemon request; answer later with `sendResponse`. Must not block. */
+  onRequest(req: V2Request): void;
+  /** Called once per connection after `welcome` (status is already `connected`). */
+  onWelcome(welcome: V2Welcome): void;
+  /** Called after each ping has been answered. */
+  onPing?(): void;
   onStatus?(status: BridgeStatus): void;
+  /** Monotonic milliseconds, for send timing. */
+  now?(): number;
 }
 
 export class Bridge {
@@ -56,6 +65,9 @@ export class Bridge {
   private generation = 0;
   private unauthorizedToken: string | null = null;
   private _status: BridgeStatus = "offline";
+  /** Request ids received on the current socket and not answered yet. */
+  private pending = new Set<string>();
+  private sendStats = { sends: 0, slow_sends_over_200ms: 0, max_send_ms: 0 };
 
   constructor(private readonly deps: BridgeDeps) {}
 
@@ -65,6 +77,10 @@ export class Bridge {
 
   get isReady(): boolean {
     return this.welcomed && this.socket !== null && this.socket.readyState === OPEN;
+  }
+
+  stats(): BridgeStats {
+    return { ...this.sendStats };
   }
 
   /** Read config and connect if possible. Supersedes any start in progress. */
@@ -106,6 +122,12 @@ export class Bridge {
     return this.sendOn(this.socket, event);
   }
 
+  /** Answer a request. Dropped (returns false) if it did not arrive on the current socket. */
+  sendResponse(response: V2Response): boolean {
+    if (!this.socket || !this.pending.delete(response.id)) return false;
+    return this.sendOn(this.socket, response);
+  }
+
   private open(token: string, port: number): void {
     this.setStatus("connecting");
     let socket: SocketLike;
@@ -119,6 +141,7 @@ export class Bridge {
     }
     this.socket = socket;
     this.welcomed = false;
+    this.pending.clear();
 
     socket.onopen = () => {
       if (this.socket !== socket) return;
@@ -140,6 +163,7 @@ export class Bridge {
       if (this.socket !== socket) return;
       this.socket = null;
       this.welcomed = false;
+      this.pending.clear();
       if (ev.code === UNAUTHORIZED_CLOSE_CODE) {
         this.unauthorizedToken = token;
         this.setStatus("unauthorized");
@@ -164,51 +188,49 @@ export class Bridge {
         this.welcomed = true;
         this.attempts = 0;
         this.setStatus("connected");
-        void Promise.resolve()
-          .then(() => this.deps.onWelcome(frame))
-          .catch((err) => console.warn("[v2 bridge] welcome handling failed:", err));
+        this.notify(() => this.deps.onWelcome(frame));
         break;
       case "ping":
         this.sendOn(socket, { type: "pong", t: frame.t });
+        this.notify(() => this.deps.onPing?.());
         break;
       case "request":
-        void this.dispatch(socket, frame);
+        if (typeof frame.id !== "string") return;
+        this.pending.add(frame.id);
+        this.notify(() => this.deps.onRequest(frame));
         break;
       default:
         console.warn("[v2 bridge] unknown frame type:", (frame as { type?: unknown })?.type);
     }
   }
 
-  private async dispatch(socket: SocketLike, req: V2Request): Promise<void> {
-    if (typeof req.id !== "string") return;
-    let response: V2ExtensionFrame;
-    if (!req.session || typeof req.session.short_id !== "string" || typeof req.op !== "string") {
-      response = {
-        type: "response",
-        id: req.id,
-        ok: false,
-        error: { code: "invalid_args", message: "request needs op and session.short_id" },
-      };
-    } else {
-      try {
-        const result = await this.deps.handleRequest(req);
-        response = { type: "response", id: req.id, ok: true, result } as V2ExtensionFrame;
-      } catch (err) {
-        response = { type: "response", id: req.id, ok: false, error: toWireError(err) };
-      }
+  private notify(fn: () => void): void {
+    try {
+      fn();
+    } catch (err) {
+      console.warn("[v2 bridge] handler failed:", err);
     }
-    this.sendOn(socket, response);
   }
 
   private sendOn(socket: SocketLike, frame: V2ExtensionFrame): boolean {
     if (socket !== this.socket || socket.readyState !== OPEN) return false;
+    const now = this.deps.now ?? (() => performance.now());
+    const started = now();
     try {
       socket.send(JSON.stringify(frame));
       return true;
     } catch (err) {
       console.warn("[v2 bridge] send failed:", err);
       return false;
+    } finally {
+      this.recordSend(now() - started);
     }
+  }
+
+  private recordSend(ms: number): void {
+    this.sendStats.sends++;
+    if (ms > SLOW_SEND_MS) this.sendStats.slow_sends_over_200ms++;
+    if (ms > this.sendStats.max_send_ms) this.sendStats.max_send_ms = Math.round(ms);
   }
 
   private scheduleReconnect(): void {
@@ -232,6 +254,7 @@ export class Bridge {
     const socket = this.socket;
     this.socket = null;
     this.welcomed = false;
+    this.pending.clear();
     if (socket) {
       try {
         socket.close(1000, "reconfigure");

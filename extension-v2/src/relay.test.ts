@@ -1,0 +1,175 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { V2Request } from "@chromeuse/shared/v2";
+import { OpError } from "./errors.js";
+import { BridgeRelay, RECHECK_OFFSCREEN_MS, type RelayDeps } from "./relay.js";
+import { FakePort, createPortPair, flush } from "./test/fakes.js";
+
+const session = { short_id: "abcd1234", label: "agent" };
+
+function request(id: string): V2Request {
+  return { type: "request", id, op: "tab_list", session, args: {} } as V2Request;
+}
+
+function setup(overrides: Partial<RelayDeps> = {}) {
+  const deps: RelayDeps = {
+    loadConfig: async () => ({ token: "t", port: 8771 }),
+    handleRequest: vi.fn(async () => ({ ok: 1 })),
+    onWelcome: vi.fn(),
+    ensureOffscreen: vi.fn(async () => undefined),
+    ...overrides,
+  };
+  const relay = new BridgeRelay(deps);
+  /** `offscreen` is the offscreen document's end; the relay holds the other. */
+  const attach = async (): Promise<FakePort> => {
+    const [offscreen, sw] = createPortPair("v2-bridge");
+    relay.attach(sw);
+    await flush();
+    return offscreen;
+  };
+  return { relay, deps, attach };
+}
+
+async function frames(offscreen: FakePort) {
+  await flush();
+  return offscreen
+    .messages<{ type: string; frame?: Record<string, unknown> }>()
+    .filter((m) => m.type === "frame")
+    .map((m) => m.frame);
+}
+
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
+
+describe("BridgeRelay", () => {
+  it("pushes the stored config when the offscreen document connects", async () => {
+    const { attach } = setup();
+    const offscreen = await attach();
+    expect(offscreen.messages()).toEqual([{ type: "config", token: "t", port: 8771, reconfigure: false }]);
+  });
+
+  it("mirrors the status posted by the offscreen document", async () => {
+    const { relay, attach } = setup();
+    const offscreen = await attach();
+    expect(relay.status).toBe("offline");
+    offscreen.postMessage({ type: "status", status: "connected" });
+    await flush();
+    expect(relay.status).toBe("connected");
+    offscreen.postMessage({ type: "status", status: "unauthorized" });
+    await flush();
+    expect(relay.status).toBe("unauthorized");
+  });
+
+  it("handles forwarded requests concurrently and posts each response by id", async () => {
+    const resolvers: Record<string, (v: unknown) => void> = {};
+    const started: string[] = [];
+    const { attach } = setup({
+      handleRequest: (req) =>
+        new Promise((resolve) => {
+          started.push(req.id);
+          resolvers[req.id] = resolve;
+        }),
+    });
+    const offscreen = await attach();
+    offscreen.postMessage({ type: "request", request: request("r1") });
+    offscreen.postMessage({ type: "request", request: request("r2") });
+    await flush();
+    expect(started).toEqual(["r1", "r2"]); // both in flight before either finished
+
+    resolvers.r2!({ tabs: [] });
+    await flush();
+    resolvers.r1!({ tabs: [1] });
+    expect(await frames(offscreen)).toEqual([
+      { type: "response", id: "r2", ok: true, result: { tabs: [] } },
+      { type: "response", id: "r1", ok: true, result: { tabs: [1] } },
+    ]);
+  });
+
+  it("maps thrown errors to typed error responses without stacks", async () => {
+    const { attach } = setup({
+      handleRequest: async (req) => {
+        if (req.id === "a") throw new OpError("tab_not_owned", "tab 5 is not in this session's tab group");
+        throw new Error("boom\n    at stack line");
+      },
+    });
+    const offscreen = await attach();
+    offscreen.postMessage({ type: "request", request: request("a") });
+    offscreen.postMessage({ type: "request", request: request("b") });
+    const responses = await frames(offscreen);
+    expect(responses).toContainEqual({
+      type: "response",
+      id: "a",
+      ok: false,
+      error: { code: "tab_not_owned", message: "tab 5 is not in this session's tab group" },
+    });
+    expect(responses).toContainEqual({ type: "response", id: "b", ok: false, error: { code: "internal", message: "boom" } });
+  });
+
+  it("rejects requests without op or session", async () => {
+    const { attach, deps } = setup();
+    const offscreen = await attach();
+    offscreen.postMessage({ type: "request", request: { type: "request", id: "x", args: {} } });
+    expect(await frames(offscreen)).toEqual([
+      { type: "response", id: "x", ok: false, error: { code: "invalid_args", message: "request needs op and session.short_id" } },
+    ]);
+    expect(deps.handleRequest).not.toHaveBeenCalled();
+  });
+
+  it("runs onWelcome after a relayed welcome", async () => {
+    const { attach, deps } = setup();
+    const offscreen = await attach();
+    offscreen.postMessage({ type: "welcome", welcome: { type: "welcome", protocol: 2, sessions: [] } });
+    await flush();
+    expect(deps.onWelcome).toHaveBeenCalledWith({ type: "welcome", protocol: 2, sessions: [] });
+  });
+
+  it("drops events unless the socket is connected", async () => {
+    const { relay, attach } = setup();
+    expect(relay.sendEvent({ type: "event", event: "stop", short_id: null })).toBe(false); // no port
+    const offscreen = await attach();
+    expect(relay.sendEvent({ type: "event", event: "stop", short_id: null })).toBe(false); // not welcomed
+    offscreen.postMessage({ type: "status", status: "connected" });
+    await flush();
+    expect(relay.sendEvent({ type: "event", event: "stop", short_id: "abcd1234" })).toBe(true);
+    expect(await frames(offscreen)).toEqual([{ type: "event", event: "stop", short_id: "abcd1234" }]);
+  });
+
+  it("goes offline and re-ensures the offscreen document when the port disconnects", async () => {
+    const { relay, attach, deps } = setup();
+    const offscreen = await attach();
+    offscreen.postMessage({ type: "status", status: "connected" });
+    await flush();
+    offscreen.disconnect(); // offscreen document closed or crashed
+    await flush();
+    expect(relay.status).toBe("offline");
+    expect(deps.ensureOffscreen).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(RECHECK_OFFSCREEN_MS);
+    expect(deps.ensureOffscreen).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps only the newest port", async () => {
+    const { relay, attach } = setup();
+    const first = await attach();
+    const second = await attach();
+    expect(first.connected).toBe(false);
+    second.postMessage({ type: "status", status: "connected" });
+    await flush();
+    expect(relay.status).toBe("connected");
+  });
+
+  it("ensure() creates the document if needed and nudges the socket", async () => {
+    const { relay, attach, deps } = setup();
+    const offscreen = await attach();
+    await relay.ensure();
+    await flush();
+    expect(deps.ensureOffscreen).toHaveBeenCalled();
+    expect(offscreen.messages().at(-1)).toEqual({ type: "ensure" });
+  });
+
+  it("pushConfig(true) forces a reconnect in the offscreen document", async () => {
+    const { relay, attach } = setup();
+    const offscreen = await attach();
+    await relay.pushConfig(true);
+    await flush();
+    expect(offscreen.messages().at(-1)).toEqual({ type: "config", token: "t", port: 8771, reconfigure: true });
+  });
+});

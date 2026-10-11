@@ -5,6 +5,7 @@
 
 import { vi } from "vitest";
 import type { SocketLike } from "../bridge.js";
+import type { PortLike } from "../relay-protocol.js";
 
 interface FakeTab {
   id: number;
@@ -110,9 +111,48 @@ export function createFakeChrome() {
     return win;
   };
 
+  const offscreenDocs = new Set<string>();
+  const onConnect = event<[FakePort]>();
+  const ports: FakePort[] = [];
+
   const chrome = {
-    runtime: { getManifest: () => ({ version: "0.3.0" }) },
-    storage: { local: storageArea(), session: storageArea() },
+    runtime: {
+      getManifest: () => ({ version: "0.3.0" }),
+      getURL: (path: string) => `chrome-extension://fake/${path}`,
+      getPlatformInfo: vi.fn(async () => ({ os: "mac" })),
+      ContextType: { OFFSCREEN_DOCUMENT: "OFFSCREEN_DOCUMENT" },
+      getContexts: vi.fn(async (filter: { documentUrls?: string[] }) => {
+        // A real round trip, so concurrent callers interleave.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return [...offscreenDocs]
+          .filter((url) => !filter.documentUrls || filter.documentUrls.includes(url))
+          .map((documentUrl) => ({ contextType: "OFFSCREEN_DOCUMENT", documentUrl }));
+      }),
+      /** Opens a port to this context's onConnect listeners; returns the caller's end. */
+      connect: vi.fn((info: { name: string }) => {
+        const [caller, listener] = createPortPair(info.name);
+        ports.push(caller);
+        onConnect.fire(listener);
+        return caller;
+      }),
+      onConnect,
+      onMessage: event<[unknown, unknown, (response: unknown) => void]>(),
+      onStartup: event<[]>(),
+      onInstalled: event<[unknown]>(),
+    },
+    offscreen: {
+      Reason: { WORKERS: "WORKERS" },
+      createDocument: vi.fn(async (params: { url: string; reasons: string[]; justification: string }) => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const url = `chrome-extension://fake/${params.url}`;
+        if (offscreenDocs.size > 0) throw new Error("Only a single offscreen document may be created.");
+        offscreenDocs.add(url);
+      }),
+      closeDocument: vi.fn(async () => {
+        offscreenDocs.clear();
+      }),
+    },
+    storage: { local: storageArea(), session: storageArea(), onChanged: event<[Record<string, unknown>, string]>() },
     windows: {
       get: vi.fn(async (id: number) => {
         const w = windows.get(id);
@@ -216,6 +256,7 @@ export function createFakeChrome() {
         return {};
       }),
       onDetach: event<[{ tabId?: number }, string]>(),
+      onEvent: event<[{ tabId?: number }, string, unknown]>(),
     },
     alarms: { create: vi.fn(async () => undefined), onAlarm: event<[{ name: string }]>() },
   };
@@ -226,6 +267,8 @@ export function createFakeChrome() {
     tabs,
     groups,
     attachedDebuggee,
+    offscreenDocs,
+    ports,
     addWindow,
     addTab,
     install() {
@@ -274,6 +317,56 @@ export class FakeSocket implements SocketLike {
   frames(): Record<string, unknown>[] {
     return this.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
   }
+}
+
+/** One end of a fake `chrome.runtime.Port`. Messages are delivered asynchronously, like Chrome. */
+export class FakePort implements PortLike {
+  peer: FakePort | null = null;
+  connected = true;
+  received: unknown[] = [];
+  private messageListeners: ((message: unknown) => void)[] = [];
+  private disconnectListeners: (() => void)[] = [];
+  readonly onMessage = { addListener: (fn: (message: unknown) => void) => void this.messageListeners.push(fn) };
+  readonly onDisconnect = { addListener: (fn: () => void) => void this.disconnectListeners.push(fn) };
+
+  constructor(readonly name: string) {}
+
+  postMessage(message: unknown): void {
+    if (!this.connected) throw new Error("Attempting to use a disconnected port object");
+    const peer = this.peer!;
+    const copy = JSON.parse(JSON.stringify(message)) as unknown;
+    queueMicrotask(() => {
+      if (!peer.connected) return;
+      peer.received.push(copy);
+      peer.messageListeners.forEach((fn) => fn(copy));
+    });
+  }
+
+  /** Disconnects both ends; only the other end's onDisconnect fires (as in Chrome). */
+  disconnect(): void {
+    if (!this.connected) return;
+    this.connected = false;
+    const peer = this.peer!;
+    peer.connected = false;
+    peer.disconnectListeners.forEach((fn) => fn());
+  }
+
+  /** Test helper: the other context died (e.g. the service worker was terminated). */
+  peerDied(): void {
+    this.peer!.disconnect();
+  }
+
+  messages<T = Record<string, unknown>>(): T[] {
+    return this.received as T[];
+  }
+}
+
+export function createPortPair(name: string): [FakePort, FakePort] {
+  const a = new FakePort(name);
+  const b = new FakePort(name);
+  a.peer = b;
+  b.peer = a;
+  return [a, b];
 }
 
 /** Let pending microtasks / promise chains settle. */
