@@ -93,6 +93,25 @@ export interface V2Snapshot {
   readonly fingerprint: string;
 }
 
+export interface V2ConsoleEntry {
+  readonly level: "log" | "info" | "warning" | "error" | "debug" | "exception";
+  /** At most 500 chars. */
+  readonly text: string;
+  readonly url?: string;
+  readonly t: number;
+}
+
+export interface V2NetworkEntry {
+  readonly method: string;
+  /** Origin + path only; query string and fragment removed. */
+  readonly url: string;
+  readonly status: number | null;
+  readonly type: string;
+  readonly failed?: string;
+  readonly ms: number | null;
+  readonly t: number;
+}
+
 export interface V2ActResult {
   readonly executed: string;
   /** Fingerprint of a fresh snapshot taken after the post-input settle wait, if readable. */
@@ -102,7 +121,7 @@ export interface V2ActResult {
 // ---------------------------------------------------------------------------
 // Operations (daemon -> extension). Each has typed args and result.
 // Phase 2 implements: tab_create, tab_list, tab_close, session_close, screenshot.
-// Later phases add: snapshot, act, navigate, read_text, debug_logs.
+// Phase 4 adds snapshot/act; phase 6 adds navigate, read_text, debug_logs.
 // ---------------------------------------------------------------------------
 
 export interface V2OpMap {
@@ -130,7 +149,15 @@ export interface V2OpMap {
     result: V2TabInfo;
   };
   read_text: { args: { tab_id: number; max_length?: number }; result: { text: string; url: string; title: string } };
-  debug_logs: { args: { tab_id: number; source: "console" | "network"; limit?: number }; result: unknown };
+  /**
+   * Recent console messages or network requests for one owned tab, captured since the extension
+   * attached to it (ring buffer, newest last). Network entries never include headers, cookies,
+   * bodies or query strings.
+   */
+  debug_logs: {
+    args: { tab_id: number; source: "console" | "network"; limit?: number; only_errors?: boolean };
+    result: { entries: V2ConsoleEntry[] | V2NetworkEntry[]; dropped: number };
+  };
 }
 export type V2Op = keyof V2OpMap;
 
