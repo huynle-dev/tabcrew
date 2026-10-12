@@ -3,8 +3,15 @@
   "name": "TabCrew",
   "version": "0.4.0",
   "description": "Gives your local AI agents their own isolated tabs in your browser, driven by the TabCrew daemon on this computer.",
-  "permissions": ["debugger", "tabs", "tabGroups", "storage", "alarms", "offscreen", "nativeMessaging"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": [
+    "debugger",
+    "tabs",
+    "tabGroups",
+    "storage",
+    "alarms",
+    "offscreen",
+    "nativeMessaging"
+  ],
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"
@@ -14,7 +21,6 @@
     "default_title": "TabCrew",
     "default_icon": {
       "16": "icons/icon-16.png",
-    "32": "icons/icon-32.png",
       "32": "icons/icon-32.png",
       "48": "icons/icon-48.png",
       "128": "icons/icon-128.png"

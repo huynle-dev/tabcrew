@@ -4,10 +4,10 @@ Paste into the Developer Dashboard **Privacy** tab. Verified against the built s
 
 ```
 permissions:      ["debugger", "tabs", "tabGroups", "storage", "alarms", "offscreen", "nativeMessaging"]
-host_permissions: ["<all_urls>"]
+host_permissions: none
 ```
 
-No `content_scripts`, no `web_accessible_resources`, no `externally_connectable`, default MV3 content security policy, no `key`.
+No host permissions (the `debugger` API attaches to agent tabs without them; verified live on Wikipedia and Google Flights), no `content_scripts`, no `web_accessible_resources`, no `externally_connectable`, default MV3 content security policy, no `key`.
 
 ## Single purpose description
 
@@ -57,12 +57,6 @@ An offscreen document (reason: WORKERS) holds the long-lived WebSocket connectio
 
 ```
 Used only for automatic pairing: the extension asks the native messaging host "com.tabcrew.pair", installed on the user's computer by "npx tabcrew setup", for the access token of the user's local daemon, so the user does not have to copy a secret by hand. The host only answers TabCrew's own extension ID, returns the token and exits. No other native host is contacted.
-```
-
-### Host permission: <all_urls>
-
-```
-Agents work on whatever sites the user asks them to use (search, documentation, shopping, internal tools), so TabCrew cannot know the sites in advance. Broad host access lets the extension navigate agent tabs to those sites, attach the debugger to them, read their content and capture screenshots of them. It is used only in tabs owned by an agent session, never in the user's own tabs, and the extension injects no content scripts.
 ```
 
 ## Remote code

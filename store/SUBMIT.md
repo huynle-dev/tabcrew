@@ -41,7 +41,7 @@ Copy from `store/listing.md`:
 Copy from `store/permissions.md`:
 
 - [ ] Single purpose description.
-- [ ] One justification per permission: `debugger`, `tabs`, `tabGroups`, `storage`, `alarms`, `offscreen`, `nativeMessaging`, and the host permission `<all_urls>`. If the dashboard lists a permission not covered there, stop: the manifest changed and `store/permissions.md` must be updated first.
+- [ ] One justification per permission: `debugger`, `tabs`, `tabGroups`, `storage`, `alarms`, `offscreen`, `nativeMessaging` (there are no host permissions). If the dashboard lists a permission not covered there, stop: the manifest changed and `store/permissions.md` must be updated first.
 - [ ] Remote code → "No, I am not using remote code".
 - [ ] Data usage → check **Web history** and **Website content** only; check all three certifications.
 - [ ] Privacy policy URL → `https://huynle-dev.github.io/tabcrew/privacy`.
@@ -58,7 +58,7 @@ Copy from `store/permissions.md`:
 
 ## 7. Submit
 
-- [ ] **Submit for review.** Leave "publish automatically after review" on, or turn it off to publish manually. `debugger` + `<all_urls>` usually trigger an in-depth review that can take from a few days to a few weeks. Answer reviewer emails using the justifications above.
+- [ ] **Submit for review.** Leave "publish automatically after review" on, or turn it off to publish manually. `debugger` usually triggers an in-depth review that can take from a few days to a few weeks. Answer reviewer emails using the justifications above.
 
 ## 8. After approval
 

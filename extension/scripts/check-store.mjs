@@ -48,6 +48,9 @@ for (const name of entries.filter((n) => /\.(m?js|html)$/.test(n))) {
   for (const [pattern, label] of FORBIDDEN) if (pattern.test(text)) problems.push(`${name}: contains ${label}`);
 }
 
+// The debugger API needs no host access; broad host permissions would only widen store review.
+if ((manifest.host_permissions ?? []).length > 0) problems.push(`unexpected host_permissions ${JSON.stringify(manifest.host_permissions)}`);
+
 console.log(`${zip}`);
 for (const name of entries) console.log(`  ${name}`);
 console.log(`permissions: ${JSON.stringify(manifest.permissions)}`);
