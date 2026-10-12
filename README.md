@@ -78,7 +78,7 @@ Pairing: when the extension has no token (or the daemon rejects it with 4401), t
 | `cli/` | The publishable `tabcrew` npm package: esbuild bundles `dist/cli.mjs`, `dist/daemon.mjs`, `dist/pair-host.mjs` |
 | `extension/` | MV3 extension: offscreen socket, service worker, CDP snapshot/act, popup, pairing |
 | `shared/` | Protocol types and product constants (`@tabcrew/shared/v2`, `@tabcrew/shared/product`) |
-| `docs/` | Design records (`plans/`) and the GitHub Pages site with the privacy policy |
+| `docs/` | Design records (`plans/`) and the privacy policy (`privacy.md`) |
 | `store/` | Chrome Web Store kit: listing, permission justifications, screenshots, submission checklist |
 | `scripts/` | Release helpers (`bump-version.mjs`) |
 

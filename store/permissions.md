@@ -99,7 +99,7 @@ Certifications (check all three):
 https://github.com/huynle/tabcrew/blob/main/docs/privacy.md
 ```
 
-Source: `docs/privacy.md`. The owner must enable GitHub Pages (repository Settings → Pages → Deploy from a branch → `main`, folder `/docs`) and open the URL once to confirm it loads before submitting.
+Source: `docs/privacy.md` in the repository.
 
 ## Notes for reviewers (optional "test instructions" field)
 
