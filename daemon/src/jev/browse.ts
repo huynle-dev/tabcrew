@@ -16,6 +16,8 @@ export const MAX_GOAL = 2000;
 export const STALE_BUDGET = 10;
 const FINAL_ROWS = 30;
 const DONE_NOTE = "DONE is Jev's claim; verify the page yourself with observe/read the result";
+/** Every browse result reminds the agent to clean up once it no longer needs the tab. */
+export const CLOSE_REMINDER = "When you no longer need this tab, call session_close to close your tabs and window.";
 
 /** FIFO counting semaphore for concurrent browse loops. */
 export class Limiter {
@@ -94,6 +96,8 @@ export interface BrowseResult {
   final: { url: string; title: string; elements: string[] };
   usage: BrowseUsage;
   elapsed_ms: number;
+  /** Cleanup reminder for the agent. */
+  next: string;
 }
 
 interface Page {
@@ -150,6 +154,7 @@ export async function runBrowse(
     return {
       status,
       ...(status === "done" && { note: DONE_NOTE }),
+      next: CLOSE_REMINDER,
       ...(message !== undefined && { message }),
       steps,
       final: {

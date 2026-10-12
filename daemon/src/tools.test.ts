@@ -392,3 +392,57 @@ describe("persistence and reconcile", () => {
     for (const s of saved.sessions) expect(s.tabs).toHaveLength(1);
   });
 });
+
+describe("cleanup when agents are done", () => {
+  it("tells agents at connect time to close their session", async () => {
+    const { client } = await setup();
+    expect(client.getInstructions()).toMatch(/session_close/);
+    const tools = await client.listTools();
+    expect(tools.tools.find((t) => t.name === "session_open")?.description).toMatch(/session_close/);
+  });
+
+  it("closes the browser sessions a connection opened when that connection ends, and only those", async () => {
+    const { d, client, ext } = await setup();
+    const other = await mcpClient(d.mcpPort, d.token);
+    clients.push(other);
+    const mine = await openWithTab(client, "mine");
+    const theirs = await openWithTab(other, "theirs");
+
+    // End the first connection the way a harness does on shutdown (HTTP DELETE of the MCP session).
+    await (client.transport as { terminateSession(): Promise<void> }).terminateSession();
+    await client.close();
+
+    await until(() => ext.requests.some((r) => r.op === "session_close" && r.session.short_id === mine.short_id));
+    expect(ext.requests.some((r) => r.op === "session_close" && r.session.short_id === theirs.short_id)).toBe(false);
+    const still = await call(other, "tab_list", { session: theirs.S });
+    expect(still.ok).toBe(true);
+    expect(d.registry.size).toBe(1);
+  });
+
+  it("does not double-close a session the agent already closed", async () => {
+    const { client, ext } = await setup();
+    const s = await openWithTab(client, "tidy");
+    expect((await call(client, "session_close", { session: s.S })).ok).toBe(true);
+    await (client.transport as { terminateSession(): Promise<void> }).terminateSession();
+    await client.close();
+    await sleep(100);
+    expect(ext.requests.filter((r) => r.op === "session_close")).toHaveLength(1);
+  });
+});
+
+describe("cleanup does not fire on daemon shutdown", () => {
+  it("keeps sessions open across a daemon restart even though connections close", async () => {
+    let d = await startTestDaemon(home);
+    daemon = d;
+    const client = await mcpClient(d.mcpPort, d.token);
+    let ext = await FakeExtension.connect(d.extensionPort, d.token);
+    const s = await openWithTab(client, "survivor");
+    await d.close();
+    expect(ext.requests.some((r) => r.op === "session_close")).toBe(false);
+    ext.ws.terminate();
+    d = await startTestDaemon(home);
+    daemon = d;
+    expect(d.registry.size).toBe(1);
+    void s;
+  });
+});

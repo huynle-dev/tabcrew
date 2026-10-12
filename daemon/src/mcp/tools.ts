@@ -24,6 +24,8 @@ export interface ToolContext {
   readonly scheduler: Scheduler;
   readonly observations: ObservationCache;
   readonly jev: JevRuntime;
+  /** Called when this connection opens a browser session, so it can be closed if the connection goes away. */
+  readonly onSessionOpened?: (session: Session) => void;
 }
 
 const SESSION_HINT = "Your session handle from session_open. Never share it with other agents.";
@@ -107,7 +109,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "session_open",
     description:
-      "Open a private browser session and get its handle. Open one session per agent or subagent, pass the handle on every call, and never share it.",
+      "Open a private browser session and get its handle. Open one session per agent or subagent, pass the handle on every call, and never share it. When your task is finished, call session_close so your tabs and window are closed.",
     inputSchema: {
       type: "object",
       properties: { label: { type: "string", description: "Short name shown on the tab group, e.g. your task." } },
@@ -115,7 +117,8 @@ export const TOOL_DEFINITIONS: Tool[] = [
   },
   {
     name: "session_close",
-    description: "Close your session and all of its tabs.",
+    description:
+      "Close your session and all of its tabs (its window closes too). Call this as soon as you are done with the browser; do not leave sessions open.",
     inputSchema: { type: "object", properties: { session: sessionProp }, required: ["session"] },
   },
   {
@@ -320,6 +323,7 @@ async function dispatch(ctx: ToolContext, name: ToolName, rawArgs: unknown): Pro
     case "session_open": {
       const args = parseArgs(name, rawArgs);
       const { handle, session } = registry.open(args.label);
+      ctx.onSessionOpened?.(session);
       log.info(`session ${session.short_id} opened`);
       return ok({ session: handle, short_id: session.short_id, label: session.label });
     }

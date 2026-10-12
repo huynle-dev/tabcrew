@@ -6,7 +6,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, isInitializeRequest, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "../log.js";
 import { safeEqual } from "../token.js";
-import { callTool, TOOL_DEFINITIONS, type ToolContext } from "./tools.js";
+import type { Session } from "../sessions.js";
+import { callTool, closeSession, TOOL_DEFINITIONS, type ToolContext } from "./tools.js";
 
 export interface McpHttpOptions extends ToolContext {
   readonly token: string;
@@ -65,13 +66,39 @@ function bearer(req: IncomingMessage): string | null {
   return m ? m[1].trim() : null;
 }
 
-/** One MCP protocol server per MCP session; all share the same browser-session registry. */
-function createProtocolServer(opts: McpHttpOptions): Server {
-  const server = new Server({ name: "chromeuse", version: opts.version }, { capabilities: { tools: {} } });
+export const SERVER_INSTRUCTIONS = [
+  "ChromeUse drives the user's real Chrome. Each agent or subagent opens its own session with session_open and passes the handle on every call.",
+  "Prefer browse for multi-step goals, observe/act for precise control, read_text for long content. browse's DONE is a claim: verify the page.",
+  "When your task is finished, call session_close: it closes your tabs and their window. Sessions left open are closed when your connection ends or after they sit idle.",
+].join(" ");
+
+/**
+ * One MCP protocol server per MCP session; all share the same browser-session registry. Browser
+ * sessions opened over this connection are closed when the connection closes.
+ */
+function createProtocolServer(opts: McpHttpOptions, isShuttingDown: () => boolean): Server {
+  const server = new Server(
+    { name: "chromeuse", version: opts.version },
+    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+  );
+  const opened = new Set<Session>();
+  const ctx: McpHttpOptions = { ...opts, onSessionOpened: (session) => opened.add(session) };
+  server.onclose = () => {
+    // A daemon restart closes every connection too; agents' sessions must survive that.
+    if (isShuttingDown()) return;
+    for (const session of opened) {
+      void closeSession(opts, session)
+        .then((r) => {
+          if (r.closed) log.info(`session ${session.short_id} closed (MCP connection ended)`);
+        })
+        .catch(() => {});
+    }
+    opened.clear();
+  };
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const started = performance.now();
-    const result = await callTool(opts, request.params.name, request.params.arguments);
+    const result = await callTool(ctx, request.params.name, request.params.arguments);
     log.debug(`tool ${request.params.name} ${Math.round(performance.now() - started)} ms${result.isError ? " error" : ""}`);
     return result;
   });
@@ -81,6 +108,7 @@ function createProtocolServer(opts: McpHttpOptions): Server {
 export class McpHttpServer {
   private http: HttpServer | null = null;
   private readonly transports = new Map<string, StreamableHTTPServerTransport>();
+  private shuttingDown = false;
 
   constructor(private readonly opts: McpHttpOptions) {}
 
@@ -104,6 +132,7 @@ export class McpHttpServer {
   }
 
   async close(): Promise<void> {
+    this.shuttingDown = true;
     const transports = [...this.transports.values()];
     this.transports.clear();
     await Promise.allSettled(transports.map((t) => t.close()));
@@ -171,7 +200,7 @@ export class McpHttpServer {
         transport.onclose = () => {
           if (transport.sessionId) this.transports.delete(transport.sessionId);
         };
-        await createProtocolServer(this.opts).connect(transport);
+        await createProtocolServer(this.opts, () => this.shuttingDown).connect(transport);
         await transport.handleRequest(req, res, body);
         return;
       }
