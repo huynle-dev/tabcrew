@@ -21,6 +21,15 @@
     </section>
 
     <section>
+      <fieldset id="placement">
+        <legend>New agent tabs open in:</legend>
+        <label class="radio"><input type="radio" name="placement" value="own_window" checked /> Their own window (fastest)</label>
+        <label class="radio"><input type="radio" name="placement" value="user_window" /> My current window</label>
+        <p class="note radio-note">Slower: Chrome throttles tabs you aren't looking at. Agents never switch your current tab.</p>
+      </fieldset>
+    </section>
+
+    <section>
       <div class="row spread">
         <h2>Sessions</h2>
         <button id="stop-all" class="danger">Stop all</button>

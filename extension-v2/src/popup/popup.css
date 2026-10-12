@@ -99,3 +99,24 @@ li .actions {
 li.finished > span:first-child {
   color: #05603a;
 }
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+legend {
+  font-weight: 600;
+  margin-bottom: 4px;
+  padding: 0;
+}
+label.radio {
+  font-weight: normal;
+  margin: 2px 0 0;
+}
+label.radio input {
+  margin: 0 4px 0 0;
+}
+.radio-note {
+  margin-left: 18px;
+  min-height: 0;
+}

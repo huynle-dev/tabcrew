@@ -5,6 +5,9 @@ import { navigateTab, readText } from "./navigate.js";
 import type { PageController } from "./snapshot/controller.js";
 import { requireTabId, type TabManager } from "./tabs.js";
 
+export const BACKGROUND_SCREENSHOT_TIMEOUT =
+  "tab is in the background; screenshots of background tabs may fail in 'My current window' mode";
+
 export interface OpDeps {
   tabs: TabManager;
   cdp: CdpManager;
@@ -38,8 +41,10 @@ export async function handleRequest(req: V2Request, deps: OpDeps): Promise<unkno
       });
     case "screenshot": {
       const tabId = requireTabId(args);
-      await deps.tabs.prepareForPage(session, tabId);
-      return deps.cdp.screenshot(tabId, args);
+      const tab = await deps.tabs.prepareForPage(session, tabId);
+      // A user_window tab is never activated, and Chrome may not paint a hidden tab.
+      const background = !tab.active && (await deps.tabs.placementFor(session.short_id)) === "user_window";
+      return deps.cdp.screenshot(tabId, args, background ? { timeoutMessage: BACKGROUND_SCREENSHOT_TIMEOUT } : {});
     }
     case "snapshot": {
       const tabId = requireTabId(args);

@@ -10,6 +10,7 @@ import {
   type PopupState,
   type PopupStopResult,
 } from "../config.js";
+import { bindPlacementRadios } from "./placement.js";
 import { finishedRows, sessionRows } from "./view.js";
 
 const STATUS_TEXT: Record<BridgeStatus, string> = {
@@ -175,6 +176,8 @@ $("save-port").addEventListener("click", async () => {
   }
   setTimeout(() => void refresh(), 300);
 });
+
+void bindPlacementRadios(Array.from(document.querySelectorAll<HTMLInputElement>('input[name="placement"]')));
 
 $("stop-all").addEventListener("click", () => void stopSession(null));
 $("close-all-finished").addEventListener("click", () => void closeFinished(null));

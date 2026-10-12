@@ -3,6 +3,8 @@ import { V2_EXTENSION_PORT } from "@chromeuse/shared/v2";
 /** chrome.storage.local keys (user settings). */
 export const TOKEN_KEY = "v2:token";
 export const PORT_KEY = "v2:port";
+/** Where new sessions open their tabs (see `Placement`); absent means "own_window". */
+export const PLACEMENT_KEY = "v2:placement";
 
 /** chrome.storage.session keys (rebuildable runtime state). */
 export const SESSION_WINDOWS_KEY = "v2:sessionWindows";
@@ -14,6 +16,27 @@ export const STOPPED_KEY = "v2:stoppedSessions";
 export const RELEASED_KEY = "v2:releasedGroups";
 /** Recently focused window ids, most recent first (picks where finished groups go). */
 export const FOCUS_ORDER_KEY = "v2:windowFocusOrder";
+/** short_id → placement decided at the session's first tab_create. */
+export const PLACEMENTS_KEY = "v2:placements";
+
+/**
+ * - `own_window`: one unfocused window per session; the target tab is activated within it.
+ * - `user_window`: a collapsed group in the user's window; tabs are never activated.
+ */
+export type Placement = "own_window" | "user_window";
+
+export function parsePlacement(value: unknown): Placement {
+  return value === "user_window" ? "user_window" : "own_window";
+}
+
+export async function loadPlacement(): Promise<Placement> {
+  const stored = await chrome.storage.local.get(PLACEMENT_KEY);
+  return parsePlacement(stored[PLACEMENT_KEY]);
+}
+
+export async function savePlacement(placement: Placement): Promise<void> {
+  await chrome.storage.local.set({ [PLACEMENT_KEY]: parsePlacement(placement) });
+}
 
 export interface BridgeConfig {
   readonly token: string | null;

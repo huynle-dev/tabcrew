@@ -75,10 +75,12 @@ export function createFakeChrome() {
   const tabOut = (t: FakeTab) => ({ ...t, pinned: false, highlighted: false, incognito: false, selected: false, discarded: false, autoDiscardable: true, frozen: false });
   const notFound = (what: string, id: number) => new Error(`No ${what} with id: ${id}.`);
 
+  const onActivated = event<[{ tabId: number; windowId: number }]>();
   /** Chrome keeps exactly one active tab per window. */
-  const setActive = (tab: FakeTab) => {
+  const setActive = (tab: FakeTab, changed = !tab.active) => {
     for (const t of tabs.values()) if (t.windowId === tab.windowId) t.active = false;
     tab.active = true;
+    if (changed) onActivated.fire({ tabId: tab.id, windowId: tab.windowId });
   };
   const ensureActive = () => {
     for (const w of windows.values()) {
@@ -111,7 +113,7 @@ export function createFakeChrome() {
       ...props,
     };
     tabs.set(tab.id, tab);
-    if (tab.active) setActive(tab);
+    if (tab.active) setActive(tab, true);
     return tab;
   };
 
@@ -260,6 +262,7 @@ export function createFakeChrome() {
       }),
       onCreated: event<[chrome.tabs.Tab]>(),
       onRemoved: event<[number]>(),
+      onActivated,
     },
     tabGroups: {
       get: vi.fn(async (id: number) => {
@@ -326,6 +329,7 @@ export function createFakeChrome() {
     addWindow,
     addTab,
     focusWindow,
+    setActive: (tabId: number) => setActive(tabs.get(tabId)!),
     install() {
       (globalThis as unknown as { chrome: unknown }).chrome = chrome;
     },

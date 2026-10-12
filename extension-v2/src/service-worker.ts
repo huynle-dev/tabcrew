@@ -48,6 +48,9 @@ const bridge: BridgeRelay = new BridgeRelay({
 chrome.tabs.onCreated.addListener((tab) => {
   void tabs.handleTabCreated(tab).catch((err) => console.warn("[v2] adopt failed:", err));
 });
+chrome.tabs.onActivated.addListener((info) => {
+  tabs.handleTabActivated(info);
+});
 chrome.tabs.onRemoved.addListener((tabId) => {
   cdp.forgetTab(tabId);
   page.forget(tabId);

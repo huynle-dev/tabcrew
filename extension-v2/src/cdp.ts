@@ -39,12 +39,19 @@ export interface EventWait {
   cancel(): void;
 }
 
+export interface CdpOptions {
+  /** Test hook: how long a screenshot may take. */
+  screenshotTimeoutMs?: number;
+}
+
 export class CdpManager {
   /** tabId → attach in progress or done. Removed on detach/close/failure. */
   private readonly attached = new Map<number, Promise<void>>();
   private readonly waiters = new Map<number, Set<{ match: EventMatch; finish: (hit: boolean) => void }>>();
   /** Console/network ring buffers of attached tabs. */
   readonly logs = new DebugLogStore();
+
+  constructor(private readonly options: CdpOptions = {}) {}
 
   isAttached(tabId: number): boolean {
     return this.attached.has(tabId);
@@ -149,8 +156,11 @@ export class CdpManager {
     }
   }
 
-  /** Capture the tab without activating it or focusing its window. */
-  async screenshot(tabId: number, args: ScreenshotArgs): Promise<ScreenshotResult> {
+  /**
+   * Capture the tab without activating it or focusing its window. `timeoutMessage` replaces the
+   * default `internal` error message when the capture times out.
+   */
+  async screenshot(tabId: number, args: ScreenshotArgs, opts: { timeoutMessage?: string } = {}): Promise<ScreenshotResult> {
     const format = args.format ?? "jpeg";
     if (format !== "jpeg" && format !== "png") throw new OpError("invalid_args", "format must be jpeg or png");
     let quality = 80;
@@ -167,8 +177,8 @@ export class CdpManager {
       this.send<LayoutMetrics>(tabId, "Page.getLayoutMetrics"),
       withTimeout(
         this.send<{ data: string }>(tabId, "Page.captureScreenshot", params),
-        SCREENSHOT_TIMEOUT_MS,
-        `screenshot of tab ${tabId} timed out`,
+        this.options.screenshotTimeoutMs ?? SCREENSHOT_TIMEOUT_MS,
+        opts.timeoutMessage ?? `screenshot of tab ${tabId} timed out`,
       ),
     ]);
     const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
