@@ -21,4 +21,4 @@ Then install the TabCrew browser extension. It pairs with the daemon automatical
 
 Everything lives in `~/.tabcrew` (override with `TABCREW_HOME`). The daemon listens on `127.0.0.1` only and requires the token. `browse` needs an OpenRouter API key; `setup` asks for it and stores it in `~/.tabcrew/env` (mode 600).
 
-TabCrew is not affiliated with or endorsed by Google. Documentation and source: https://github.com/huynle/tabcrew. License: MIT.
+TabCrew is not affiliated with or endorsed by Google. Documentation and source: https://github.com/huynle-dev/tabcrew. License: MIT.

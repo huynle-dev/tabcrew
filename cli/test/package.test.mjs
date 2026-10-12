@@ -17,7 +17,7 @@ describe("tabcrew package metadata", () => {
     expect(pkg.files).toEqual(["dist/cli.mjs", "dist/daemon.mjs", "dist/pair-host.mjs", "README.md", "LICENSE"]);
     expect(pkg.engines.node).toBe(">=20.0.0");
     expect(pkg.license).toBe("MIT");
-    expect(pkg.repository).toBe("github:huynle/tabcrew");
+    expect(pkg.repository).toBe("github:huynle-dev/tabcrew");
     expect(pkg.dependencies).toBeUndefined();
   });
 });

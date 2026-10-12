@@ -6,12 +6,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/huynle/tabcrew.git"
+    "url": "git+https://github.com/huynle-dev/tabcrew.git"
   },
   "bugs": {
-    "url": "https://github.com/huynle/tabcrew/issues"
+    "url": "https://github.com/huynle-dev/tabcrew/issues"
   },
-  "homepage": "https://github.com/huynle/tabcrew#readme",
+  "homepage": "https://github.com/huynle-dev/tabcrew#readme",
   "keywords": [
     "mcp",
     "model-context-protocol",

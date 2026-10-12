@@ -17,10 +17,10 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "repository": "github:huynle/tabcrew",
-  "homepage": "https://github.com/huynle/tabcrew#readme",
+  "repository": "github:huynle-dev/tabcrew",
+  "homepage": "https://github.com/huynle-dev/tabcrew#readme",
   "bugs": {
-    "url": "https://github.com/huynle/tabcrew/issues"
+    "url": "https://github.com/huynle-dev/tabcrew/issues"
   },
   "keywords": [
     "mcp",
