@@ -163,9 +163,21 @@ function expectText(obs, needle, what) {
   if (!String(obs.text).includes(needle)) throw new Error(`${what}: page text lacks "${needle}"`);
 }
 
+/**
+ * Click a fixture control as test setup (not a guard under test). If the page is still settling the
+ * click is refused with stale_page and nothing runs, so observe again and retry like an agent would.
+ */
+async function clickSetup(label, what) {
+  for (let attempt = 1; ; attempt++) {
+    const obs = await observe();
+    const r = await act(obs, "CLICK", el(obs, label).index);
+    if (!r.error || r.error.code !== "stale_page" || attempt >= 5) return expectOk(r, what);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+}
+
 async function reset() {
-  const obs = await observe();
-  expectOk(await act(obs, "CLICK", el(obs, "Reset fixture").index), "reset");
+  await clickSetup("Reset fixture", "reset");
   const fresh = await observe();
   expectText(fresh, "Continue clicks: 0 · Purchases: 0 · City: Zurich", "reset");
   return fresh;
@@ -173,8 +185,7 @@ async function reset() {
 
 /** Click "Arm <name>", observe immediately (before the mutation lands), then wait for it. */
 async function armed(name) {
-  const obs = await observe();
-  expectOk(await act(obs, "CLICK", el(obs, `Arm ${name}`).index), `arm ${name}`);
+  await clickSetup(`Arm ${name}`, `arm ${name}`);
   const before = await observe();
   await sleep(ARM_WAIT_MS);
   return before;
