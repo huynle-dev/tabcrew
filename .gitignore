@@ -5,12 +5,6 @@ release/
 .DS_Store
 *.log
 
-# Compiled JS/declaration files that may leak into src/ directories
-native-host/src/*.js
-native-host/src/*.js.map
-native-host/src/*.d.ts
-native-host/src/*.d.ts.map
-
 # macOS
 __MACOSX/
 

@@ -34,7 +34,7 @@ What happened instead?
 
 ## Logs or Screenshots
 
-Paste relevant MCP client errors, browser console output, extension side panel details, or screenshots.
+Paste relevant MCP client errors, browser console output, daemon log output, extension popup status, or screenshots.
 
 ## Additional Context
 

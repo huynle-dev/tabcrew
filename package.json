@@ -1,8 +1,8 @@
 {
   "name": "chromeuse-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "MCP browser automation tools for controlling a real Chromium session",
+  "description": "One local daemon that gives many AI agents their own isolated sessions in your real Chrome, with Jev-driven browse",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -22,19 +22,13 @@
   ],
   "workspaces": [
     "shared",
-    "extension",
-    "native-host",
-    "mcp-server",
-    "gateway",
     "daemon",
     "extension-v2"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
-    "build:shared": "npm run build -w shared",
-    "typecheck": "npm run build -w shared && npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w shared && npm run build -w daemon && npm run build -w extension-v2",
+    "typecheck": "npm run build -w shared && npm run typecheck -w daemon && npm run typecheck -w extension-v2",
     "test": "npm run test --workspaces --if-present",
-    "test:shared": "npm run test -w shared",
     "clean": "npm run clean --workspaces --if-present"
   },
   "engines": {

@@ -177,3 +177,17 @@ No automated test calls a paid API.
 | 8 | Delete v1 (`gateway/`, `mcp-server/`, `native-host/`, `extension/`) | separate decision |
 
 Phases 1 and 2, and the snapshot part of phase 4, are independent and can be built in parallel.
+
+## Status (2026-10-12)
+
+Phases 1–6 and 8 are built: the daemon (`daemon/`), extension (`extension-v2/`) and 12 tools, with the offline unit tests and the live smoke, isolation, guards, concurrency and paid live-browse scripts. v1 (`gateway/`, `mcp-server/`, `native-host/`, `extension/`) was deleted; it is recoverable from tag `v1-final`.
+
+Decisions made during the build:
+
+- Each session gets its own window (instead of one shared Agents window), so sessions never compete for the active tab.
+- The daemon WebSocket lives in an offscreen document, not the service worker; this cut the 3-agent isolation run from 20.6 s to 1.95 s.
+- `session_close` (and connection loss or idle timeout) hands remaining tabs to the user's window as a collapsed `✓ <label>` group instead of closing them; the agent loses control.
+- Optional "My current window" placement in the popup; the default stays a window per session.
+- Tabs are ungrouped before they are closed.
+- Tool descriptions and server instructions tell agents to close throwaway tabs and call `session_close` when done.
+- The text helper falls back once to a second model (`TEXT_MODEL_FALLBACK`) when the first is slow or fails (`TEXT_MODEL_TIMEOUT_MS`).

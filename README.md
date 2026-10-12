@@ -1,352 +1,187 @@
-# ChromeUse MCP
+# ChromeUse
 
-ChromeUse MCP gives AI assistants and other MCP clients direct, structured control of a real Chromium browser.
+ChromeUse lets AI agents use your real Chrome. One local daemon serves many agents at once, and each agent works in its own isolated browser session: its own window and tab group, its own tabs, and no access to anyone else's tabs.
 
-It combines a Chrome extension, a stdio MCP server, a localhost WebSocket bridge, and an optional native messaging host so tools can inspect pages, click elements, fill forms, capture screenshots, monitor console and network activity, run page JavaScript, manage tabs, and record GIFs from the browser you actually use.
+Agents can drive pages step by step (`observe` / `act`) or hand a whole goal to `browse`. `browse` runs the [jev-ultrafast](https://github.com/browser-use/jev-ultrafast) loop (observe the page, choose one operation and target, act, repeat) using Jev through OpenRouter's Decisions API, plus a small text model for the values it types.
 
-## Why Use It
+## Architecture
 
-- Automate real browser workflows from any [Model Context Protocol](https://modelcontextprotocol.io) client.
-- Test web apps in an actual Chromium session instead of a synthetic browser environment.
-- Target elements by `ref` from the accessibility tree, by natural-language search, or by screenshot coordinates.
-- Debug frontend behavior with console logs, network requests, screenshots, page text, and JavaScript evaluation.
-- Keep multiple agents safer by requiring explicit `tabId` targeting for most tab-scoped tools.
-- Use the extension side panel as a unified workspace surface for connection status, recent tool activity, selected local folders, and document previews.
-
-## Feature Overview
-
-ChromeUse MCP exposes browser automation tools plus workspace and document foundation tools:
-
-| Category | Tools | What You Can Do |
-| --- | --- | --- |
-| Browser control | `computer`, `navigate`, `resize_window` | Take screenshots, click, type, press keys, scroll, drag, move the pointer, navigate, reload, go back/forward, and resize windows. |
-| Page understanding | `read_page`, `get_page_text`, `find` | Read accessibility trees, HTML, text, visible page text, and find elements by human-readable descriptions. |
-| Form and file workflows | `form_input`, `file_upload` | Fill inputs, selects, checkboxes, radio buttons, contenteditable fields, and file inputs. |
-| File operations | `workspace_write_file`, `save_resource` | Write files inside the selected workspace and save authenticated resources to a workspace-relative path or browser Downloads. |
-| Debugging | `javascript_tool`, `read_console_messages`, `read_network_requests` | Run JavaScript through Chrome DevTools Protocol and inspect captured console/network activity. |
-| Synchronization | `wait_for` | Wait for a selector, page text, network idle, or a console message before continuing — reliable multi-step flows. |
-| Network control | `network_intercept` | Mock, block, or fail matching requests (stub APIs, force error states). |
-| Browser state | `cookies`, `storage` | Inspect and mutate cookies, `localStorage`, and `sessionStorage` (auth flows, reset state). |
-| Emulation | `emulate` | Emulate device metrics, touch, user-agent, geolocation, color scheme, and network/CPU throttling. |
-| Performance & capture | `performance_metrics`, `screenshot_element`, `print_to_pdf` | Capture Core Web Vitals and timings, screenshot one element, or save the page as PDF. |
-| Data extraction | `extract_structured` | Extract a table or repeated list into structured JSON (optionally saved to the workspace). |
-| Code quality | `coverage`, `accessibility_audit` | Report unused JS/CSS and run axe-core WCAG audits. |
-| Source debugging | `debug_inspect` | Set a one-shot breakpoint and capture the frame + locals on hit. |
-| Clipboard | `clipboard` | Read from and write to the system clipboard. |
-| Macros | `macro` | Record, replay, and schedule UI interaction macros. |
-| Tab management | `tabs_context`, `tabs_create`, `tabs_close`, `tab_session` | List/create/close tabs and tab groups, and save/restore named tab sessions. |
-| Browser data | `history_search`, `bookmarks` | Search browsing history and search/list/create bookmarks. |
-| Recording | `gif_creator` | Capture browser workflows as animated GIFs. |
-| Direct browser decisions | `ai_action`, `ai_assert`, `ai_navigate` | Use direct Jev structured decisions to select from deterministic ChromeUse-owned actions, evaluate page conditions, or navigate one atomic action at a time. |
-| Workspace foundation | workspace tools | Work with a user-selected local folder through the Chrome extension side panel and browser-granted File System Access handles. |
-| Document foundation | `markdown_render` | Render safe markdown from supplied text or selected workspace files. PDF and Office viewers are placeholder/extensible shells in this foundation phase. |
-
-See [`docs/TOOLS.md`](docs/TOOLS.md) for detailed tool inputs, targeting rules, and example workflows.
-
-## How It Works
-
-```text
-OpenCode / MCP client
-    |  MCP protocol over stdio
-    v
-gateway
-    |\
-    | \  SERVER: owns HTTP gateway at 127.0.0.1:8766
-    |  \         + WebSocket bridge at ws://127.0.0.1:8765
-    |   +---- PROXY: forwards to existing SERVER over HTTP
-    |
-    |  WebSocket-only browser path ws://127.0.0.1:8765
-    v
-Chrome extension
-
-Direct fallback-capable path:
-
-MCP client -> mcp-server -> WebSocket or native-host -> Chrome extension
+```
+agent harnesses (OpenCode, Claude Code, ...)
+        │  MCP over streamable HTTP, Authorization: Bearer <token>
+        ▼
+daemon  (127.0.0.1:8770, launchd: com.chromeuse.daemon)
+        │  sessions, tab ownership, per-tab queues, Jev browse loop
+        │  WebSocket 127.0.0.1:8771 (same token)
+        ▼
+extension offscreen document   (holds the socket)
+        │  chrome.runtime port
+        ▼
+extension service worker       (windows, tab groups, placement)
+        │  chrome.debugger, one attachment per tab
+        ▼
+tabs
 ```
 
-The gateway entry point, `gateway/dist/index.js`, lets multiple OpenCode instances share one ChromeUse extension connection by default with no environment variables. The first process binds the local HTTP gateway on `127.0.0.1:8766` and owns the WebSocket bridge on `127.0.0.1:8765`. Later OpenCode instances detect that compatible gateway and become PROXY processes that forward tool calls to the SERVER instead of opening another extension bridge.
+| Path | Contents |
+| --- | --- |
+| `daemon/` | Node daemon: HTTP MCP endpoint, sessions, scheduler, Jev loop, CLI (`token`, `install-launchd`) |
+| `extension-v2/` | MV3 extension: offscreen socket, service worker, CDP snapshot/act, popup |
+| `shared/` | Protocol types shared by the daemon and the extension (`@chromeuse/shared/v2`) |
+| `docs/plans/` | Design records |
 
-The gateway MVP is WebSocket-only for browser traffic. By default the extension auto-connects in the background to `ws://127.0.0.1:8765` and keeps the connection alive across service-worker restarts, so ChromeUse is ready to use without any manual step. The side panel still exposes **Connect**/**Disconnect** for manual control; clicking **Disconnect** opts out of background auto-connect until you click **Connect** again. Auto-connect is not a native messaging bypass and it still requires a gateway SERVER process to be running.
+## Install
 
-Native messaging remains available only on the direct `mcp-server/dist/index.js` path. In that path, the extension asks Chrome to launch the native host. The native host opens a Unix socket at `/tmp/chromeuse-browser-bridge-{user}/{pid}.sock`, and the MCP server connects to that socket when a client makes a tool call.
+Requires Node 20+, Chrome, macOS (for launchd) and an OpenRouter API key.
 
-For more implementation detail, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+1. Build:
 
-## Workspace and Documents
+   ```sh
+   just install        # npm install && npm run build
+   ```
 
-The unified workspace/document foundation is part of the ChromeUse extension. It is not a bundled copy of Chrome Reader, and it does not import Chrome Reader's full sidebar, command system, themes, Mermaid, KaTeX, or plugin stack.
+2. Load the extension: open `chrome://extensions`, enable Developer mode, choose **Load unpacked** and select `extension-v2/dist`.
 
-The side panel can act as the user's workspace surface:
+3. Store the OpenRouter key where the daemon reads it (never in `config.toml`):
 
-1. Open the ChromeUse side panel.
-2. Select a local folder when prompted by the browser.
-3. Browse the lazily loaded file tree.
-4. Open markdown files in a safe preview/source flow.
-5. Use workspace MCP tools and `markdown_render` where available to inspect workspace files from an MCP client.
+   ```sh
+   mkdir -p ~/.chromeuse
+   echo 'OPENROUTER_API_KEY=sk-or-...' > ~/.chromeuse/env
+   chmod 600 ~/.chromeuse/env
+   ```
 
-Workspace access uses Chromium's File System Access API. The browser requires an explicit user gesture to grant folder access, and permissions can be revoked or lost after browser/profile changes. If access is lost, reselect the workspace folder from the side panel.
+   The daemon skips this file if it is readable by group or other.
 
-This foundation phase focuses on browser-only local workspace access and markdown rendering. PDF, PowerPoint, Excel, Word, binary, large-file, and unknown document support is intentionally placeholder/extensible: the UI routes these files to clear shells that explain current limits and future viewer work. Future local companion mode can move heavyweight parsing, indexing, conversion, and binary document processing outside the browser sandbox.
+4. Run the daemon under launchd:
 
-## Requirements
+   ```sh
+   node daemon/dist/index.js install-launchd
+   # then run the "launchctl bootstrap gui/$(id -u) ..." command it prints
+   ```
 
-- Node.js 20 or newer
-- macOS or Linux
-- A Chromium-based browser: Chrome, Brave, Arc, Edge, Chromium, Vivaldi, or Opera
-- An MCP client that can run a local stdio server
-- An OpenRouter API key only if you want to use `ai_action`, `ai_assert`, or `ai_navigate`
+5. Print the token with `just token` (creates `~/.chromeuse/token` on first run) and paste it into the extension popup. The popup should show **connected**.
 
-Windows is not currently supported because the native host and MCP server communicate over Unix domain sockets.
+## Harness configuration
 
-## Quick Start
-
-### 1. Clone and Install
-
-```sh
-git clone https://github.com/huynle/chromeuse-mcp.git
-cd chromeuse-mcp
-./scripts/install.sh
-```
-
-The installer:
-
-- Installs npm workspace dependencies.
-- Builds `shared`, `extension`, `native-host`, `mcp-server`, and `gateway`.
-- Installs native messaging host manifests for supported Chromium browsers.
-- Prints the extension loading instructions.
-
-### 2. Load the Extension
-
-1. Open `chrome://extensions` in your Chromium browser.
-2. Enable **Developer mode**.
-3. Click **Load unpacked**.
-4. Select the `extension/` directory from this repository.
-5. Copy the extension ID shown on the extension card.
-
-### 3. Register Your Extension ID
-
-Chrome native messaging requires each extension ID to be explicitly allowed. Re-run the installer with the ID from `chrome://extensions`:
-
-```sh
-./scripts/install.sh --extension-id=<your-extension-id>
-```
-
-You can register multiple IDs in one run:
-
-```sh
-./scripts/install.sh --extension-id=<id-1> --extension-id=<id-2>
-```
-
-Or use an environment variable:
-
-```sh
-CHROMEUSE_EXTENSION_IDS=<id-1>,<id-2> ./scripts/install.sh
-```
-
-### 4. Configure Your MCP Client
-
-For OpenCode and other clients that may start multiple ChromeUse MCP instances, use the gateway entry point. The normal setup is zero-config: use `node` with one absolute `gateway/dist/index.js` argument and no gateway environment variables.
-
-For OpenCode, add a local MCP entry to `~/.config/opencode/opencode.jsonc`:
+Point any MCP client that supports remote (streamable HTTP) servers at `http://127.0.0.1:8770/mcp` with the bearer token. OpenCode:
 
 ```jsonc
 {
   "mcp": {
-    "chromeuse-mcp": {
-      "type": "local",
-      "enabled": true,
-      "command": [
-        "node",
-        "/absolute/path/to/chromeuse-mcp/gateway/dist/index.js"
-      ],
-      "environment": {
-        "CHROMEUSE_JEV_API_KEY": "{env:OPENROUTER_API_KEY}",
-        "CHROMEUSE_JEV_BASE_URL": "https://openrouter.ai/api/v1",
-        "CHROMEUSE_JEV_MODEL": "typesafe/jev-1.13"
-      },
-      "timeout": 120000
-    }
-  }
-}
-```
-
-Use the absolute path to your checkout. For example, if you cloned this repository to `/Users/alice/projects/chromeuse-mcp`, use `/Users/alice/projects/chromeuse-mcp/gateway/dist/index.js`. The two-minute timeout allows autonomous `ai_navigate` calls to complete multiple inference and browser-action steps.
-
-When OpenCode starts, the first ChromeUse MCP process becomes the gateway SERVER and listens on `127.0.0.1:8766` plus `ws://127.0.0.1:8765`. Additional OpenCode TUI instances become PROXY processes and share the same browser extension connection. Keep at least one OpenCode instance that owns the gateway running if you want the side panel to stay connected.
-
-Other MCP clients commonly use this shape:
-
-```json
-{
-  "mcpServers": {
     "chromeuse": {
-      "command": "node",
-      "args": ["/absolute/path/to/chromeuse-mcp/gateway/dist/index.js"]
+      "type": "remote",
+      "url": "http://127.0.0.1:8770/mcp",
+      "headers": { "Authorization": "Bearer {file:~/.chromeuse/token}" }
     }
   }
 }
 ```
 
-Restart your MCP client after changing its config.
+## Tools
 
-The three optional AI tools use OpenRouter's raw `POST /api/v1/systemone`
-contract with direct `typesafe/jev-1.13`. They do not call chat completions,
-Jev Router, or a fallback model. ChromeUse constructs at most 255 deterministic
-atomic candidates; Jev can select only their opaque IDs. Text and URLs must be
-present verbatim in quoted goal text, structured context, explicit URLs/emails/
-numbers, or current page content. Missing values, visual-only tasks, low
-confidence, insufficient candidates, excessive risk, malformed responses, and
-cancellation stop safely instead of generating or inferring parameters.
+Every tool except `session_open` takes the `session` handle; tab tools also take `tab_id`.
 
-Optional direct-Jev settings:
+| Tool | Purpose |
+| --- | --- |
+| `session_open` | Open a private session (optional `label` shown on the tab group) and get its handle. |
+| `session_close` | Finish the session and hand its tabs to the user; the agent loses control of them. |
+| `tab_create` | Open a background tab in the session, optionally at a URL. Returns `tab_id`. |
+| `tab_list` | List the session's own tabs. |
+| `tab_close` | Close one of the session's tabs. |
+| `screenshot` | Capture the visible part of a tab (jpeg or png). |
+| `observe` | URL, title, visible text, numbered element table with supported operations, and a fingerprint for `act`. |
+| `act` | One operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`) against the latest observation; returns `stale_page` if the page changed. |
+| `browse` | Let Jev pursue a natural-language goal until DONE, BLOCKED, no progress, `max_steps` or Stop. Returns status, step trace, final page and model usage/cost. |
+| `navigate` | Open an http(s) URL, or go back/forward/reload; waits for load (up to 15 s). |
+| `read_text` | Full text of the page (not just the visible part), up to `max_length`. |
+| `debug_logs` | Recent console messages or network requests of a tab. |
 
-- `CHROMEUSE_JEV_API_KEY`: OpenRouter API key. AI tools are absent when unset.
-- `CHROMEUSE_JEV_BASE_URL`: defaults to `https://openrouter.ai/api/v1`.
-- `CHROMEUSE_JEV_MODEL`: defaults to `typesafe/jev-1.13`.
-- `CHROMEUSE_JEV_ACTION_THRESHOLD`: defaults to `0.80`.
-- `CHROMEUSE_JEV_ASSERT_THRESHOLD`: defaults to `0.80`.
-- `CHROMEUSE_JEV_SUFFICIENCY_THRESHOLD`: defaults to `0.80`.
-- `CHROMEUSE_JEV_MAX_AUTO_RISK`: defaults to `1.0` on Jev's 0–2 risk scale.
+## Agent etiquette
 
-Thresholds are provisional and must be calibrated against recorded browser
-evaluations. Invalid, nonnumeric, nonfinite, or out-of-range settings fail fast.
-Keep the two-minute MCP timeout until measured live multi-step runs support a
-lower value.
+- Call `session_open` once per agent or subagent, and never share the handle.
+- Prefer `browse` for multi-step goals and `observe` / `act` for precise control. `browse` returning DONE is a claim, so check the page with `observe`, `read_text` or `screenshot`.
+- Close throwaway tabs with `tab_close` when you are done with them.
+- Call `session_close` when finished. Remaining tabs move into the user's window as a collapsed `✓ <label>` group for review. Sessions left open are handed over the same way when the agent's connection ends or after the idle timeout.
 
-Optional gateway environment variables:
+## Extension popup
 
-- `CHROMEUSE_GATEWAY_MODE`: optional. Leave unset for normal automatic gateway behavior. Unset, `auto`, or `server` uses automatic HTTP gateway election. The first process becomes SERVER; later compatible processes become PROXY automatically. Use `stdio` or `direct` only when debugging the gateway without HTTP election.
-- `CHROMEUSE_HTTP_PORT`: local HTTP gateway port used by SERVER and PROXY processes. Use the same value for all OpenCode instances that should share one extension connection. Default: `8766`. The project uses `8766` instead of common app development ports such as `3000` so the HTTP gateway sits next to the WebSocket bridge default, `8765`, without colliding with typical web apps.
-- `CHROMEUSE_WS_PORT`: WebSocket bridge port that the ChromeUse side panel connects to. Default: `8765`.
-- `CHROMEUSE_CLIENT_ID`: optional label for identifying a client instance in logs or diagnostics.
+- Connection status and the daemon token field (plus the daemon port).
+- Placement setting: new agent tabs open in **their own window** (default, fastest) or in **my current window**. Agents never switch your current tab.
+- Active sessions, each with **Show** (bring its window to the front) and **Stop**, plus **Stop all**.
+- **Finished** list of handed-over sessions, with **Close** per session and **Close all finished**.
 
-If you need the older native messaging fallback behavior, configure the direct MCP server instead. This is a different mode from the automatic gateway: `mcp-server/dist/index.js` does not participate in HTTP SERVER/PROXY election and is intended for direct WebSocket or native messaging fallback use.
+## Configuration
 
-```json
-{
-  "mcpServers": {
-    "chromeuse": {
-      "command": "node",
-      "args": ["/absolute/path/to/chromeuse-mcp/mcp-server/dist/index.js"]
-    }
-  }
-}
-```
+The daemon reads `~/.chromeuse/config.toml` (or `$CHROMEUSE_HOME/config.toml`). Environment variables override it.
 
-Use `gateway/dist/index.js` for shared OpenCode gateway behavior. Use `mcp-server/dist/index.js` when you specifically need direct native messaging fallback.
+| `config.toml` key | Environment variable | Default |
+| --- | --- | --- |
+| `mcp_port` | `CHROMEUSE_MCP_PORT` | `8770` |
+| `extension_port` | `CHROMEUSE_EXTENSION_PORT` | `8771` |
+| `idle_timeout_minutes` (0 disables) | `CHROMEUSE_IDLE_TIMEOUT_MINUTES` | `30` |
+| `browse_concurrency` (1–64) | `CHROMEUSE_BROWSE_CONCURRENCY` | `8` |
+| `jev_model` | `JEV_MODEL` | `typesafe/jev-1.13` |
+| `text_model` | `TEXT_MODEL` | `inception/mercury-2.5` |
+| `allowed_origins` (array) | `CHROMEUSE_ALLOWED_ORIGINS` (comma-separated) | none |
 
-### 5. Verify the Connection
+The following settings come from the environment (or `~/.chromeuse/env`) only:
 
-1. Restart your MCP client so it starts `gateway/dist/index.js`.
-2. Open a normal web page in the browser where the extension is loaded.
-3. The extension auto-connects to the localhost WebSocket transport in the
-   background. Open the ChromeUse MCP side panel from the extension toolbar to
-   confirm the status shows **Connected** (or click **Connect** if you had
-   previously disconnected).
-4. Ask your MCP client to call `tabs_context`.
-5. Use one returned `tabId` with `read_page` or `computer` screenshot.
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | Key for Jev and the text model | required for `browse` |
+| `TEXT_MODEL_API_KEY` | Separate key for the text model | OpenRouter key |
+| `TEXT_MODEL_BASE_URL` | OpenAI-compatible base URL for the text model | OpenRouter |
+| `TEXT_MODEL_REASONING` | Reasoning effort for the text model, or `none` | `none` |
+| `TEXT_MODEL_FALLBACK` | Second text model tried once if the first is slow or fails; `none` disables | `google/gemini-2.5-flash-lite` |
+| `TEXT_MODEL_TIMEOUT_MS` | Per-attempt budget for the text model (500–60000) | `3000` |
+| `CHROMEUSE_HOME` | Home directory for token, config and env | `~/.chromeuse` |
+| `CHROMEUSE_LOG` | `debug` for verbose logs | info |
 
-The WebSocket bridge listens on `127.0.0.1:8765` by default. Keep that port free for the side panel Connect flow. Advanced setups can set `CHROMEUSE_WS_PORT=<port>` in the MCP client server environment, but the extension must connect to the same WebSocket URL. Gateway mode does not use native messaging fallback; configure `mcp-server/dist/index.js` directly if you need that fallback.
+## Security
 
-If the server cannot connect, see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+- Both ports bind to `127.0.0.1` only.
+- The MCP endpoint requires `Authorization: Bearer <token>`; the extension socket requires the same token. The token lives in `~/.chromeuse/token`, readable only by its owner.
+- Requests with an `Origin` header not listed in `allowed_origins` are rejected, so web pages cannot call the daemon. The `Host` header must be `127.0.0.1`, `localhost` or `[::1]`.
+- `debug_logs` never stores headers, cookies, bodies or query strings.
+- API keys are read from the environment or `~/.chromeuse/env` only; a key in `config.toml` is ignored with a warning.
+- Agents act in your real, signed-in browser. Only connect agents you trust.
 
-## Typical Workflows
+See `SECURITY.md` for reporting vulnerabilities.
 
-### Inspect and Click an Element
-
-1. Call `tabs_context` to get the target `tabId`.
-2. Call `read_page` with `format: "accessibility"`.
-3. Use a returned `ref_N` with `computer` action `click`, or call `find` with a natural-language query and click the returned ref.
-
-### Fill a Form
-
-1. Call `read_page` or `find` to locate form fields.
-2. Use `form_input` with each field `ref` and desired value.
-3. Use `computer` with a submit button `ref`, or press `Enter` with `computer` action `key`.
-
-### Debug a Web App
-
-1. Call `read_console_messages` to inspect browser logs.
-2. Call `read_network_requests` to inspect recent requests.
-3. Call `javascript_tool` for targeted page-state inspection.
-4. Capture screenshots with `computer` to verify visual state.
-
-### Record a GIF
-
-1. Call `gif_creator` with `action: "start"` and a `tabId`.
-2. Perform browser actions.
-3. Call `gif_creator` with `action: "screenshot"` when you want to capture a frame.
-4. Call `gif_creator` with `action: "stop"` to generate the GIF.
-
-## Development
-
-Run the development watcher:
+## Testing
 
 ```sh
-./scripts/dev.sh
+just verify          # typecheck + offline tests + build (+ npm audit)
 ```
 
-This builds `shared`, `native-host`, and `mcp-server` once, then starts the extension build in watch mode. After extension source changes, reload the unpacked extension in `chrome://extensions`. After changes to `shared` or `native-host`, re-run the script.
+Unit tests never open a browser or call a paid API. The live scripts need the daemon running and the extension connected:
 
-Build everything:
+| Recipe | Checks | Cost |
+| --- | --- | --- |
+| `just smoke` | sessions, tabs, screenshot, navigate, read_text, debug_logs | free |
+| `just isolation` | three parallel sessions stay isolated | free |
+| `just guards` | freshness and occlusion guards on local fixture pages | free |
+| `just concurrency` | latency of concurrent calls across sessions | free |
+| `just live` | `browse` on Wikipedia and Google Flights | **paid** (OpenRouter) |
+
+Measured on the development machine: the 3-agent isolation run went from 20.6 s to 1.95 s after moving the socket into the offscreen document; live `browse` takes about 3.6–10 s on Wikipedia and 10–20 s on Google Flights.
+
+## Known limitations
+
+- Scrolling inside inner panels is not supported; `SCROLL_UP` / `SCROLL_DOWN` scroll the page.
+- Jev does not yet close popups or overlays that cover its target.
+- `tab_create` returns before the page has loaded; use `navigate` or `browse` next.
+- Background tabs are slower in "My current window" placement because Chrome throttles tabs you aren't looking at.
+- No iframes, shadow DOM, canvas content or file uploads.
+
+## Recovering v1
+
+The previous native-messaging version (gateway, stdio MCP server, native host, v1 extension) was removed. Restore it with:
 
 ```sh
-./scripts/build.sh
+git checkout v1-final
 ```
-
-Run tests:
-
-```sh
-npm test
-```
-
-Clean generated output:
-
-```sh
-npm run clean
-```
-
-## Project Structure
-
-```text
-chromeuse-mcp/
-├── shared/          # Wire protocol types, codecs, and tool name constants
-├── extension/       # Chrome MV3 extension
-│   ├── src/
-│   │   ├── service-worker/   # Tool handlers, CDP, tab management, bridge logic
-│   │   ├── content-scripts/  # Accessibility tree, refs, visual indicator
-│   │   ├── offscreen/        # GIF encoder
-│   │   └── sidepanel/        # Side panel UI, workspace tree, document preview
-│   ├── sidepanel.html
-│   └── manifest.json
-├── native-host/     # Chrome Native Messaging host and manifest installer
-├── mcp-server/      # Direct MCP stdio server with native messaging fallback
-├── gateway/         # Multi-OpenCode stdio gateway with HTTP SERVER/PROXY sharing
-├── scripts/         # Install, build, and development scripts
-└── docs/            # User and maintainer documentation
-```
-
-## Security Notes
-
-ChromeUse MCP intentionally gives local MCP clients powerful browser automation capabilities. Treat it like a local development tool, not a sandbox.
-
-- Only configure MCP clients you trust.
-- Tool calls can read page content, click buttons, type text, upload local files you specify, and execute JavaScript in pages.
-- The extension requests broad host permissions because it is designed to automate arbitrary pages.
-- Native messaging only allows registered extension IDs through Chrome's `allowed_origins` manifest field.
-- The WebSocket bridge listens on localhost only and is intended for trusted local MCP clients.
-- The MCP server communicates with MCP clients over stdio; it does not expose an HTTP API.
-
-See [`SECURITY.md`](SECURITY.md) for reporting vulnerabilities and recommended safe usage.
-
-## Troubleshooting
-
-Common issues are documented in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md), including the side panel Connect flow, WebSocket port conflicts, native host registration, extension IDs, browser reloads, and MCP client configuration.
-
-## Contributing
-
-Contributions are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening issues or pull requests.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT. See `LICENSE`.

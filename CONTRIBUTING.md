@@ -1,65 +1,37 @@
 # Contributing
 
-Thanks for helping improve ChromeUse MCP. This project is intended to be useful as a local developer tool, so reliability, clear behavior, and security awareness matter more than feature count.
+Thanks for helping improve ChromeUse. It is a local developer tool, so reliability, clear behavior, and security awareness matter more than feature count.
 
 ## Before You Start
 
 - Search existing issues and pull requests before opening a new one.
 - For bugs, include reproduction steps and environment details.
-- For feature requests, describe the workflow you want to enable and which MCP client you use.
+- For feature requests, describe the workflow you want to enable and which agent harness you use.
 - For security issues, do not open a public issue. Follow `SECURITY.md`.
 
 ## Development Setup
 
 ```sh
-npm install
-./scripts/build.sh
-npm test
+just install    # npm install && npm run build
+just verify     # typecheck, offline tests, build, audit
 ```
 
-For extension development:
-
-```sh
-./scripts/dev.sh
-```
-
-Reload the unpacked extension in `chrome://extensions` after extension changes.
+After changing `extension-v2/`, rebuild and reload the unpacked extension (`extension-v2/dist`) in `chrome://extensions`. After changing `daemon/`, rebuild and restart the daemon.
 
 ## Pull Request Checklist
 
 - Keep changes focused and minimal.
-- Update `README.md` or files in `docs/` when behavior, setup, or tool inputs change.
-- Add or update tests for behavior changes where practical.
-- Run `npm test` before opening the PR.
-- Run `./scripts/build.sh` before opening the PR.
-- Mention any manual browser testing you performed.
+- Update `README.md` when behavior, setup, configuration, or tool inputs change.
+- Add or update tests for behavior changes. Unit tests must not open a browser or call a paid API.
+- Run `just verify` before opening the PR.
+- Mention which live checks you ran (`just smoke`, `just isolation`, `just guards`, `just concurrency`, `just live`).
 
-## Code Style
+## Code Layout
 
-- TypeScript is used across the workspaces.
-- Keep shared protocol types in `shared/` when multiple components need them.
-- Keep browser-specific behavior inside `extension/`.
-- Keep MCP protocol behavior inside `mcp-server/`.
-- Keep native messaging and local process behavior inside `native-host/`.
+- `shared/`: protocol types used by both the daemon and the extension.
+- `daemon/`: MCP endpoint, sessions, scheduling, and the Jev `browse` loop.
+- `extension-v2/`: browser-specific behavior (tabs, windows, CDP, popup).
 
 ## Reporting Bugs
 
-Please include:
-
-- Operating system and version.
-- Browser name and version.
-- Node.js version.
-- MCP client name and version when relevant.
-- Steps to reproduce.
-- Expected behavior.
-- Actual behavior.
-- Relevant console output, MCP error text, or screenshots.
-
-## Feature Requests
-
-Good feature requests explain:
-
-- The user workflow or automation scenario.
-- Why existing tools are insufficient.
-- Any security or permission implications.
-- Whether the behavior belongs in the extension, native host, MCP server, or shared protocol.
+Please include your OS, Chrome version, Node.js version, agent harness, steps to reproduce, expected and actual behavior, and relevant daemon log output or MCP error text.

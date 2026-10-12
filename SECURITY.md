@@ -1,62 +1,45 @@
 # Security Policy
 
-ChromeUse MCP is a local browser automation tool for trusted users and trusted MCP clients. It is not a sandbox for untrusted prompts, untrusted agents, or untrusted MCP clients.
+ChromeUse is a local browser automation tool for trusted users and trusted agents. It is not a sandbox for untrusted prompts, untrusted agents, or untrusted MCP clients.
 
 ## Supported Versions
 
-The project is currently pre-1.0. Security fixes will target the latest commit on the default branch unless a release process is added later.
+The project is pre-1.0. Security fixes target the latest commit on the default branch.
 
 ## Reporting a Vulnerability
 
 Please report security issues privately instead of opening a public GitHub issue.
 
-Preferred process:
-
 1. Open a private vulnerability report on GitHub if available for this repository.
-2. If private reporting is not available, contact the maintainer through the GitHub profile associated with the repository.
-3. Include reproduction steps, impact, affected component, and any suggested mitigation.
+2. Otherwise, contact the maintainer through the GitHub profile associated with the repository.
+3. Include reproduction steps, impact, affected component (`daemon/`, `extension-v2/`, `shared/`), and any suggested mitigation.
 
 ## Security Model
 
-ChromeUse MCP assumes:
+ChromeUse assumes:
 
-- The local machine is trusted.
-- The configured MCP client is trusted.
+- The local machine and user account are trusted.
+- MCP clients holding the daemon token are trusted.
 - The browser profile is controlled by the user.
-- The loaded ChromeUse extension ID is intentionally registered in the native messaging manifest.
 
-ChromeUse MCP does not assume:
+ChromeUse does not assume web pages, prompts, or tool calls are safe.
 
-- Web pages are trusted.
-- Prompts sent to an MCP client are safe.
-- Tool calls are harmless.
-- JavaScript executed through `javascript_tool` is safe.
+Protections:
+
+- The daemon listens on `127.0.0.1` only (MCP on 8770, extension socket on 8771).
+- Both endpoints require the bearer token in `~/.chromeuse/token` (mode 0600, directory 0700).
+- The MCP endpoint rejects requests with a disallowed `Origin` or a non-local `Host` header.
+- Sessions can only reach their own tabs.
+- `debug_logs` never records headers, cookies, bodies, or query strings.
+- `OPENROUTER_API_KEY` is read from the environment or `~/.chromeuse/env` (must be 0600), never from `config.toml`.
 
 ## Important Risks
 
-A trusted MCP client with access to ChromeUse MCP can:
+An agent with the token can, in your signed-in browser:
 
-- Read visible page content and HTML.
-- Capture screenshots.
-- Click buttons and links.
-- Type into forms.
-- Upload local files explicitly passed to `file_upload`.
-- Inspect console and network activity.
-- Execute JavaScript in a page context.
-- Operate on authenticated browser sessions.
+- Read page content and capture screenshots.
+- Click, type, and select on any site.
+- Read console messages and request metadata of its tabs.
+- Send page content to the configured model provider when it uses `browse`.
 
-Use caution on production admin panels, payment flows, private accounts, and pages containing sensitive data.
-
-## Recommended Safe Usage
-
-- Use a dedicated browser profile for automation when possible.
-- Keep the extension unpacked only in browsers where you intend to use it.
-- Only register extension IDs you recognize.
-- Only configure trusted local MCP clients.
-- Review tool calls before allowing agents to operate on sensitive pages.
-- Prefer explicit `tabId` targeting.
-- Avoid `javascript_tool` with code from untrusted sources.
-
-## Network Exposure
-
-The MCP server uses stdio and does not expose an HTTP server. The native host communicates with the MCP server through a local Unix domain socket. Do not wrap or expose this server over a network unless you add your own authentication and understand the risks.
+Use caution on admin panels, payment flows, private accounts, and pages with sensitive data. Consider a dedicated Chrome profile for automation. Do not expose the daemon ports beyond localhost.

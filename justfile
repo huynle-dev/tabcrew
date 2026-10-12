@@ -1,72 +1,59 @@
 set shell := ["sh", "-uc"]
-version := `node -p "require('./package.json').version"`
 
 # Show available recipes.
 default:
     @just --list
 
-# Install dependencies, build packages, and install native host manifests.
-install *ARGS:
-    ./scripts/install.sh {{ARGS}}
+# Install dependencies and build every package.
+install:
+    npm install
+    npm run build
 
-# Register the loaded unpacked extension ID with native messaging.
-register extension_id:
-    ./scripts/install.sh --extension-id={{extension_id}}
+# Build shared, daemon and extension-v2 (in that order).
+build:
+    npm run build
 
-# Start extension watch mode for local development.
-dev:
-    ./scripts/dev.sh
-
-# Remove build and release outputs.
-clean:
-    npm run clean
-    rm -rf release
-
-# Typecheck packages that expose typecheck scripts.
+# Typecheck every package.
 typecheck:
     npm run typecheck
 
-# Run all workspace tests.
+# Run the offline unit tests of every package (no browser, no paid API).
 test:
     npm test
 
-# Build all workspaces, including extension typecheck.
-build:
-    ./scripts/build.sh
+# Remove build outputs.
+clean:
+    npm run clean
 
-# Check dependency advisories at moderate severity or higher.
-audit:
+# Full local check: typecheck, test, build, then a dependency audit.
+verify: typecheck test build
     npm audit --audit-level=moderate
 
-# Fast local confidence check for quick iteration.
-quick: typecheck build
+# Print the steps to run the daemon under launchd (runs nothing).
+daemon-install:
+    @echo "1. node daemon/dist/index.js install-launchd"
+    @echo "2. Run the 'launchctl bootstrap gui/\$(id -u) ...' command it prints."
 
-# Full local verification before pushing or cutting a release artifact.
-verify: typecheck test build audit
+# Print the daemon's auth token (paste it into the extension popup).
+token:
+    node daemon/dist/index.js token
 
-# Build local artifacts for quick manual testing without running the full test suite.
-quick-release: clean build
-    mkdir -p release release-extension
-    cp extension/manifest.json release-extension/
-    cp extension/sidepanel.html release-extension/
-    cp extension/sidepanel.css release-extension/
-    cp -R extension/assets release-extension/assets
-    cp -R extension/dist release-extension/dist
-    (cd release-extension && zip -qr "../release/chromeuse-mcp-extension-v{{version}}.zip" .)
-    rm -rf release-extension
-    npm pack --workspace @chromeuse/shared --pack-destination release
-    npm pack --workspace @chromeuse/native-host --pack-destination release
-    npm pack --workspace @chromeuse/mcp-server --pack-destination release
-    shasum -a 256 release/* > release/SHA256SUMS
-    @printf '\nRelease artifacts written to release/\n'
+# Live check against the running daemon and extension: basic tools.
+smoke:
+    node daemon/scripts/smoke.mjs
 
-# Full verified local release artifact build.
-release: verify quick-release
+# Live check: three sessions in parallel stay isolated.
+isolation:
+    node daemon/scripts/isolation.mjs
 
-# Print the unpacked extension directory to load in chrome://extensions.
-extension-path:
-    @pwd | sed 's#$#/extension#'
+# Live check: freshness and occlusion guards on local fixture pages.
+guards:
+    node daemon/scripts/guards.mjs
 
-# Print the MCP server entry point for client configuration.
-mcp-path:
-    @pwd | sed 's#$#/mcp-server/dist/index.js#'
+# Live check: concurrent calls across sessions and tabs.
+concurrency:
+    node daemon/scripts/concurrency.mjs
+
+# Paid live check: Jev browse on real sites (uses OpenRouter credits).
+live:
+    node daemon/scripts/live-browse.mjs
