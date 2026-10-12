@@ -14,7 +14,14 @@ import { log } from "./log.js";
 import { safeEqual } from "./token.js";
 
 /** Ops whose effect may have happened even if no response arrives. */
-export const MUTATING_OPS: ReadonlySet<V2Op> = new Set<V2Op>(["tab_create", "tab_close", "session_close", "act", "navigate"]);
+export const MUTATING_OPS: ReadonlySet<V2Op> = new Set<V2Op>([
+  "tab_create",
+  "tab_close",
+  "session_close",
+  "session_release",
+  "act",
+  "navigate",
+]);
 
 export const CLOSE_BAD_HELLO = 4401;
 export const CLOSE_REPLACED = 4409;

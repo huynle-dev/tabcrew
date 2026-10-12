@@ -4,12 +4,13 @@ import {
   TOKEN_KEY,
   parsePort,
   type BridgeStatus,
+  type PopupActionResult,
   type PopupCloseResult,
   type PopupRequest,
   type PopupState,
   type PopupStopResult,
 } from "../config.js";
-import { sessionRows } from "./view.js";
+import { finishedRows, sessionRows } from "./view.js";
 
 const STATUS_TEXT: Record<BridgeStatus, string> = {
   connected: "connected",
@@ -20,6 +21,19 @@ const STATUS_TEXT: Record<BridgeStatus, string> = {
 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+function button(text: string, onClick: () => void, opts: { title?: string; className?: string } = {}): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.textContent = text;
+  if (opts.title) b.title = opts.title;
+  if (opts.className) b.className = opts.className;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function plural(n: number): string {
+  return `${n} tab${n === 1 ? "" : "s"}`;
+}
 
 function send<T>(msg: PopupRequest): Promise<T> {
   return chrome.runtime.sendMessage(msg) as Promise<T>;
@@ -53,21 +67,66 @@ async function refresh(): Promise<void> {
     meta.textContent = ` ${row.meta}`;
     name.append(meta);
     li.append(name);
+    const actions = document.createElement("span");
+    actions.className = "actions";
+    actions.append(button("Show", () => void showSession(row.short_id), { title: "Bring this session's window to the front" }));
     if (row.action === "stop") {
-      const stop = document.createElement("button");
-      stop.textContent = "Stop";
-      stop.className = "danger";
-      stop.addEventListener("click", () => void stopSession(row.short_id));
-      li.append(stop);
+      actions.append(button("Stop", () => void stopSession(row.short_id), { className: "danger" }));
     } else if (row.action === "close_tabs") {
-      const close = document.createElement("button");
-      close.textContent = "Close tabs";
-      close.title = "Close this stopped session's tabs";
-      close.addEventListener("click", () => void closeStoppedTabs(row.short_id));
-      li.append(close);
+      actions.append(button("Close tabs", () => void closeStoppedTabs(row.short_id), { title: "Close this stopped session's tabs" }));
     }
+    li.append(actions);
     list.append(li);
   }
+
+  const finished = finishedRows(state.finished ?? []);
+  $("finished-section").hidden = finished.length === 0;
+  const flist = $<HTMLUListElement>("finished");
+  flist.replaceChildren();
+  for (const row of finished) {
+    const li = document.createElement("li");
+    li.className = "finished";
+    const name = document.createElement("span");
+    name.textContent = row.name;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = ` ${row.meta}`;
+    name.append(meta);
+    const actions = document.createElement("span");
+    actions.className = "actions";
+    actions.append(
+      button("Open", () => void openFinished(row.group_id), { title: "Expand this group and switch to it" }),
+      button("Close", () => void closeFinished(row.group_id), { title: "Close this finished session's tabs" }),
+    );
+    li.append(name, actions);
+    flist.append(li);
+  }
+}
+
+async function showSession(shortId: string): Promise<void> {
+  const result = await send<PopupActionResult>({ type: "v2:show_session", short_id: shortId }).catch(
+    (): PopupActionResult => ({ ok: false, error: "extension not responding" }),
+  );
+  if (!result.ok) $<HTMLParagraphElement>("stop-note").textContent = `Show failed: ${result.error}`;
+}
+
+async function openFinished(groupId: number): Promise<void> {
+  const result = await send<PopupActionResult>({ type: "v2:open_finished", group_id: groupId }).catch(
+    (): PopupActionResult => ({ ok: false, error: "extension not responding" }),
+  );
+  if (!result.ok) $<HTMLParagraphElement>("finished-note").textContent = `Open failed: ${result.error}`;
+  void refresh();
+}
+
+async function closeFinished(groupId: number | null): Promise<void> {
+  const msg: PopupRequest = groupId === null ? { type: "v2:close_all_finished" } : { type: "v2:close_finished", group_id: groupId };
+  const result = await send<PopupCloseResult>(msg).catch(
+    (): PopupCloseResult => ({ ok: false, error: "extension not responding" }),
+  );
+  $<HTMLParagraphElement>("finished-note").textContent = result.ok
+    ? `Closed ${plural(result.closed_tabs)}.`
+    : `Close failed: ${result.error}`;
+  void refresh();
 }
 
 async function stopSession(shortId: string | null): Promise<void> {
@@ -87,7 +146,7 @@ async function closeStoppedTabs(shortId: string): Promise<void> {
     (): PopupCloseResult => ({ ok: false, error: "extension not responding" }),
   );
   $<HTMLParagraphElement>("stop-note").textContent = result.ok
-    ? `Closed ${result.closed_tabs} tab${result.closed_tabs === 1 ? "" : "s"} of ${shortId}.`
+    ? `Closed ${plural(result.closed_tabs)} of ${shortId}.`
     : `Close failed: ${result.error}`;
   void refresh();
 }
@@ -118,6 +177,7 @@ $("save-port").addEventListener("click", async () => {
 });
 
 $("stop-all").addEventListener("click", () => void stopSession(null));
+$("close-all-finished").addEventListener("click", () => void closeFinished(null));
 
 void refresh();
 setInterval(() => void refresh(), 1500);

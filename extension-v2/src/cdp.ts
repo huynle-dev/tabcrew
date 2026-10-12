@@ -76,6 +76,20 @@ export class CdpManager {
     this.dropTabState(tabId);
   }
 
+  /**
+   * Detach from a tab we are handing back to the user (removes Chrome's "is debugging" bar) and
+   * drop its log buffers and waits. Never throws; detaches even if this worker never attached
+   * (an attachment from before a service-worker restart may still be live).
+   */
+  async detach(tabId: number): Promise<void> {
+    const pending = this.attached.get(tabId);
+    this.attached.delete(tabId);
+    // Let an in-flight attach finish first, so it cannot re-attach or restart buffers afterwards.
+    if (pending) await pending.catch(() => undefined);
+    await chrome.debugger.detach({ tabId }).catch(() => undefined);
+    if (!this.attached.has(tabId)) this.dropTabState(tabId);
+  }
+
   /** chrome.debugger.onEvent for one tab: feeds the log buffers and pending waits. */
   handleEvent(tabId: number, method: string, params: unknown): void {
     this.logs.handleEvent(tabId, method, params);

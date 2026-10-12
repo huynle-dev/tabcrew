@@ -10,6 +10,7 @@ import {
   PORT_KEY,
   TOKEN_KEY,
   loadConfig,
+  type PopupActionResult,
   type PopupCloseResult,
   type PopupRequest,
   type PopupState,
@@ -55,6 +56,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.windows.onRemoved.addListener((windowId) => {
   void tabs.handleWindowRemoved(windowId);
 });
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  void tabs.handleWindowFocused(windowId).catch(() => undefined);
+});
 chrome.debugger.onDetach.addListener((source, reason) => {
   cdp.handleDetach(source, reason);
   if (typeof source.tabId === "number") page.forget(source.tabId);
@@ -92,8 +96,15 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
         .listSessionGroups()
         .then((sessions) => stopped.annotate(sessions))
         .catch(() => []),
-    ]).then(([config, sessions]) => {
-      const state: PopupState = { status: bridge.status, port: config.port, token_set: config.token !== null, sessions };
+      tabs.listFinished().catch(() => []),
+    ]).then(([config, sessions, finished]) => {
+      const state: PopupState = {
+        status: bridge.status,
+        port: config.port,
+        token_set: config.token !== null,
+        sessions,
+        finished,
+      };
       sendResponse(state);
     });
     return true;
@@ -106,6 +117,23 @@ chrome.runtime.onMessage.addListener((message: PopupRequest, _sender, sendRespon
     void closeStoppedTabs(message.short_id).then(sendResponse);
     return true;
   }
+  // The remaining popup actions are direct user clicks, so focusing a window is allowed there.
+  if (message?.type === "v2:show_session") {
+    void popupAction(() => tabs.showSession(String(message.short_id))).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:open_finished") {
+    void popupAction(() => tabs.openFinished(message.group_id)).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:close_finished") {
+    void popupClose(() => tabs.closeFinished(message.group_id)).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "v2:close_all_finished") {
+    void popupClose(() => tabs.closeAllFinished()).then(sendResponse);
+    return true;
+  }
   return false;
 });
 
@@ -115,6 +143,23 @@ async function stopFromPopup(shortId: string | null): Promise<PopupStopResult> {
   const ids = shortId !== null ? [shortId] : (await tabs.listSessionGroups().catch(() => [])).map((s) => s.short_id);
   await stopped.add(ids).catch(() => undefined);
   return { ok: true };
+}
+
+async function popupAction(fn: () => Promise<void>): Promise<PopupActionResult> {
+  try {
+    await fn();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function popupClose(fn: () => Promise<{ closed_tabs: number }>): Promise<PopupCloseResult> {
+  try {
+    return { ok: true, ...(await fn()) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** Closing tabs from the popup is a user action, offered only for sessions the user stopped. */

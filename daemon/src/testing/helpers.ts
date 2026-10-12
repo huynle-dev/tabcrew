@@ -185,6 +185,10 @@ export class FakeExtension {
         this.groups.delete(req.session.short_id);
         return { closed_tabs: tabs.length };
       }
+      case "session_release": {
+        this.groups.delete(req.session.short_id);
+        return { kept_tabs: tabs.length, moved: true };
+      }
       case "screenshot":
         if (!tabs.some((t) => t.tab_id === args.tab_id)) throw new WireError({ code: "tab_not_owned", message: "x" });
         return { media_type: "image/png", data: "iVBORw0KGgo=", width: 800, height: 600 };

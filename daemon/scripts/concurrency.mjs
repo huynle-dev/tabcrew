@@ -21,5 +21,9 @@ const phase = async (name, fn) => {
 await phase("tab_list only (no debugger)", (x) => j("tab_list", { session: x.s }));
 await phase("observe only (snapshot)", (x) => j("observe", { session: x.s, tab_id: x.t }));
 await phase("observe + act(WAIT)", async (x) => { const o = await j("observe", { session: x.s, tab_id: x.t }); await j("act", { session: x.s, tab_id: x.t, fingerprint: o.fingerprint, operation: "WAIT" }); });
-for (const x of S) await j("session_close", { session: x.s });
+// session_close hands remaining tabs to the user; close ours first so nothing is left behind.
+for (const x of S) {
+  for (const t of (await j("tab_list", { session: x.s })).tabs ?? []) await j("tab_close", { session: x.s, tab_id: t.tab_id });
+  await j("session_close", { session: x.s });
+}
 await c.close();

@@ -10,6 +10,10 @@ export const GROUPS_KEY = "v2:groups";
 export const TAB_SESSIONS_KEY = "v2:tabSessions";
 /** short_ids the user stopped from the popup; pruned once their group is gone. */
 export const STOPPED_KEY = "v2:stoppedSessions";
+/** Groups of finished sessions handed to the user (groupId → label, time); pruned once the group is gone. */
+export const RELEASED_KEY = "v2:releasedGroups";
+/** Recently focused window ids, most recent first (picks where finished groups go). */
+export const FOCUS_ORDER_KEY = "v2:windowFocusOrder";
 
 export interface BridgeConfig {
   readonly token: string | null;
@@ -34,7 +38,11 @@ export type BridgeStatus = "connected" | "connecting" | "needs_token" | "unautho
 export type PopupRequest =
   | { type: "v2:get_state" }
   | { type: "v2:stop"; short_id: string | null }
-  | { type: "v2:close_session_tabs"; short_id: string };
+  | { type: "v2:close_session_tabs"; short_id: string }
+  | { type: "v2:show_session"; short_id: string }
+  | { type: "v2:open_finished"; group_id: number }
+  | { type: "v2:close_finished"; group_id: number }
+  | { type: "v2:close_all_finished" };
 
 export interface PopupSessionInfo {
   readonly short_id: string;
@@ -44,12 +52,21 @@ export interface PopupSessionInfo {
   readonly stopped?: boolean;
 }
 
+/** A finished session's group, handed to the user. */
+export interface PopupFinishedInfo {
+  readonly group_id: number;
+  readonly label: string;
+  readonly tab_count: number;
+}
+
 export interface PopupState {
   readonly status: BridgeStatus;
   readonly port: number;
   readonly token_set: boolean;
   readonly sessions: readonly PopupSessionInfo[];
+  readonly finished: readonly PopupFinishedInfo[];
 }
 
 export type PopupStopResult = { ok: true } | { ok: false; error: string };
 export type PopupCloseResult = { ok: true; closed_tabs: number } | { ok: false; error: string };
+export type PopupActionResult = { ok: true } | { ok: false; error: string };

@@ -12,20 +12,33 @@
  *   (unfocused) window. No window is ever focused; windows not created for a session are
  *   never touched.
  * - Every tab-scoped op goes through `assertOwned` (independent of the daemon's own check).
+ * - A finished session is released (`releaseSession`): its group moves into the user's window,
+ *   collapsed and retitled `✓ <label>` (which never parses as a session group), the debugger is
+ *   detached and the tabs stop being owned. Released group ids are kept in `ReleasedGroups`.
  */
 
 import {
   v2GroupTitle,
   v2ParseGroupTitle,
+  v2ReleasedGroupTitle,
   type V2Event,
   type V2SessionRef,
   type V2TabInfo,
 } from "@chromeuse/shared/v2";
-import { GROUPS_KEY, SESSION_WINDOWS_KEY, TAB_SESSIONS_KEY, type PopupSessionInfo } from "./config.js";
+import {
+  FOCUS_ORDER_KEY,
+  GROUPS_KEY,
+  SESSION_WINDOWS_KEY,
+  TAB_SESSIONS_KEY,
+  type PopupFinishedInfo,
+  type PopupSessionInfo,
+} from "./config.js";
 import { OpError } from "./errors.js";
+import { ReleasedGroups } from "./released.js";
 
 const NO_GROUP = -1;
 const BLANK_URL = "about:blank";
+const FOCUS_ORDER_MAX = 20;
 
 interface GroupEntry {
   groupId: number;
@@ -38,6 +51,8 @@ interface State {
   groups: Record<string, GroupEntry>;
   /** tabId → short_id, so onRemoved (when the tab can no longer be queried) knows the owner. */
   tabSessions: Record<string, string>;
+  /** Window ids in most-recently-focused order (first = latest). */
+  focusOrder: number[];
 }
 
 export type GroupsPayload = Extract<V2Event, { event: "groups" }>["groups"];
@@ -75,7 +90,10 @@ export class TabManager {
   /** Tabs we are closing on the daemon's behalf: no `tab_removed` echo for these. */
   private readonly expectedRemovals = new Set<number>();
 
-  constructor(private readonly emit: (event: V2Event) => void) {}
+  constructor(
+    private readonly emit: (event: V2Event) => void,
+    readonly released: ReleasedGroups = new ReleasedGroups(),
+  ) {}
 
   // ---------------------------------------------------------------------------
   // Ops
@@ -151,6 +169,99 @@ export class TabManager {
       await this.save();
       return { closed_tabs: closed };
     });
+  }
+
+  /**
+   * Hand a finished session's tabs to the user (op `session_release`) and forget the session.
+   * `releaseTab` detaches the debugger and drops per-tab caches. The group is retitled
+   * `✓ <label>`, moved into the user's window (see `pickUserWindow`) and collapsed; the user's
+   * active tab is restored if the move changed it, and no window is ever focused. If no user
+   * window exists the group stays where it is (`moved: false`). An emptied session window is
+   * closed by Chrome; a session window that still holds other tabs is left alone.
+   */
+  releaseSession(
+    session: V2SessionRef,
+    releaseTab: (tabId: number) => Promise<void>,
+  ): Promise<{ kept_tabs: number; moved: boolean }> {
+    const shortId = session.short_id;
+    return this.locks.run(`session:${shortId}`, async () => {
+      const primary = await this.resolveGroup(shortId);
+      const scanned = await this.scanGroups();
+      const entry = scanned.get(shortId);
+      const groupIds = [...new Set([...(primary !== null ? [primary] : []), ...(entry?.groupIds ?? [])])];
+      const state = await this.load();
+      const label = entry?.label ?? state.groups[shortId]?.label ?? session.label;
+      // Windows of any session (this one included) never receive a finished group.
+      const sessionWindows = new Set<number>(Object.values(state.sessionWindows));
+      for (const e of scanned.values()) sessionWindows.add(e.windowId);
+
+      const tabIds: number[] = [];
+      for (const groupId of groupIds) {
+        for (const t of await chrome.tabs.query({ groupId })) if (typeof t.id === "number") tabIds.push(t.id);
+      }
+      // From here on the tabs are the user's: no ownership, and closing them is never reported.
+      for (const id of tabIds) delete state.tabSessions[id];
+      for (const [tabId, owner] of Object.entries(state.tabSessions)) {
+        if (owner === shortId) delete state.tabSessions[tabId];
+      }
+      delete state.groups[shortId];
+      delete state.sessionWindows[shortId];
+      await this.save();
+      if (groupIds.length === 0) return { kept_tabs: 0, moved: false };
+
+      for (const id of tabIds) await releaseTab(id).catch(() => undefined);
+
+      const title = v2ReleasedGroupTitle(label);
+      const dest = await this.pickUserWindow(sessionWindows);
+      const previousActive = dest !== null ? await activeTabId(dest) : undefined;
+      let moved = dest !== null;
+      for (const groupId of groupIds) {
+        // Retitle first so nothing (reconcile, adoption) treats the group as a session group again.
+        await chrome.tabGroups.update(groupId, { title }).catch(() => undefined);
+        let finalId = groupId;
+        if (dest !== null) {
+          try {
+            const g = await chrome.tabGroups.move(groupId, { windowId: dest, index: -1 });
+            if (g && typeof g.id === "number") finalId = g.id;
+          } catch (err) {
+            moved = false;
+            console.warn(`[v2 tabs] could not move finished group ${groupId} to window ${dest}:`, err);
+          }
+        }
+        await chrome.tabGroups
+          .update(finalId, { title, collapsed: true })
+          .catch(() => chrome.tabGroups.update(finalId, { title }).catch(() => undefined));
+        await this.released.add(finalId, label);
+      }
+      if (dest !== null && previousActive !== undefined && (await activeTabId(dest)) !== previousActive) {
+        // Switches tabs inside that window only; it does not focus the window.
+        await chrome.tabs.update(previousActive, { active: true }).catch(() => undefined);
+      }
+      return { kept_tabs: tabIds.length, moved };
+    });
+  }
+
+  /**
+   * Where a finished group goes: the last-focused normal window if it is the user's (not
+   * incognito, not a session window), else the most recently focused such window, else null.
+   */
+  private async pickUserWindow(sessionWindows: ReadonlySet<number>): Promise<number | null> {
+    const usable = (w: chrome.windows.Window | null | undefined): w is chrome.windows.Window & { id: number } =>
+      !!w && typeof w.id === "number" && w.type === "normal" && !w.incognito && !sessionWindows.has(w.id);
+    const last = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+    if (usable(last)) return last.id;
+    const candidates: number[] = [];
+    for (const w of await chrome.windows.getAll({ windowTypes: ["normal"] }).catch(() => [])) {
+      if (usable(w)) candidates.push(w.id);
+    }
+    if (candidates.length === 0) return null;
+    const order = (await this.load()).focusOrder;
+    const rank = (id: number) => {
+      const i = order.indexOf(id);
+      return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    candidates.sort((a, b) => rank(a) - rank(b));
+    return candidates[0];
   }
 
   /**
@@ -238,6 +349,62 @@ export class TabManager {
     return payload;
   }
 
+  /** Popup Show (a user click): bring a session's window to the front. */
+  async showSession(shortId: string): Promise<void> {
+    const entry = (await this.scanGroups()).get(shortId);
+    if (!entry) throw new OpError("invalid_args", `no tab group for session ${shortId}`);
+    await chrome.windows.update(entry.windowId, { focused: true });
+  }
+
+  /** Finished (released) groups that still exist, newest first; forgets the ones that are gone. */
+  async listFinished(): Promise<PopupFinishedInfo[]> {
+    const live = new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g]));
+    const kept = await this.released.prune(new Set(live.keys()));
+    const out: (PopupFinishedInfo & { at: number })[] = [];
+    for (const [id, entry] of Object.entries(kept)) {
+      const groupId = Number(id);
+      const tab_count = (await chrome.tabs.query({ groupId })).length;
+      out.push({ group_id: groupId, label: entry.label, tab_count, at: entry.released_at });
+    }
+    out.sort((a, b) => b.at - a.at);
+    return out.map(({ at: _at, ...info }) => info);
+  }
+
+  /** Popup Open (a user click): expand a finished group, activate its first tab, focus its window. */
+  async openFinished(groupId: number): Promise<void> {
+    await this.requireReleased(groupId);
+    const group = await chrome.tabGroups.get(groupId);
+    await chrome.tabGroups.update(groupId, { collapsed: false });
+    const first = (await chrome.tabs.query({ groupId })).sort((a, b) => a.index - b.index)[0];
+    if (first && typeof first.id === "number") await chrome.tabs.update(first.id, { active: true });
+    await chrome.windows.update(group.windowId, { focused: true });
+  }
+
+  /** Popup Close: close a finished group's tabs. */
+  async closeFinished(groupId: number): Promise<{ closed_tabs: number }> {
+    await this.requireReleased(groupId);
+    const ids = (await chrome.tabs.query({ groupId })).map((t) => t.id).filter((id): id is number => typeof id === "number");
+    if (ids.length > 0) await chrome.tabs.remove(ids);
+    await this.released.remove(groupId);
+    return { closed_tabs: ids.length };
+  }
+
+  async closeAllFinished(): Promise<{ closed_tabs: number }> {
+    let closed = 0;
+    for (const f of await this.listFinished()) closed += (await this.closeFinished(f.group_id)).closed_tabs;
+    return { closed_tabs: closed };
+  }
+
+  private async requireReleased(groupId: unknown): Promise<void> {
+    if (typeof groupId !== "number" || !Number.isInteger(groupId) || !(await this.released.has(groupId))) {
+      throw new OpError("invalid_args", "not a finished session's group");
+    }
+    if (!(await chrome.tabGroups.get(groupId).catch(() => null))) {
+      await this.released.remove(groupId);
+      throw new OpError("invalid_args", "that group no longer exists");
+    }
+  }
+
   async listSessionGroups(): Promise<PopupSessionInfo[]> {
     const scanned = await this.scanGroups();
     const out: PopupSessionInfo[] = [];
@@ -267,6 +434,8 @@ export class TabManager {
       return;
     }
     if (typeof opener.groupId !== "number" || opener.groupId === NO_GROUP) return;
+    // Tabs opened from a finished (released) group belong to the user.
+    if (await this.released.has(opener.groupId)) return;
     let group: chrome.tabGroups.TabGroup;
     try {
       group = await chrome.tabGroups.get(opener.groupId);
@@ -278,6 +447,11 @@ export class TabManager {
     const shortId = parsed.short_id;
 
     await this.locks.run(`session:${shortId}`, async () => {
+      // The session may have been released while we waited for its lock.
+      const fresh = await chrome.tabGroups.get(group.id).catch(() => null);
+      if (!fresh || v2ParseGroupTitle(fresh.title ?? "")?.short_id !== shortId) return;
+      if (await this.released.has(group.id)) return;
+      group = fresh;
       let current: chrome.tabs.Tab;
       try {
         current = await chrome.tabs.get(tabId);
@@ -322,9 +496,22 @@ export class TabManager {
     if (!expected) this.emit({ type: "event", event: "tab_removed", short_id: shortId, tab_id: tabId });
   }
 
+  /** chrome.windows.onFocusChanged: remember focus order (finished groups go to the user's latest window). */
+  async handleWindowFocused(windowId: number): Promise<void> {
+    if (!Number.isInteger(windowId) || windowId < 0) return;
+    const state = await this.load();
+    if (state.focusOrder[0] === windowId) return;
+    state.focusOrder = [windowId, ...state.focusOrder.filter((id) => id !== windowId)].slice(0, FOCUS_ORDER_MAX);
+    await this.save();
+  }
+
   async handleWindowRemoved(windowId: number): Promise<void> {
     const state = await this.load();
     let changed = false;
+    if (state.focusOrder.includes(windowId)) {
+      state.focusOrder = state.focusOrder.filter((id) => id !== windowId);
+      changed = true;
+    }
     for (const [shortId, id] of Object.entries(state.sessionWindows)) {
       if (id === windowId) {
         delete state.sessionWindows[shortId];
@@ -424,7 +611,7 @@ export class TabManager {
   private load(): Promise<State> {
     if (this.state) return Promise.resolve(this.state);
     this.loading ??= chrome.storage.session
-      .get([SESSION_WINDOWS_KEY, GROUPS_KEY, TAB_SESSIONS_KEY])
+      .get([SESSION_WINDOWS_KEY, GROUPS_KEY, TAB_SESSIONS_KEY, FOCUS_ORDER_KEY])
       .then((stored) => {
         this.state ??= {
           sessionWindows: isRecord(stored[SESSION_WINDOWS_KEY])
@@ -432,6 +619,9 @@ export class TabManager {
             : {},
           groups: isRecord(stored[GROUPS_KEY]) ? (stored[GROUPS_KEY] as Record<string, GroupEntry>) : {},
           tabSessions: isRecord(stored[TAB_SESSIONS_KEY]) ? (stored[TAB_SESSIONS_KEY] as Record<string, string>) : {},
+          focusOrder: Array.isArray(stored[FOCUS_ORDER_KEY])
+            ? (stored[FOCUS_ORDER_KEY] as unknown[]).filter((v): v is number => Number.isInteger(v))
+            : [],
         };
         return this.state;
       })
@@ -447,6 +637,7 @@ export class TabManager {
       [SESSION_WINDOWS_KEY]: this.state.sessionWindows,
       [GROUPS_KEY]: this.state.groups,
       [TAB_SESSIONS_KEY]: this.state.tabSessions,
+      [FOCUS_ORDER_KEY]: this.state.focusOrder,
     });
   }
 }
@@ -461,6 +652,11 @@ export function requireTabId(args: { tab_id?: unknown }): number {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+async function activeTabId(windowId: number): Promise<number | undefined> {
+  const [tab] = await chrome.tabs.query({ windowId, active: true }).catch(() => []);
+  return typeof tab?.id === "number" ? tab.id : undefined;
 }
 
 async function isNormalWindow(windowId: number): Promise<boolean> {

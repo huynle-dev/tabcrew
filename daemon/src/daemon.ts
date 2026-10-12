@@ -34,7 +34,7 @@ export interface RunningDaemon {
   readonly bridge: ExtensionBridge;
   readonly scheduler: Scheduler;
   readonly observations: ObservationCache;
-  /** Close idle sessions now (also runs on a timer). */
+  /** End idle sessions now, handing their tabs to the user (also runs on a timer). */
   sweepIdle(): Promise<void>;
   close(): Promise<void>;
 }
@@ -139,13 +139,13 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
   }
 
   const closeIdle = async (session: Session): Promise<void> => {
-    // A stopped session's tabs stay open for inspection; only the session is forgotten.
-    const closeTabs = !session.stopped;
+    // Idle sessions hand their tabs to the user; a stopped session's tabs stay exactly where they are.
+    const handOver = !session.stopped;
     try {
-      await closeSession(ctx, session, closeTabs);
-      log.info(`session ${session.short_id} closed after idle timeout${closeTabs ? "" : " (stopped; tabs left open)"}`);
+      await closeSession(ctx, session, handOver);
+      log.info(`session ${session.short_id} ended after idle timeout${handOver ? " (tabs handed to the user)" : " (stopped; tabs left as they are)"}`);
     } catch (err) {
-      log.warn(`session ${session.short_id}: closing tabs failed (${(err as { code?: string }).code ?? "error"})`);
+      log.warn(`session ${session.short_id}: handing tabs over failed (${(err as { code?: string }).code ?? "error"})`);
     }
   };
   const sweepIdle = async (): Promise<void> => {

@@ -34,6 +34,15 @@ async function call(name, args) {
   try { json = JSON.parse(text); } catch {}
   return { error: r.isError ? json ?? { code: "unparsable" } : null, json, raw: r };
 }
+
+// session_close hands remaining tabs to the user; close ours first so nothing is left behind.
+async function finish(session) {
+  const tabs = (await call("tab_list", { session })).json?.tabs ?? [];
+  let closed = 0;
+  for (const t of tabs) if (!(await call("tab_close", { session, tab_id: t.tab_id })).error) closed++;
+  const res = await call("session_close", { session });
+  return { closed, kept: res.json?.kept_tabs ?? 0, error: res.error };
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const tools = (await client.listTools()).tools.map((t) => t.name);
@@ -153,8 +162,8 @@ try {
 } finally {
   if (!keepOpen) {
     for (const s of sessions) {
-      const c = await call("session_close", { session: s.handle });
-      check(`${s.label}: session closed with its tab`, !c.error && (c.json?.closed_tabs ?? 0) >= (s.tab ? 1 : 0), c.error?.code ?? `closed ${c.json?.closed_tabs}`);
+      const c = await finish(s.handle);
+      check(`${s.label}: tab closed and session ended, nothing handed over`, !c.error && c.closed >= (s.tab ? 1 : 0) && c.kept === 0, c.error?.code ?? `closed ${c.closed}, kept ${c.kept}`);
     }
   }
   await client.close();

@@ -160,6 +160,7 @@ describe("browse request and result", () => {
     expect(r.status).toBe("done");
     expect(r.note).toBe("DONE is Jev's claim; verify the page yourself with observe/read the result");
     expect(r.next).toMatch(/session_close/);
+    expect(r.next).toMatch(/review/);
     expect(r.steps).toEqual([
       { step: 1, operation: "CLICK", target: "1", label: "Open Where from?", probability: 0.9, confidence: 0.8, page_changed: true, decision_ms: expect.any(Number) },
       { step: 2, operation: "DONE", target: null, label: "DONE", probability: 0.9, confidence: 0.8, page_changed: false, decision_ms: expect.any(Number) },
@@ -364,6 +365,7 @@ describe("loop control", () => {
     expect(r.status).toBe("max_steps");
     expect(r.note).toBeUndefined();
     expect(r.next).toMatch(/session_close/);
+    expect(r.next).toMatch(/review/);
     expect(acts(ext)).toHaveLength(2);
     expect(decisionCalls()).toHaveLength(2);
   });

@@ -109,7 +109,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "session_open",
     description:
-      "Open a private browser session and get its handle. Open one session per agent or subagent, pass the handle on every call, and never share it. When your task is finished, call session_close so your tabs and window are closed.",
+      "Open a private browser session and get its handle. Open one session per agent or subagent, pass the handle on every call, and never share it. When your task is finished, call session_close: your tabs stay open for the user to review in their window (close any throwaway tabs first with tab_close).",
     inputSchema: {
       type: "object",
       properties: { label: { type: "string", description: "Short name shown on the tab group, e.g. your task." } },
@@ -118,7 +118,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "session_close",
     description:
-      "Close your session and all of its tabs (its window closes too). Call this as soon as you are done with the browser; do not leave sessions open.",
+      "Finish your session and hand its tabs to the user for review: they stay open, move into the user's window as a collapsed group, and you no longer control them. Close any throwaway tabs first with tab_close. Call this as soon as you are done with the browser; do not leave sessions open.",
     inputSchema: { type: "object", properties: { session: sessionProp }, required: ["session"] },
   },
   {
@@ -292,28 +292,33 @@ function onSession<T>(ctx: ToolContext, session: Session, fn: () => Promise<T>):
   });
 }
 
+export const HANDED_OVER_NOTE = "Your tabs were handed to the user for review; you no longer control them.";
+
 export interface CloseResult {
   closed: boolean;
-  closed_tabs: number;
+  kept_tabs: number;
+  moved?: boolean;
+  note?: string;
   tabs_left_open?: number;
 }
 
 /**
- * Forget a session now (later calls get bad_session, queued work is rejected), then close its
- * tabs in the browser after any in-flight session-level op. `closeTabs: false` leaves them open.
+ * Forget a session now (later calls get bad_session, queued work is rejected), then hand its tabs
+ * to the user (`session_release`) after any in-flight session-level op. Tabs are never closed.
+ * `handOver: false` (stopped sessions) leaves them exactly where they are.
  */
-export async function closeSession(ctx: ToolContext, session: Session, closeTabs = true): Promise<CloseResult> {
+export async function closeSession(ctx: ToolContext, session: Session, handOver = true): Promise<CloseResult> {
   const { registry, scheduler, observations, bridge } = ctx;
   const ref = sessionRef(session);
   const owned = session.tabs.size;
-  if (!registry.close(session)) return { closed: false, closed_tabs: 0 };
+  if (!registry.close(session)) return { closed: false, kept_tabs: 0 };
   scheduler.dropSession(ref.short_id, new DaemonError("bad_session", "session was closed"));
   observations.forgetSession(ref.short_id);
-  if (!closeTabs) return { closed: true, closed_tabs: 0, tabs_left_open: owned };
+  if (!handOver) return { closed: true, kept_tabs: 0, tabs_left_open: owned };
   return scheduler.runSession(ref.short_id, async () => {
-    if (!bridge.connected) return { closed: true, closed_tabs: 0, tabs_left_open: owned };
-    const result = await bridge.request(ref, "session_close", {});
-    return { closed: true, closed_tabs: result.closed_tabs };
+    if (!bridge.connected) return { closed: true, kept_tabs: 0, tabs_left_open: owned };
+    const result = await bridge.request(ref, "session_release", {});
+    return { closed: true, kept_tabs: result.kept_tabs, moved: result.moved, note: HANDED_OVER_NOTE };
   });
 }
 

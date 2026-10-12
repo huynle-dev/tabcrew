@@ -34,6 +34,15 @@ async function call(name, args) {
   return { error: r.isError ? json : null, json, raw: r };
 }
 
+// session_close hands remaining tabs to the user; close ours first so nothing is left behind.
+async function finish(session) {
+  const tabs = (await call("tab_list", { session })).json?.tabs ?? [];
+  let closed = 0;
+  for (const t of tabs) if (!(await call("tab_close", { session, tab_id: t.tab_id })).error) closed++;
+  const res = await call("session_close", { session });
+  return { closed, kept: res.json?.kept_tabs ?? 0, error: res.error };
+}
+
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
 console.log("tools:", tools.join(", "));
 
@@ -50,7 +59,7 @@ const [ta, tb] = await Promise.all([
 check("each session created its own tab in parallel", !ta.error && !tb.error, `${Date.now() - t0} ms; A=${ta.json?.tab_id} B=${tb.json?.tab_id}`);
 if (ta.error || tb.error) {
   console.log(`stopping: tab_create failed (${ta.error?.code ?? ""} ${tb.error?.code ?? ""}); is the extension connected?`);
-  for (const s of [a, b]) await call("session_close", { session: s.session });
+  for (const s of [a, b]) await finish(s.session);
   await client.close();
   process.exit(1);
 }
@@ -118,9 +127,10 @@ const textCross = await call("read_text", { session: b.session, tab_id: tabA });
 check("B cannot read A's text", textCross.error?.code === "tab_not_owned", textCross.error?.code);
 
 if (!keepOpen) {
-  const ca = (await call("session_close", { session: a.session })).json;
-  const cb = (await call("session_close", { session: b.session })).json;
-  check("sessions closed with their tabs", ca?.closed_tabs >= 1 && cb?.closed_tabs >= 1, `A closed ${ca?.closed_tabs}, B closed ${cb?.closed_tabs}`);
+  const ca = await finish(a.session);
+  const cb = await finish(b.session);
+  check("sessions cleaned up: tabs closed, nothing handed over", !ca.error && !cb.error && ca.closed >= 1 && cb.closed >= 1 && ca.kept === 0 && cb.kept === 0,
+    `A closed ${ca.closed} kept ${ca.kept}, B closed ${cb.closed} kept ${cb.kept}`);
   const after = await call("tab_list", { session: a.session });
   check("closed session handle no longer works", after.error?.code === "bad_session", after.error?.code);
 }

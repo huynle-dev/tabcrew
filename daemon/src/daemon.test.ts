@@ -200,7 +200,15 @@ describe("tools", () => {
     expect(again.ok === false && again.error.code).toBe("tab_not_owned");
 
     const closed = await call(client, "session_close", { session: B });
-    expect(closed).toEqual({ ok: true, value: { closed: true, closed_tabs: 1 } });
+    expect(closed).toEqual({
+      ok: true,
+      value: {
+        closed: true,
+        kept_tabs: 1,
+        moved: true,
+        note: "Your tabs were handed to the user for review; you no longer control them.",
+      },
+    });
     const after = await call(client, "tab_list", { session: B });
     expect(after.ok === false && after.error.code).toBe("bad_session");
   });
@@ -325,14 +333,15 @@ describe("tools", () => {
     expect(shot.ok).toBe(true);
   });
 
-  it("closes idle sessions and their tabs", async () => {
+  it("ends idle sessions by handing their tabs to the user", async () => {
     const { d, client } = await setup({ idleTimeoutMs: 50, sweepIntervalMs: 20 });
     const ext = await connectExtension(d);
     const s = await call(client, "session_open", {});
     if (!s.ok) throw new Error("open failed");
     await until(() => d.registry.size === 0);
-    await until(() => ext.requests.some((r) => r.op === "session_close"));
-    const req = ext.requests.find((r) => r.op === "session_close");
+    await until(() => ext.requests.some((r) => r.op === "session_release"));
+    expect(ext.requests.some((r) => r.op === "session_close")).toBe(false);
+    const req = ext.requests.find((r) => r.op === "session_release");
     expect(req?.session.short_id).toBe(s.value.short_id);
     const r = await call(client, "tab_list", { session: s.value.session });
     expect(r.ok === false && r.error.code).toBe("bad_session");

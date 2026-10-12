@@ -31,6 +31,11 @@ export async function handleRequest(req: V2Request, deps: OpDeps): Promise<unkno
       return deps.tabs.tabClose(session, args);
     case "session_close":
       return deps.tabs.sessionClose(session);
+    case "session_release":
+      return deps.tabs.releaseSession(session, async (tabId) => {
+        await deps.cdp.detach(tabId);
+        deps.page.forget(tabId);
+      });
     case "screenshot": {
       const tabId = requireTabId(args);
       await deps.tabs.prepareForPage(session, tabId);

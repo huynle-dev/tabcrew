@@ -413,3 +413,168 @@ describe("phase 6 ops", () => {
   });
 });
 
+
+describe("session_release", () => {
+  type Info = { tab_id: number };
+  const kept = (title: string) => [...fake.groups.values()].find((g) => g.title === title);
+
+  async function userWindow(focused = true) {
+    const win = fake.addWindow({ focused });
+    const tab = fake.addTab({ windowId: win.id, url: "https://user.example", active: true });
+    return { win, tab };
+  }
+
+  it("moves the group into the user's last-focused window, collapsed as ✓ label, without focusing or switching tabs", async () => {
+    const user = await userWindow();
+    const a1 = (await call(alice, "tab_create", { url: "https://a/1" })) as Info;
+    const a2 = (await call(alice, "tab_create", { url: "https://a/2" })) as Info;
+    const b = (await call(bob, "tab_create", {})) as Info;
+    const sessionWindow = fake.tabs.get(a1.tab_id)!.windowId;
+    await call(alice, "screenshot", { tab_id: a1.tab_id });
+    expect(cdp.logs.has(a1.tab_id)).toBe(true);
+    const forget = vi.spyOn(page, "forget");
+    fake.chrome.tabs.update.mockClear();
+
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 2, moved: true });
+
+    const group = kept("✓ alice")!;
+    expect(group).toBeTruthy();
+    expect(group.collapsed).toBe(true);
+    expect(group.windowId).toBe(user.win.id);
+    for (const id of [a1.tab_id, a2.tab_id]) {
+      expect(fake.tabs.get(id)).toMatchObject({ windowId: user.win.id, groupId: group.id, active: false });
+    }
+    expect(fake.chrome.tabGroups.move).toHaveBeenCalledWith(expect.any(Number), { windowId: user.win.id, index: -1 });
+    // The user's active tab and window focus are untouched; the emptied session window is gone.
+    expect(user.tab.active).toBe(true);
+    expect(fake.chrome.windows.update).not.toHaveBeenCalled();
+    expect(fake.chrome.tabs.update).not.toHaveBeenCalled();
+    expect(fake.windows.has(sessionWindow)).toBe(false);
+    // Debugger detached and per-tab caches dropped.
+    expect(fake.chrome.debugger.detach).toHaveBeenCalledWith({ tabId: a1.tab_id });
+    expect(fake.attachedDebuggee.has(a1.tab_id)).toBe(false);
+    expect(cdp.isAttached(a1.tab_id)).toBe(false);
+    expect(cdp.logs.has(a1.tab_id)).toBe(false);
+    expect(forget).toHaveBeenCalledWith(a1.tab_id);
+    expect(forget).toHaveBeenCalledWith(a2.tab_id);
+    // The agent lost control; nothing was reported as removed, even when the user closes them later.
+    await expect(call(alice, "screenshot", { tab_id: a1.tab_id })).rejects.toMatchObject({ code: "tab_not_owned" });
+    expect(await call(alice, "tab_list")).toEqual({ tabs: [] });
+    await fake.chrome.tabs.remove(a1.tab_id);
+    await tabs.handleTabRemoved(a1.tab_id);
+    expect(events).toEqual([]);
+    const stored = await fake.chrome.storage.session.get(["v2:releasedGroups", "v2:groups", "v2:sessionWindows", "v2:tabSessions"]);
+    expect(Object.keys(stored["v2:releasedGroups"] as object)).toEqual([String(group.id)]);
+    expect(Object.keys(stored["v2:groups"] as object)).toEqual([bob.short_id]);
+    expect(Object.keys(stored["v2:sessionWindows"] as object)).toEqual([bob.short_id]);
+    expect(Object.values(stored["v2:tabSessions"] as object)).toEqual([bob.short_id]);
+    // Bob is unaffected.
+    await expect(tabs.assertOwned(bob, b.tab_id)).resolves.toBeTruthy();
+  });
+
+  it("restores the destination's previously active tab if the move changed it", async () => {
+    const user = await userWindow();
+    const a = (await call(alice, "tab_create", {})) as Info;
+    const original = fake.chrome.tabGroups.move.getMockImplementation()!;
+    fake.chrome.tabGroups.move.mockImplementationOnce(async (id, props) => {
+      const result = await original(id, props);
+      // Simulate Chrome activating a moved tab in the destination window.
+      for (const t of fake.tabs.values()) if (t.windowId === props.windowId) t.active = t.id === a.tab_id;
+      return result;
+    });
+    await call(alice, "session_release");
+    expect(fake.chrome.tabs.update).toHaveBeenCalledWith(user.tab.id, { active: true });
+    expect(user.tab.active).toBe(true);
+    expect(fake.tabs.get(a.tab_id)!.active).toBe(false);
+    expect(fake.chrome.windows.update).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the most recently focused user window when the last-focused window is a session window", async () => {
+    const older = await userWindow(false);
+    const recent = await userWindow(false);
+    await tabs.handleWindowFocused(older.win.id);
+    await tabs.handleWindowFocused(recent.win.id);
+    await tabs.handleWindowFocused(older.win.id);
+    await call(alice, "tab_create", {});
+    const b = (await call(bob, "tab_create", {})) as Info;
+    fake.focusWindow(fake.tabs.get(b.tab_id)!.windowId); // the user is looking at bob's window
+    await tabs.handleWindowFocused(fake.tabs.get(b.tab_id)!.windowId);
+    fake.chrome.windows.update.mockClear();
+
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 1, moved: true });
+    expect(kept("✓ alice")!.windowId).toBe(older.win.id);
+    expect(fake.chrome.windows.update).not.toHaveBeenCalled();
+  });
+
+  it("skips incognito windows", async () => {
+    const normal = await userWindow(false);
+    const incognito = fake.addWindow({ focused: true, incognito: true });
+    fake.addTab({ windowId: incognito.id, active: true });
+    await call(alice, "tab_create", {});
+    await call(alice, "session_release");
+    expect(kept("✓ alice")!.windowId).toBe(normal.win.id);
+  });
+
+  it("leaves the group in place (moved:false) when there is no user window", async () => {
+    const a = (await call(alice, "tab_create", {})) as Info;
+    const sessionWindow = fake.tabs.get(a.tab_id)!.windowId;
+    await call(bob, "tab_create", {});
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 1, moved: false });
+    expect(fake.chrome.tabGroups.move).not.toHaveBeenCalled();
+    const group = kept("✓ alice")!;
+    expect(group.windowId).toBe(sessionWindow);
+    expect(fake.tabs.get(a.tab_id)!.groupId).toBe(group.id);
+    expect(fake.chrome.windows.update).not.toHaveBeenCalled();
+  });
+
+  it("leaves a session window that still holds a stray tab", async () => {
+    await userWindow();
+    const a = (await call(alice, "tab_create", {})) as Info;
+    const sessionWindow = fake.tabs.get(a.tab_id)!.windowId;
+    fake.addTab({ windowId: sessionWindow, url: "https://stray" });
+    await call(alice, "session_release");
+    expect(fake.windows.has(sessionWindow)).toBe(true);
+  });
+
+  it("returns kept_tabs 0 for a session without tabs", async () => {
+    await userWindow();
+    expect(await call(alice, "session_release")).toEqual({ kept_tabs: 0, moved: false });
+    expect(fake.chrome.tabGroups.move).not.toHaveBeenCalled();
+  });
+
+  it("released groups are not session groups: reconcile and the popup ignore them, the session starts fresh", async () => {
+    await userWindow();
+    const a = (await call(alice, "tab_create", {})) as Info;
+    const b = (await call(bob, "tab_create", { url: "https://b" })) as Info;
+    await call(alice, "session_release");
+    const fresh = new TabManager((e) => events.push(e));
+    expect(await fresh.reconcile()).toEqual([{ short_id: bob.short_id, tabs: [{ tab_id: b.tab_id, url: "https://b", title: "" }] }]);
+    expect((await fresh.listSessionGroups()).map((s) => s.short_id)).toEqual([bob.short_id]);
+    await expect(fresh.assertOwned(alice, a.tab_id)).rejects.toMatchObject({ code: "tab_not_owned" });
+    // A later tab_create for the same short_id gets a new window and group, not the released one.
+    const next = (await call(alice, "tab_create", {})) as Info;
+    expect(fake.tabs.get(next.tab_id)!.groupId).not.toBe(fake.tabs.get(a.tab_id)!.groupId);
+  });
+
+  it("does not adopt tabs opened by a released tab", async () => {
+    const user = await userWindow();
+    const a = (await call(alice, "tab_create", {})) as Info;
+    await call(alice, "session_release");
+    fake.chrome.tabs.group.mockClear();
+    const child = fake.addTab({ windowId: user.win.id, openerTabId: a.tab_id, url: "https://child" });
+    await tabs.handleTabCreated((await fake.chrome.tabs.get(child.id)) as chrome.tabs.Tab);
+    expect(events).toEqual([]);
+    expect(fake.chrome.tabs.group).not.toHaveBeenCalled();
+    expect(child.groupId).toBe(-1);
+  });
+
+  it("does not adopt via a released group even if its title still looked like a session (rename race)", async () => {
+    await userWindow();
+    const a = (await call(alice, "tab_create", {})) as Info;
+    const groupId = fake.tabs.get(a.tab_id)!.groupId;
+    await tabs.released.add(groupId, "alice");
+    const child = fake.addTab({ windowId: fake.tabs.get(a.tab_id)!.windowId, openerTabId: a.tab_id });
+    await tabs.handleTabCreated((await fake.chrome.tabs.get(child.id)) as chrome.tabs.Tab);
+    expect(events).toEqual([]);
+  });
+});

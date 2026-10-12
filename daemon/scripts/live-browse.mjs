@@ -41,6 +41,15 @@ async function call(name, args) {
   } catch {}
   return { error: r.isError ? json : null, json };
 }
+
+// session_close hands remaining tabs to the user; close ours first so nothing is left behind.
+async function finish(session) {
+  const tabs = (await call("tab_list", { session })).json?.tabs ?? [];
+  let closed = 0;
+  for (const t of tabs) if (!(await call("tab_close", { session, tab_id: t.tab_id })).error) closed++;
+  const res = await call("session_close", { session });
+  return { closed, kept: res.json?.kept_tabs ?? 0, error: res.error };
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function printBrowse(out, r) {
@@ -91,7 +100,7 @@ async function scenario(name, url, goal, maxSteps, verify) {
   } catch (err) {
     check("no exception", false, String(err?.message ?? err));
   } finally {
-    if (!keepOpen) await call("session_close", { session });
+    if (!keepOpen) await finish(session);
     else out(`  kept open: session ${opened.json.short_id}`);
   }
   return { lines, checks };

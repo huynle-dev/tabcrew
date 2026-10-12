@@ -58,6 +58,15 @@ async function call(name, args) {
   return { error, json, text };
 }
 
+// session_close hands remaining tabs to the user; close ours first so nothing is left behind.
+async function finish(session) {
+  const tabs = (await call("tab_list", { session })).json?.tabs ?? [];
+  let closed = 0;
+  for (const t of tabs) if (!(await call("tab_close", { session, tab_id: t.tab_id })).error) closed++;
+  const res = await call("session_close", { session });
+  return { closed, kept: res.json?.kept_tabs ?? 0, error: res.error };
+}
+
 const tools = new Set((await client.listTools()).tools.map((t) => t.name));
 for (const t of ["session_open", "tab_create", "observe", "act", "session_close"]) {
   if (!tools.has(t)) {
@@ -178,7 +187,7 @@ const session = opened.json.session;
 const created = await call("tab_create", { session, url: `${base}/guards.html` });
 if (created.error) {
   console.log(`tab_create failed: ${created.error.code} ${created.error.message}; is the extension connected?`);
-  await call("session_close", { session });
+  await finish(session);
   await client.close();
   server.close();
   process.exit(1);
@@ -366,7 +375,7 @@ try {
     return `page_changed=${r.page_changed}`;
   }, { fresh: true });
 } finally {
-  if (!keepOpen) await call("session_close", { session }).catch(() => undefined);
+  if (!keepOpen) await finish(session).catch(() => undefined);
   await client.close();
   server.close();
 }

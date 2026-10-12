@@ -91,3 +91,11 @@ li.stopped > span:first-child {
 li.stopped .meta {
   color: #b42318;
 }
+li .actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+li.finished > span:first-child {
+  color: #05603a;
+}

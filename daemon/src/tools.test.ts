@@ -297,6 +297,7 @@ describe("stop", () => {
     }
     expect(opsOf(ext, "tab_close")).toHaveLength(0);
     expect(opsOf(ext, "session_close")).toHaveLength(0);
+    expect(opsOf(ext, "session_release")).toHaveLength(0);
     expect(d.registry.getByShortId(a.short_id)?.tabs.has(a.tab)).toBe(true);
     // Other sessions are unaffected; a new session works.
     expect((await call(client, "observe", { session: b.S, tab_id: b.tab })).ok).toBe(true);
@@ -323,6 +324,7 @@ describe("stop", () => {
     await until(() => d.registry.size === 0);
     await sleep(30);
     expect(opsOf(ext, "session_close")).toHaveLength(0);
+    expect(opsOf(ext, "session_release")).toHaveLength(0);
   });
 });
 
@@ -394,14 +396,50 @@ describe("persistence and reconcile", () => {
 });
 
 describe("cleanup when agents are done", () => {
-  it("tells agents at connect time to close their session", async () => {
+  it("tells agents at connect time to close their session, and that their tabs are handed to the user for review", async () => {
     const { client } = await setup();
-    expect(client.getInstructions()).toMatch(/session_close/);
+    const instructions = client.getInstructions() ?? "";
+    expect(instructions).toMatch(/session_close/);
+    expect(instructions).toMatch(/review/);
+    expect(instructions).toMatch(/tab_close/);
     const tools = await client.listTools();
-    expect(tools.tools.find((t) => t.name === "session_open")?.description).toMatch(/session_close/);
+    const open = tools.tools.find((t) => t.name === "session_open")?.description ?? "";
+    const close = tools.tools.find((t) => t.name === "session_close")?.description ?? "";
+    expect(open).toMatch(/session_close/);
+    expect(open).toMatch(/review/);
+    expect(close).toMatch(/hand its tabs to the user for review/);
+    expect(close).toMatch(/tab_close/);
+    for (const text of [instructions, open, close]) {
+      expect(text).not.toMatch(/closes? your tabs|window closes|tabs and window are closed/i);
+    }
   });
 
-  it("closes the browser sessions a connection opened when that connection ends, and only those", async () => {
+  it("session_close hands the tabs over (session_release), never closes them, and the handle is dead afterwards", async () => {
+    const { client, ext } = await setup();
+    const s = await openWithTab(client, "done");
+    const r = await call(client, "session_close", { session: s.S });
+    expect(r).toEqual({
+      ok: true,
+      value: { closed: true, kept_tabs: 1, moved: true, note: "Your tabs were handed to the user for review; you no longer control them." },
+    });
+    expect(opsOf(ext, "session_release").map((q) => q.session.short_id)).toEqual([s.short_id]);
+    expect(opsOf(ext, "session_close")).toHaveLength(0);
+    expect(opsOf(ext, "tab_close")).toHaveLength(0);
+    expect(errCode(await call(client, "tab_list", { session: s.S }))).toBe("bad_session");
+    expect(errCode(await call(client, "session_close", { session: s.S }))).toBe("bad_session");
+  });
+
+  it("session_close with the extension offline forgets the session and reports the tabs left open", async () => {
+    const { d, client, ext } = await setup();
+    const s = await openWithTab(client, "offline");
+    ext.ws.terminate();
+    await until(() => !d.bridge.connected);
+    const r = await call(client, "session_close", { session: s.S });
+    expect(r).toEqual({ ok: true, value: { closed: true, kept_tabs: 0, tabs_left_open: 1 } });
+    expect(errCode(await call(client, "tab_list", { session: s.S }))).toBe("bad_session");
+  });
+
+  it("hands over the browser sessions a connection opened when that connection ends, and only those", async () => {
     const { d, client, ext } = await setup();
     const other = await mcpClient(d.mcpPort, d.token);
     clients.push(other);
@@ -412,8 +450,9 @@ describe("cleanup when agents are done", () => {
     await (client.transport as { terminateSession(): Promise<void> }).terminateSession();
     await client.close();
 
-    await until(() => ext.requests.some((r) => r.op === "session_close" && r.session.short_id === mine.short_id));
-    expect(ext.requests.some((r) => r.op === "session_close" && r.session.short_id === theirs.short_id)).toBe(false);
+    await until(() => ext.requests.some((r) => r.op === "session_release" && r.session.short_id === mine.short_id));
+    expect(ext.requests.some((r) => r.op === "session_release" && r.session.short_id === theirs.short_id)).toBe(false);
+    expect(opsOf(ext, "session_close")).toHaveLength(0);
     const still = await call(other, "tab_list", { session: theirs.S });
     expect(still.ok).toBe(true);
     expect(d.registry.size).toBe(1);
@@ -426,7 +465,21 @@ describe("cleanup when agents are done", () => {
     await (client.transport as { terminateSession(): Promise<void> }).terminateSession();
     await client.close();
     await sleep(100);
-    expect(ext.requests.filter((r) => r.op === "session_close")).toHaveLength(1);
+    expect(opsOf(ext, "session_release")).toHaveLength(1);
+    expect(opsOf(ext, "session_close")).toHaveLength(0);
+  });
+
+  it("leaves a stopped session's tabs as they are when its connection ends", async () => {
+    const { d, client, ext } = await setup();
+    const s = await openWithTab(client, "stopped");
+    ext.send({ type: "event", event: "stop", short_id: s.short_id });
+    await until(() => d.registry.getByShortId(s.short_id)?.stopped === true);
+    await (client.transport as { terminateSession(): Promise<void> }).terminateSession();
+    await client.close();
+    await until(() => d.registry.size === 0);
+    await sleep(50);
+    expect(opsOf(ext, "session_release")).toHaveLength(0);
+    expect(opsOf(ext, "session_close")).toHaveLength(0);
   });
 });
 
@@ -438,7 +491,7 @@ describe("cleanup does not fire on daemon shutdown", () => {
     let ext = await FakeExtension.connect(d.extensionPort, d.token);
     const s = await openWithTab(client, "survivor");
     await d.close();
-    expect(ext.requests.some((r) => r.op === "session_close")).toBe(false);
+    expect(ext.requests.some((r) => r.op === "session_close" || r.op === "session_release")).toBe(false);
     ext.ws.terminate();
     d = await startTestDaemon(home);
     daemon = d;

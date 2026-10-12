@@ -121,6 +121,7 @@ export interface V2ActResult {
 // ---------------------------------------------------------------------------
 // Operations (daemon -> extension). Each has typed args and result.
 // Phase 2 implements: tab_create, tab_list, tab_close, session_close, screenshot.
+// session_release (hand tabs to the user) is what the daemon uses when a session finishes.
 // Phase 4 adds snapshot/act; phase 6 adds navigate, read_text, debug_logs.
 // ---------------------------------------------------------------------------
 
@@ -130,6 +131,15 @@ export interface V2OpMap {
   tab_close: { args: { tab_id: number }; result: { closed: true } };
   /** Close every tab in the session's group and forget the group. */
   session_close: { args: Record<string, never>; result: { closed_tabs: number } };
+  /**
+   * Hand the session's tabs over to the user and forget the session: the extension detaches the
+   * debugger from each tab, moves the group into the user's last-focused non-session window as a
+   * collapsed group titled `v2ReleasedGroupTitle(label)` (never focusing a window or changing the
+   * user's active tab), and stops treating the tabs as owned. No `tab_removed` is sent for them.
+   * `moved` is false when no user window exists and the group stays where it is. Idempotent: an
+   * unknown session yields `{kept_tabs: 0, moved: false}`.
+   */
+  session_release: { args: Record<string, never>; result: { kept_tabs: number; moved: boolean } };
   screenshot: {
     args: { tab_id: number; format?: "jpeg" | "png"; quality?: number };
     result: { media_type: "image/jpeg" | "image/png"; data: string; width: number; height: number };
@@ -220,6 +230,15 @@ export type V2DaemonFrame = V2Welcome | V2Request | V2Ping;
 
 export function v2GroupTitle(session: V2SessionRef): string {
   return `${session.label} · ${session.short_id}`;
+}
+
+/**
+ * Title of a finished session's group handed to the user: `✓ <label>`. It never parses as a
+ * session group (a label that itself ends in ` · <8 chars>` gets its separators replaced).
+ */
+export function v2ReleasedGroupTitle(label: string): string {
+  const title = `✓ ${label}`;
+  return v2ParseGroupTitle(title) ? `✓ ${label.replace(/ · /g, " - ")}` : title;
 }
 
 /** Parse `<label> · <short_id>`; returns null for groups that are not v2 session groups. */

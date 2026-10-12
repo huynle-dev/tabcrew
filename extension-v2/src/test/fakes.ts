@@ -21,6 +21,7 @@ interface FakeWindow {
   id: number;
   type: "normal" | "popup";
   focused: boolean;
+  incognito: boolean;
 }
 interface FakeGroup {
   id: number;
@@ -64,6 +65,12 @@ export function createFakeChrome() {
   const tabs = new Map<number, FakeTab>();
   const groups = new Map<number, FakeGroup>();
   const attachedDebuggee = new Set<number>();
+  /** Window Chrome reports from getLastFocused (the user's focus); null when there is none. */
+  let lastFocusedId: number | null = null;
+  const focusWindow = (id: number) => {
+    for (const w of windows.values()) w.focused = w.id === id;
+    lastFocusedId = id;
+  };
 
   const tabOut = (t: FakeTab) => ({ ...t, pinned: false, highlighted: false, incognito: false, selected: false, discarded: false, autoDiscardable: true, frozen: false });
   const notFound = (what: string, id: number) => new Error(`No ${what} with id: ${id}.`);
@@ -85,7 +92,10 @@ export function createFakeChrome() {
       if (![...tabs.values()].some((t) => t.groupId === g.id)) groups.delete(g.id);
     }
     for (const w of [...windows.values()]) {
-      if (![...tabs.values()].some((t) => t.windowId === w.id)) windows.delete(w.id);
+      if (![...tabs.values()].some((t) => t.windowId === w.id)) {
+        windows.delete(w.id);
+        if (lastFocusedId === w.id) lastFocusedId = null;
+      }
     }
     ensureActive();
   };
@@ -106,8 +116,9 @@ export function createFakeChrome() {
   };
 
   const addWindow = (props: Partial<FakeWindow> = {}): FakeWindow => {
-    const win: FakeWindow = { id: nextId++, type: "normal", focused: false, ...props };
+    const win: FakeWindow = { id: nextId++, type: "normal", focused: false, incognito: false, ...props };
     windows.set(win.id, win);
+    if (win.focused) focusWindow(win.id);
     return win;
   };
 
@@ -164,8 +175,22 @@ export function createFakeChrome() {
         const tab = addTab({ windowId: win.id, url: data.url ?? "chrome://newtab/", active: true });
         return { ...win, tabs: [tabOut(tab)] };
       }),
-      update: vi.fn(async () => ({})),
+      update: vi.fn(async (id: number, props: { focused?: boolean } = {}) => {
+        const w = windows.get(id);
+        if (!w) throw notFound("window", id);
+        if (props.focused) focusWindow(id);
+        return { ...w };
+      }),
+      getLastFocused: vi.fn(async (_opts?: { windowTypes?: string[] }) => {
+        const w = lastFocusedId !== null ? windows.get(lastFocusedId) : undefined;
+        if (!w) throw new Error("No last-focused window");
+        return { ...w };
+      }),
+      getAll: vi.fn(async (opts?: { windowTypes?: string[] }) =>
+        [...windows.values()].filter((w) => !opts?.windowTypes || opts.windowTypes.includes(w.type)).map((w) => ({ ...w })),
+      ),
       onRemoved: event<[number]>(),
+      onFocusChanged: event<[number]>(),
     },
     tabs: {
       get: vi.fn(async (id: number) => {
@@ -173,8 +198,15 @@ export function createFakeChrome() {
         if (!t) throw notFound("tab", id);
         return tabOut(t);
       }),
-      query: vi.fn(async (q: { groupId?: number }) =>
-        [...tabs.values()].filter((t) => q.groupId === undefined || t.groupId === q.groupId).map(tabOut),
+      query: vi.fn(async (q: { groupId?: number; windowId?: number; active?: boolean }) =>
+        [...tabs.values()]
+          .filter(
+            (t) =>
+              (q.groupId === undefined || t.groupId === q.groupId) &&
+              (q.windowId === undefined || t.windowId === q.windowId) &&
+              (q.active === undefined || t.active === q.active),
+          )
+          .map(tabOut),
       ),
       create: vi.fn(async (props: { windowId: number; url?: string; active?: boolean }) => {
         if (!windows.has(props.windowId)) throw notFound("window", props.windowId);
@@ -242,6 +274,25 @@ export function createFakeChrome() {
         Object.assign(g, props);
         return { ...g };
       }),
+      /** Moves the whole group to the end of another window; the group keeps its id. */
+      move: vi.fn(async (id: number, props: { windowId?: number; index: number }) => {
+        const g = groups.get(id);
+        if (!g) throw notFound("group", id);
+        if (props.windowId !== undefined && props.windowId !== g.windowId) {
+          const dest = windows.get(props.windowId);
+          if (!dest) throw notFound("window", props.windowId);
+          let index = [...tabs.values()].filter((t) => t.windowId === dest.id).length;
+          for (const t of tabs.values()) {
+            if (t.groupId !== id) continue;
+            t.windowId = dest.id;
+            t.active = false;
+            t.index = index++;
+          }
+          g.windowId = dest.id;
+        }
+        dropEmpty();
+        return { ...g, color: "grey" };
+      }),
     },
     debugger: {
       attach: vi.fn(async (target: { tabId: number }) => {
@@ -254,6 +305,9 @@ export function createFakeChrome() {
         if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { clientWidth: 1280, clientHeight: 720 } };
         if (method === "Page.captureScreenshot") return { data: "SU1BR0U=" };
         return {};
+      }),
+      detach: vi.fn(async (target: { tabId: number }) => {
+        if (!attachedDebuggee.delete(target.tabId)) throw new Error("Debugger is not attached to the tab");
       }),
       onDetach: event<[{ tabId?: number }, string]>(),
       onEvent: event<[{ tabId?: number }, string, unknown]>(),
@@ -271,6 +325,7 @@ export function createFakeChrome() {
     ports,
     addWindow,
     addTab,
+    focusWindow,
     install() {
       (globalThis as unknown as { chrome: unknown }).chrome = chrome;
     },

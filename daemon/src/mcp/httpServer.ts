@@ -69,12 +69,13 @@ function bearer(req: IncomingMessage): string | null {
 export const SERVER_INSTRUCTIONS = [
   "ChromeUse drives the user's real Chrome. Each agent or subagent opens its own session with session_open and passes the handle on every call.",
   "Prefer browse for multi-step goals, observe/act for precise control, read_text for long content. browse's DONE is a claim: verify the page.",
-  "When your task is finished, call session_close: it closes your tabs and their window. Sessions left open are closed when your connection ends or after they sit idle.",
+  "When your task is finished, close any throwaway tabs with tab_close, then call session_close: your remaining tabs stay open for the user to review in their own window, and you no longer control them. Sessions left open are handed over the same way when your connection ends or after they sit idle.",
 ].join(" ");
 
 /**
  * One MCP protocol server per MCP session; all share the same browser-session registry. Browser
- * sessions opened over this connection are closed when the connection closes.
+ * sessions opened over this connection are ended when the connection closes: their tabs are handed
+ * to the user (stopped sessions' tabs are left as they are).
  */
 function createProtocolServer(opts: McpHttpOptions, isShuttingDown: () => boolean): Server {
   const server = new Server(
@@ -87,9 +88,9 @@ function createProtocolServer(opts: McpHttpOptions, isShuttingDown: () => boolea
     // A daemon restart closes every connection too; agents' sessions must survive that.
     if (isShuttingDown()) return;
     for (const session of opened) {
-      void closeSession(opts, session)
+      void closeSession(opts, session, !session.stopped)
         .then((r) => {
-          if (r.closed) log.info(`session ${session.short_id} closed (MCP connection ended)`);
+          if (r.closed) log.info(`session ${session.short_id} ended (MCP connection ended; ${r.kept_tabs} tab(s) handed to the user)`);
         })
         .catch(() => {});
     }

@@ -1,4 +1,4 @@
-import type { PopupSessionInfo } from "../config.js";
+import type { PopupFinishedInfo, PopupSessionInfo } from "../config.js";
 
 export interface SessionRow {
   readonly short_id: string;
@@ -10,10 +10,26 @@ export interface SessionRow {
   readonly action: "stop" | "close_tabs" | null;
 }
 
+export interface FinishedRow {
+  readonly group_id: number;
+  /** `✓ <label>` */
+  readonly name: string;
+  /** e.g. "2 tabs" */
+  readonly meta: string;
+}
+
+function tabCount(n: number): string {
+  return `${n} tab${n === 1 ? "" : "s"}`;
+}
+
+export function finishedRows(finished: readonly PopupFinishedInfo[]): FinishedRow[] {
+  return finished.map((f) => ({ group_id: f.group_id, name: `✓ ${f.label}`, meta: tabCount(f.tab_count) }));
+}
+
 export function sessionRows(sessions: readonly PopupSessionInfo[]): SessionRow[] {
   return sessions.map((s) => {
     const stopped = s.stopped === true;
-    const tabs = `${s.tab_count} tab${s.tab_count === 1 ? "" : "s"}`;
+    const tabs = tabCount(s.tab_count);
     return {
       short_id: s.short_id,
       name: `${s.label} · ${s.short_id}`,
