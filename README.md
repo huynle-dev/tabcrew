@@ -26,7 +26,7 @@ You need macOS, Node.js 20+, Google Chrome (or Chromium, Brave, Edge) and, for `
 
 Your agents (OpenCode, Claude Code, or any MCP client) can now call `session_open` and the other [tools](#tools). Remove everything with `npx tabcrew uninstall --purge`.
 
-TabCrew has no servers and no telemetry; see the [privacy policy](https://huynle.github.io/tabcrew/privacy) and [Security](#security).
+TabCrew has no servers and no telemetry; see the [privacy policy](https://github.com/huynle/tabcrew/blob/main/docs/privacy.md) and [Security](#security).
 
 ### What setup does
 
@@ -200,7 +200,7 @@ The following settings come from the environment (or `~/.tabcrew/env`) only:
 - The pairing host only answers TabCrew extension IDs (checked by Chrome via `allowed_origins` and again by the host) and never logs the token.
 - Agents act in your real, signed-in browser. Only connect agents you trust.
 
-See [`SECURITY.md`](SECURITY.md) for the threat model and how to report vulnerabilities privately, and the [privacy policy](https://huynle.github.io/tabcrew/privacy) for what data goes where.
+See [`SECURITY.md`](SECURITY.md) for the threat model and how to report vulnerabilities privately, and the [privacy policy](https://github.com/huynle/tabcrew/blob/main/docs/privacy.md) for what data goes where.
 
 ## Testing
 

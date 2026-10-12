@@ -42,7 +42,7 @@ This extension does nothing on its own. It connects only to the TabCrew daemon r
 Setup installs the background service, pairs the extension automatically (no token to copy) and can add TabCrew to OpenCode and Claude Code for you. "browse" needs your own OpenRouter API key; everything else works without one.
 
 PRIVACY
-No accounts, no analytics, no tracking, no TabCrew servers. Page content goes only to the daemon on your own computer, and, if you use "browse", from there to the AI model provider you configured with your own key. Privacy policy: https://huynle.github.io/tabcrew/privacy
+No accounts, no analytics, no tracking, no TabCrew servers. Page content goes only to the daemon on your own computer, and, if you use "browse", from there to the AI model provider you configured with your own key. Privacy policy: https://github.com/huynle/tabcrew/blob/main/docs/privacy.md
 
 OPEN SOURCE
 MIT licensed. Source code, documentation and issue tracker: https://github.com/huynle/tabcrew
@@ -79,4 +79,4 @@ Regenerate with `node extension/scripts/render-icons.mjs` and `node store/script
 | Homepage URL | `https://github.com/huynle/tabcrew` |
 | Support URL | `https://github.com/huynle/tabcrew/issues` |
 | Mature content | No |
-| Privacy policy URL (Privacy tab) | `https://huynle.github.io/tabcrew/privacy` (live once GitHub Pages is enabled for `main` → `/docs`) |
+| Privacy policy URL (Privacy tab) | `https://github.com/huynle/tabcrew/blob/main/docs/privacy.md` |
