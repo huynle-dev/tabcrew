@@ -46,9 +46,9 @@ function installLaunchd(): void {
   const path = writeLaunchdPlist({
     home,
     launchAgentsDir: join(homedir(), "Library", "LaunchAgents"),
-    nodePath: process.execPath,
+    nodePath: stableNodePath(),
     scriptPath,
-    pathEnv: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    pathEnv: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
     chromeuseHome: process.env.CHROMEUSE_HOME ? home : undefined,
   });
   process.stdout.write(
@@ -87,3 +87,22 @@ main(process.argv.slice(2)).catch((err) => {
   log.error(`fatal: ${(err as Error).message}`);
   process.exit(1);
 });
+
+/**
+ * Prefer a stable link (e.g. /opt/homebrew/bin/node) over process.execPath, which on Homebrew is a
+ * versioned Cellar path that disappears on the next upgrade.
+ */
+function stableNodePath(): string {
+  const real = (p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return null;
+    }
+  };
+  const target = real(process.execPath);
+  for (const candidate of ["/opt/homebrew/bin/node", "/usr/local/bin/node"]) {
+    if (target && real(candidate) === target) return candidate;
+  }
+  return process.execPath;
+}
