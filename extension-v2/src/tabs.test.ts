@@ -404,11 +404,11 @@ describe("activation", () => {
   });
 });
 
-describe("not-yet ops", () => {
-  it.each(["navigate", "read_text", "debug_logs"] as const)("%s → internal", async (op) => {
-    await expect(call(alice, op, { tab_id: 1 })).rejects.toMatchObject({
-      code: "internal",
-      message: "not implemented in this phase",
+describe("phase 6 ops", () => {
+  it.each(["navigate", "read_text", "debug_logs"] as const)("%s checks ownership", async (op) => {
+    const a = (await call(alice, "tab_create", {})) as { tab_id: number };
+    await expect(call(bob, op, { tab_id: a.tab_id, action: "reload", source: "console" })).rejects.toMatchObject({
+      code: "tab_not_owned",
     });
   });
 });

@@ -91,11 +91,24 @@ describe("HTTP endpoint", () => {
     expect(allowed.status).toBe(200);
   });
 
-  it("lists exactly the phase-1..5 tools", async () => {
+  it("lists exactly the v2 tools", async () => {
     const { client } = await setup();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["act", "browse", "observe", "screenshot", "session_close", "session_open", "tab_close", "tab_create", "tab_list"].sort(),
+      [
+        "act",
+        "browse",
+        "debug_logs",
+        "navigate",
+        "observe",
+        "read_text",
+        "screenshot",
+        "session_close",
+        "session_open",
+        "tab_close",
+        "tab_create",
+        "tab_list",
+      ].sort(),
     );
   });
 });

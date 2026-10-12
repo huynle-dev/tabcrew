@@ -458,6 +458,46 @@ describe("loop control", () => {
     expect(decisionCalls()).toHaveLength(1);
   });
 
+  it("ends at the next step boundary when Stop arrives during an act; later calls get stopped_by_user", async () => {
+    const { d, client, ext } = await setup();
+    const a = await openWithTab(client, ext);
+    let releaseAct!: () => void;
+    const actGate = new Promise<void>((r) => (releaseAct = r));
+    ext.handler = async (req) => {
+      if (req.op === "act") {
+        await actGate;
+        const snap = ext.snapshots.get(a.tab) ?? simpleSnapshot(a.tab);
+        ext.snapshots.set(a.tab, { ...snap, fingerprint: `${snap.fingerprint}+` });
+      }
+      return ext.simulate(req);
+    };
+    script(["CLICK", "1"], ["CLICK", "1"], ["DONE"]);
+    const running = browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
+    await until(() => acts(ext).length === 1);
+    ext.send({ type: "event", event: "stop", short_id: a.short_id });
+    await until(() => d.registry.getByShortId(a.short_id)?.stopped === true);
+    const snapshotsBefore = ext.requests.filter((r) => r.op === "snapshot").length;
+    releaseAct();
+    const r = await running;
+    expect(r.status).toBe("stopped_by_user");
+    // The in-flight action is recorded; nothing further is observed, decided or executed.
+    expect(r.steps.map((s: { operation: string }) => s.operation)).toEqual(["CLICK"]);
+    expect(acts(ext)).toHaveLength(1);
+    expect(decisionCalls()).toHaveLength(1);
+    expect(ext.requests.filter((q) => q.op === "snapshot")).toHaveLength(snapshotsBefore);
+
+    for (const [name, args] of [
+      ["browse", { goal: "again" }],
+      ["observe", {}],
+      ["navigate", { action: "reload" }],
+      ["read_text", {}],
+    ] as const) {
+      const later = await call(client, name, { session: a.S, tab_id: a.tab, ...args });
+      expect(later.ok ? "ok" : later.error.code).toBe("stopped_by_user");
+    }
+    expect(decisionCalls()).toHaveLength(1);
+  });
+
   it("returns model_error before any request when OPENROUTER_API_KEY is missing", async () => {
     const { client, ext } = await setup({});
     const a = await openWithTab(client, ext);

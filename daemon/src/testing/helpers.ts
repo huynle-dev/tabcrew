@@ -93,6 +93,12 @@ export class FakeExtension {
   handler: Handler;
   /** Snapshot returned for a tab; defaults to `simpleSnapshot`. */
   readonly snapshots = new Map<number, V2Snapshot>();
+  /** navigate: URLs visited per tab (simulated history). */
+  readonly history = new Map<number, string[]>();
+  /** read_text: page text per tab; defaults to "Example Domain". */
+  readonly pageText = new Map<number, string>();
+  /** debug_logs result per `${tab_id}:${source}`. */
+  readonly logs = new Map<string, unknown>();
   private nextTabId = 100;
   readonly closed: Promise<{ code: number }>;
 
@@ -189,6 +195,32 @@ export class FakeExtension {
       case "act":
         if (!tabs.some((t) => t.tab_id === args.tab_id)) throw new WireError({ code: "tab_not_owned", message: "x" });
         return { executed: String(args.action_id), page_changed: true };
+      case "navigate": {
+        const tab = tabs.find((t) => t.tab_id === args.tab_id);
+        if (!tab) throw new WireError({ code: "tab_not_owned", message: "x" });
+        if (args.action === "url") {
+          const history = this.history.get(tab.tab_id) ?? [tab.url];
+          history.push(args.url as string);
+          this.history.set(tab.tab_id, history);
+          Object.assign(tab, { url: args.url as string, title: `Title of ${args.url as string}` });
+        } else if (args.action === "back") {
+          const history = this.history.get(tab.tab_id) ?? [];
+          if (history.length < 2) throw new WireError({ code: "target_invalid", message: "no previous page in this tab's history" });
+          history.pop();
+          Object.assign(tab, { url: history.at(-1)!, title: `Title of ${history.at(-1)!}` });
+        }
+        return { ...tab };
+      }
+      case "read_text": {
+        const tab = tabs.find((t) => t.tab_id === args.tab_id);
+        if (!tab) throw new WireError({ code: "tab_not_owned", message: "x" });
+        const text = this.pageText.get(tab.tab_id) ?? "Example Domain";
+        return { text: text.slice(0, args.max_length as number), url: tab.url, title: tab.title };
+      }
+      case "debug_logs": {
+        if (!tabs.some((t) => t.tab_id === args.tab_id)) throw new WireError({ code: "tab_not_owned", message: "x" });
+        return this.logs.get(`${args.tab_id as number}:${args.source as string}`) ?? { entries: [], dropped: 0 };
+      }
       default:
         throw new WireError({ code: "internal", message: "unsupported" });
     }

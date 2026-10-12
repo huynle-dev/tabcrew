@@ -4,10 +4,12 @@ import {
   TOKEN_KEY,
   parsePort,
   type BridgeStatus,
+  type PopupCloseResult,
   type PopupRequest,
   type PopupState,
   type PopupStopResult,
 } from "../config.js";
+import { sessionRows } from "./view.js";
 
 const STATUS_TEXT: Record<BridgeStatus, string> = {
   connected: "connected",
@@ -41,19 +43,29 @@ async function refresh(): Promise<void> {
     li.className = "meta";
     list.append(li);
   }
-  for (const s of state.sessions) {
+  for (const row of sessionRows(state.sessions)) {
     const li = document.createElement("li");
+    if (row.stopped) li.className = "stopped";
     const name = document.createElement("span");
-    name.textContent = `${s.label} · ${s.short_id}`;
+    name.textContent = row.name;
     const meta = document.createElement("span");
     meta.className = "meta";
-    meta.textContent = ` ${s.tab_count} tab${s.tab_count === 1 ? "" : "s"}`;
+    meta.textContent = ` ${row.meta}`;
     name.append(meta);
-    const stop = document.createElement("button");
-    stop.textContent = "Stop";
-    stop.className = "danger";
-    stop.addEventListener("click", () => void stopSession(s.short_id));
-    li.append(name, stop);
+    li.append(name);
+    if (row.action === "stop") {
+      const stop = document.createElement("button");
+      stop.textContent = "Stop";
+      stop.className = "danger";
+      stop.addEventListener("click", () => void stopSession(row.short_id));
+      li.append(stop);
+    } else if (row.action === "close_tabs") {
+      const close = document.createElement("button");
+      close.textContent = "Close tabs";
+      close.title = "Close this stopped session's tabs";
+      close.addEventListener("click", () => void closeStoppedTabs(row.short_id));
+      li.append(close);
+    }
     list.append(li);
   }
 }
@@ -67,6 +79,17 @@ async function stopSession(shortId: string | null): Promise<void> {
       ? `Stop sent for ${shortId}.`
       : "Stop sent for all sessions."
     : `Stop failed: ${result.error}`;
+  void refresh();
+}
+
+async function closeStoppedTabs(shortId: string): Promise<void> {
+  const result = await send<PopupCloseResult>({ type: "v2:close_session_tabs", short_id: shortId }).catch(
+    (): PopupCloseResult => ({ ok: false, error: "extension not responding" }),
+  );
+  $<HTMLParagraphElement>("stop-note").textContent = result.ok
+    ? `Closed ${result.closed_tabs} tab${result.closed_tabs === 1 ? "" : "s"} of ${shortId}.`
+    : `Close failed: ${result.error}`;
+  void refresh();
 }
 
 $<HTMLInputElement>("token").addEventListener("keydown", (e) => {

@@ -2,11 +2,13 @@
  * chrome.debugger per tab: attached on tab_create (or lazily on first use) and kept attached.
  *
  * On attach we enable focus emulation (so tabs in the unfocused per-session windows keep
- * rendering and running timers, as in jev-ultrafast) and the Page domain. `tab_create`
- * starts the attach eagerly; every other op awaits the same pending attach. All state is
- * per tab; nothing is shared across tabs.
+ * rendering and running timers, as in jev-ultrafast) and the Page domain, and start the tab's
+ * debug log buffers (Runtime + Network domains, not awaited, so attach is not slowed).
+ * `tab_create` starts the attach eagerly; every other op awaits the same pending attach.
+ * All state is per tab; nothing is shared across tabs.
  */
 
+import { DebugLogStore } from "./debuglogs.js";
 import { OpError } from "./errors.js";
 
 const CDP_PROTOCOL_VERSION = "1.3";
@@ -29,9 +31,20 @@ interface LayoutMetrics {
   cssLayoutViewport?: { clientWidth: number; clientHeight: number };
 }
 
+export type EventMatch = (method: string, params: unknown) => boolean;
+
+export interface EventWait {
+  /** true when a matching event arrived, false on timeout, detach or cancel. */
+  readonly done: Promise<boolean>;
+  cancel(): void;
+}
+
 export class CdpManager {
   /** tabId → attach in progress or done. Removed on detach/close/failure. */
   private readonly attached = new Map<number, Promise<void>>();
+  private readonly waiters = new Map<number, Set<{ match: EventMatch; finish: (hit: boolean) => void }>>();
+  /** Console/network ring buffers of attached tabs. */
+  readonly logs = new DebugLogStore();
 
   isAttached(tabId: number): boolean {
     return this.attached.has(tabId);
@@ -55,10 +68,57 @@ export class CdpManager {
     if (this.attached.delete(source.tabId)) {
       console.info(`[v2 cdp] detached from tab ${source.tabId}: ${reason}`);
     }
+    this.dropTabState(source.tabId);
   }
 
   forgetTab(tabId: number): void {
     this.attached.delete(tabId);
+    this.dropTabState(tabId);
+  }
+
+  /** chrome.debugger.onEvent for one tab: feeds the log buffers and pending waits. */
+  handleEvent(tabId: number, method: string, params: unknown): void {
+    this.logs.handleEvent(tabId, method, params);
+    const set = this.waiters.get(tabId);
+    if (!set) return;
+    for (const w of [...set]) {
+      if (w.match(method, params)) w.finish(true);
+    }
+  }
+
+  /**
+   * Wait for an event on the tab. Register before sending the command that triggers it.
+   * Never rejects: resolves false after `timeoutMs`, on detach/close, or on cancel.
+   */
+  waitForEvent(tabId: number, match: EventMatch, timeoutMs: number): EventWait {
+    let set = this.waiters.get(tabId);
+    if (!set) {
+      set = new Set();
+      this.waiters.set(tabId, set);
+    }
+    const tabWaiters = set;
+    let finish!: (hit: boolean) => void;
+    const done = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      const waiter = {
+        match,
+        finish: (hit: boolean) => {
+          clearTimeout(timer);
+          tabWaiters.delete(waiter);
+          if (tabWaiters.size === 0 && this.waiters.get(tabId) === tabWaiters) this.waiters.delete(tabId);
+          resolve(hit);
+        },
+      };
+      finish = waiter.finish;
+      tabWaiters.add(waiter);
+    });
+    return { done, cancel: () => finish(false) };
+  }
+
+  private dropTabState(tabId: number): void {
+    this.logs.forget(tabId);
+    const set = this.waiters.get(tabId);
+    if (set) for (const w of [...set]) w.finish(false);
   }
 
   async send<T = unknown>(tabId: number, method: string, params?: Record<string, unknown>): Promise<T> {
@@ -118,12 +178,20 @@ export class CdpManager {
       }
     }
     // Focus emulation keeps the hidden background tab awake and rendering, so screenshots and
-    // rAF-based settle waits do not stall. Page.enable delivers Page.frameNavigated, used to
-    // drop stale snapshots. Both are sent together rather than one after the other.
-    await Promise.all([
+    // rAF-based settle waits do not stall. Page.enable delivers Page.frameNavigated (drops stale
+    // snapshots) and Page.loadEventFired (navigate). All commands go out together.
+    // Runtime/Network feed debug_logs for this tab only; they are not awaited and their failure
+    // never fails the attach. No post data is captured and response bodies are never requested.
+    const essential = Promise.all([
       chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true }),
       chrome.debugger.sendCommand({ tabId }, "Page.enable"),
     ]);
+    this.logs.start(tabId);
+    void Promise.all([
+      chrome.debugger.sendCommand({ tabId }, "Runtime.enable"),
+      chrome.debugger.sendCommand({ tabId }, "Network.enable", { maxPostDataSize: 0 }),
+    ]).catch((err) => console.warn(`[v2 cdp] debug logs unavailable for tab ${tabId}:`, err));
+    await essential;
   }
 }
 

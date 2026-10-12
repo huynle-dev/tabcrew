@@ -1,15 +1,16 @@
-import type { V2Op, V2Request } from "@chromeuse/shared/v2";
+import type { V2Request } from "@chromeuse/shared/v2";
 import type { CdpManager } from "./cdp.js";
 import { OpError } from "./errors.js";
+import { navigateTab, readText } from "./navigate.js";
 import type { PageController } from "./snapshot/controller.js";
 import { requireTabId, type TabManager } from "./tabs.js";
-
-const NOT_YET: ReadonlySet<string> = new Set<V2Op>(["navigate", "read_text", "debug_logs"]);
 
 export interface OpDeps {
   tabs: TabManager;
   cdp: CdpManager;
   page: PageController;
+  /** Test hook: how long navigate waits for the load event. */
+  navigateWaitMs?: number;
 }
 
 /** Route one daemon request to its handler. Throws OpError for typed failures. */
@@ -45,8 +46,35 @@ export async function handleRequest(req: V2Request, deps: OpDeps): Promise<unkno
       await deps.tabs.prepareForPage(session, tabId);
       return deps.page.act(tabId, args);
     }
+    case "navigate": {
+      const tabId = requireTabId(args);
+      await deps.tabs.prepareForPage(session, tabId);
+      return navigateTab(
+        {
+          cdp: deps.cdp,
+          forgetSnapshot: (id) => deps.page.forget(id),
+          getTab: (id) => chrome.tabs.get(id),
+          ...(deps.navigateWaitMs !== undefined && { waitMs: deps.navigateWaitMs }),
+        },
+        tabId,
+        args,
+      );
+    }
+    case "read_text": {
+      const tabId = requireTabId(args);
+      await deps.tabs.prepareForPage(session, tabId);
+      return readText((id, method, params) => deps.cdp.send(id, method, params), tabId, args, deps.page.sleep);
+    }
+    case "debug_logs": {
+      const tabId = requireTabId(args);
+      // Reading buffers does not drive the page, so the tab is not activated.
+      await deps.tabs.assertOwned(session, tabId);
+      const result = deps.cdp.logs.query(tabId, args);
+      // Attaching (lazily) starts capture for a tab that has not been attached yet.
+      if (!deps.cdp.isAttached(tabId)) deps.cdp.ensureAttached(tabId).catch(() => undefined);
+      return result;
+    }
     default:
-      if (NOT_YET.has(req.op)) throw new OpError("internal", "not implemented in this phase");
       throw new OpError("invalid_args", `unknown op: ${String(req.op)}`);
   }
 }

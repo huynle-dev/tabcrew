@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Live smoke test against a running daemon + extension-v2. No model calls.
+// Covers sessions/tabs/isolation/screenshot plus navigate, read_text and debug_logs.
 // Usage: node daemon/scripts/smoke.mjs [--keep-open] [--out DIR]
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -81,6 +82,40 @@ if (out && imgA && imgB) {
   writeFileSync(join(out, "B.jpg"), Buffer.from(imgB.data, "base64"));
   console.log(`screenshots saved to ${out}/A.jpg and ${out}/B.jpg`);
 }
+
+// navigate / read_text / debug_logs on A's tab (example.com).
+const IANA = "https://www.iana.org/help/example-domains";
+const stripped = (u) => { try { const x = new URL(u); return `${x.origin}${x.pathname}`; } catch { return u; } };
+const t2 = Date.now();
+const nav = await call("navigate", { session: a.session, tab_id: tabA, url: IANA });
+check("navigate opens the IANA example-domains page", !nav.error && /iana\.org/.test(nav.json?.url ?? ""), `${Date.now() - t2} ms; ${nav.error?.code ?? nav.json?.url}`);
+const navCross = await call("navigate", { session: b.session, tab_id: tabA, action: "reload" });
+check("B cannot navigate A's tab", navCross.error?.code === "tab_not_owned", navCross.error?.code);
+const navBad = await call("navigate", { session: a.session, tab_id: tabA, url: "javascript:alert(1)" });
+check("navigate rejects non-http(s) URLs", navBad.error?.code === "invalid_args", navBad.error?.code);
+
+const NETWORK_KEYS = new Set(["method", "url", "status", "type", "failed", "ms", "t"]);
+const CONSOLE_KEYS = new Set(["level", "text", "url", "t"]);
+const net = await call("debug_logs", { session: a.session, tab_id: tabA, source: "network", limit: 200 });
+const netEntries = net.json?.entries ?? [];
+const targets = new Set([stripped(IANA), stripped(nav.json?.url ?? IANA)]);
+check("debug_logs network has an entry for the navigated URL", !net.error && netEntries.some((e) => targets.has(e.url)), `${netEntries.length} entries, dropped ${net.json?.dropped}`);
+check("network entries have no query strings", netEntries.every((e) => typeof e.url === "string" && !e.url.includes("?") && !e.url.includes("#")));
+check("network entries carry only whitelisted keys (no headers/cookies/bodies)", netEntries.every((e) => Object.keys(e).every((k) => NETWORK_KEYS.has(k))),
+  [...new Set(netEntries.flatMap((e) => Object.keys(e)).filter((k) => !NETWORK_KEYS.has(k)))].join(",") || "ok");
+const con = await call("debug_logs", { session: a.session, tab_id: tabA, source: "console" });
+check("debug_logs console answers with whitelisted keys", !con.error && (con.json?.entries ?? []).every((e) => Object.keys(e).every((k) => CONSOLE_KEYS.has(k))), con.error?.code ?? `${con.json?.entries?.length} entries`);
+const logsCross = await call("debug_logs", { session: b.session, tab_id: tabA, source: "network" });
+check("B cannot read A's logs", logsCross.error?.code === "tab_not_owned", logsCross.error?.code);
+
+const back = await call("navigate", { session: a.session, tab_id: tabA, action: "back" });
+check("navigate back returns to example.com", !back.error && /example\.com/.test(back.json?.url ?? ""), back.error?.code ?? back.json?.url);
+const text = await call("read_text", { session: a.session, tab_id: tabA });
+check("read_text contains \"Example Domain\"", !text.error && (text.json?.text ?? "").includes("Example Domain"), text.error?.code ?? `${text.json?.text?.length} chars`);
+const short = await call("read_text", { session: a.session, tab_id: tabA, max_length: 7 });
+check("read_text honours max_length", short.json?.text?.length === 7 && short.json?.truncated === true, JSON.stringify(short.json?.text));
+const textCross = await call("read_text", { session: b.session, tab_id: tabA });
+check("B cannot read A's text", textCross.error?.code === "tab_not_owned", textCross.error?.code);
 
 if (!keepOpen) {
   const ca = (await call("session_close", { session: a.session })).json;

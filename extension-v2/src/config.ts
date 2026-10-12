@@ -8,6 +8,8 @@ export const PORT_KEY = "v2:port";
 export const SESSION_WINDOWS_KEY = "v2:sessionWindows";
 export const GROUPS_KEY = "v2:groups";
 export const TAB_SESSIONS_KEY = "v2:tabSessions";
+/** short_ids the user stopped from the popup; pruned once their group is gone. */
+export const STOPPED_KEY = "v2:stoppedSessions";
 
 export interface BridgeConfig {
   readonly token: string | null;
@@ -29,12 +31,17 @@ export async function loadConfig(): Promise<BridgeConfig> {
 export type BridgeStatus = "connected" | "connecting" | "needs_token" | "unauthorized" | "offline";
 
 /** Messages between the popup and the service worker (chrome.runtime.sendMessage). */
-export type PopupRequest = { type: "v2:get_state" } | { type: "v2:stop"; short_id: string | null };
+export type PopupRequest =
+  | { type: "v2:get_state" }
+  | { type: "v2:stop"; short_id: string | null }
+  | { type: "v2:close_session_tabs"; short_id: string };
 
 export interface PopupSessionInfo {
   readonly short_id: string;
   readonly label: string;
   readonly tab_count: number;
+  /** The user pressed Stop for this session (its tabs stay open until closed). */
+  readonly stopped?: boolean;
 }
 
 export interface PopupState {
@@ -45,3 +52,4 @@ export interface PopupState {
 }
 
 export type PopupStopResult = { ok: true } | { ok: false; error: string };
+export type PopupCloseResult = { ok: true; closed_tabs: number } | { ok: false; error: string };

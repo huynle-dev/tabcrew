@@ -85,3 +85,9 @@ li .meta {
   background: #fee4e2;
   color: #b42318;
 }
+li.stopped > span:first-child {
+  color: #666;
+}
+li.stopped .meta {
+  color: #b42318;
+}

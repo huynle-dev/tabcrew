@@ -153,6 +153,26 @@ export class TabManager {
     });
   }
 
+  /**
+   * User action from the popup: close every tab of one session's group(s). Unlike sessionClose
+   * this is not on the daemon's behalf, so each closed tab is reported as `tab_removed`.
+   */
+  closeSessionTabsLocally(shortId: string): Promise<{ closed_tabs: number }> {
+    return this.locks.run(`session:${shortId}`, async () => {
+      const entry = (await this.scanGroups()).get(shortId);
+      if (!entry) return { closed_tabs: 0 };
+      const tabIds: number[] = [];
+      for (const groupId of entry.groupIds) {
+        for (const t of await chrome.tabs.query({ groupId })) if (typeof t.id === "number") tabIds.push(t.id);
+      }
+      const state = await this.load();
+      for (const id of tabIds) state.tabSessions[id] ??= shortId;
+      await this.save();
+      if (tabIds.length > 0) await chrome.tabs.remove(tabIds);
+      return { closed_tabs: tabIds.length };
+    });
+  }
+
   /** Ownership check for every tab-scoped op. Returns the live tab. */
   async assertOwned(session: V2SessionRef, tabId: number): Promise<chrome.tabs.Tab> {
     let tab: chrome.tabs.Tab;

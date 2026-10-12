@@ -1,3 +1,4 @@
+import type { V2ConsoleEntry, V2NetworkEntry } from "@chromeuse/shared/v2";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { ExtensionBridge } from "../bridge.js";
@@ -35,6 +36,17 @@ const urlArg = z
   .max(8192)
   .refine((v) => URL.canParse(v), "must be an absolute URL");
 
+const httpUrlArg = z
+  .string()
+  .min(1)
+  .max(8192)
+  .refine((v) => URL.canParse(v) && /^https?:$/.test(new URL(v).protocol), "must be an absolute http(s) URL");
+
+export const READ_TEXT_DEFAULT = 20_000;
+export const READ_TEXT_MAX = 100_000;
+export const LOGS_DEFAULT = 50;
+export const LOGS_MAX = 200;
+
 const schemas = {
   session_open: z.object({ label: z.string().max(200).optional() }),
   session_close: z.object({ session: sessionArg }),
@@ -64,6 +76,26 @@ const schemas = {
       .max(MAX_GOAL)
       .refine((v) => v.trim().length > 0, "must not be empty"),
     max_steps: z.number().int().min(1).max(MAX_MAX_STEPS).optional(),
+  }),
+  navigate: z
+    .object({
+      session: sessionArg,
+      tab_id: tabIdArg,
+      url: httpUrlArg.optional(),
+      action: z.enum(["back", "forward", "reload"]).optional(),
+    })
+    .refine((v) => (v.url === undefined) !== (v.action === undefined), "give exactly one of url or action"),
+  read_text: z.object({
+    session: sessionArg,
+    tab_id: tabIdArg,
+    max_length: z.number().int().min(1).max(READ_TEXT_MAX).optional(),
+  }),
+  debug_logs: z.object({
+    session: sessionArg,
+    tab_id: tabIdArg,
+    source: z.enum(["console", "network"]),
+    limit: z.number().int().min(1).max(LOGS_MAX).optional(),
+    only_errors: z.boolean().optional(),
   }),
 };
 type ToolName = keyof typeof schemas;
@@ -126,7 +158,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "observe",
     description:
-      "Read one of your tabs: URL, title, visible text, a numbered element table (each element lists the operations it supports; selects list options as \"<index>:<n>\"), available controls, and a fingerprint to pass to act.",
+      "For precise step-by-step control. Read one of your tabs: URL, title, visible text, a numbered element table (each element lists the operations it supports; selects list options as \"<index>:<n>\"), available controls, and a fingerprint to pass to act.",
     inputSchema: {
       type: "object",
       properties: { session: sessionProp, tab_id: tabIdProp },
@@ -156,7 +188,7 @@ export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "browse",
     description:
-      "Let Jev pursue a natural-language goal on one of your tabs: it repeatedly observes, chooses one operation (CLICK, TYPE_TEXT, SELECT, scroll, WAIT) and acts, until DONE, BLOCKED, no progress, max_steps, or Stop. Returns a status, the step trace, the final URL/title and a short element table, and model usage/cost. DONE is only Jev's claim: verify the result with observe or screenshot.",
+      "Preferred for multi-step goals. Let Jev pursue a natural-language goal on one of your tabs: it repeatedly observes, chooses one operation (CLICK, TYPE_TEXT, SELECT, scroll, WAIT) and acts, until DONE, BLOCKED, no progress, max_steps, or Stop. Returns a status, the step trace, the final URL/title and a short element table, and model usage/cost. DONE is only Jev's claim: verify the result with observe or screenshot.",
     inputSchema: {
       type: "object",
       properties: {
@@ -166,6 +198,56 @@ export const TOOL_DEFINITIONS: Tool[] = [
         max_steps: { type: "integer", minimum: 1, maximum: MAX_MAX_STEPS, description: `Maximum actions (default ${DEFAULT_MAX_STEPS}).` },
       },
       required: ["session", "tab_id", "goal"],
+    },
+  },
+  {
+    name: "navigate",
+    description:
+      "Open an http(s) URL in one of your tabs, or go back, forward or reload. Waits for the page to load (at most 15 s) and returns the tab's URL and title. Observe again afterwards.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: sessionProp,
+        tab_id: tabIdProp,
+        url: { type: "string", description: "Absolute http(s) URL. Give url or action, not both." },
+        action: { type: "string", enum: ["back", "forward", "reload"] },
+      },
+      required: ["session", "tab_id"],
+    },
+  },
+  {
+    name: "read_text",
+    description:
+      "Read the full text of one of your tabs (the whole page, not just the visible part). Best for reading long content; use observe for elements to act on.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: sessionProp,
+        tab_id: tabIdProp,
+        max_length: {
+          type: "integer",
+          minimum: 1,
+          maximum: READ_TEXT_MAX,
+          description: `Maximum characters (default ${READ_TEXT_DEFAULT}).`,
+        },
+      },
+      required: ["session", "tab_id"],
+    },
+  },
+  {
+    name: "debug_logs",
+    description:
+      "For debugging a page: recent console messages or network requests of one of your tabs (newest last). Network entries show method, URL without query string, status, type and timing; never headers or bodies.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: sessionProp,
+        tab_id: tabIdProp,
+        source: { type: "string", enum: ["console", "network"] },
+        limit: { type: "integer", minimum: 1, maximum: LOGS_MAX, description: `Newest entries to return (default ${LOGS_DEFAULT}).` },
+        only_errors: { type: "boolean", description: "Console errors/exceptions, or failed / HTTP >= 400 requests only." },
+      },
+      required: ["session", "tab_id", "source"],
     },
   },
 ];
@@ -345,5 +427,114 @@ async function dispatch(ctx: ToolContext, name: ToolName, rawArgs: unknown): Pro
       registry.requireTab(session, args.tab_id);
       return ok(await runBrowse(ctx, session, args.tab_id, args.goal.trim(), args.max_steps ?? DEFAULT_MAX_STEPS));
     }
+    case "navigate": {
+      const args = parseArgs(name, rawArgs);
+      const session = registry.use(args.session);
+      const opArgs: { tab_id: number; url?: string; action?: "url" | "back" | "forward" | "reload" } = { tab_id: args.tab_id };
+      if (args.url !== undefined) {
+        opArgs.url = args.url;
+        opArgs.action = "url";
+      } else {
+        opArgs.action = args.action;
+      }
+      const info = await onTab(ctx, session, args.tab_id, async () => {
+        try {
+          // Browser actions are never retried.
+          return await bridge.request(sessionRef(session), "navigate", opArgs);
+        } finally {
+          // Whatever happened, the agent's observation of this tab is no longer trustworthy.
+          observations.forget(session.short_id, args.tab_id);
+        }
+      });
+      return ok(toTabResult(info));
+    }
+    case "read_text": {
+      const args = parseArgs(name, rawArgs);
+      const session = registry.use(args.session);
+      const max = args.max_length ?? READ_TEXT_DEFAULT;
+      const page = await onTab(ctx, session, args.tab_id, () =>
+        bridge.request(sessionRef(session), "read_text", { tab_id: args.tab_id, max_length: max }),
+      );
+      const text = typeof page?.text === "string" ? page.text.slice(0, max) : "";
+      return ok({
+        url: typeof page?.url === "string" ? page.url : "",
+        title: typeof page?.title === "string" ? page.title : "",
+        text,
+        truncated: text.length >= max,
+      });
+    }
+    case "debug_logs": {
+      const args = parseArgs(name, rawArgs);
+      const session = registry.use(args.session);
+      const opArgs: { tab_id: number; source: "console" | "network"; limit: number; only_errors?: boolean } = {
+        tab_id: args.tab_id,
+        source: args.source,
+        limit: args.limit ?? LOGS_DEFAULT,
+      };
+      if (args.only_errors !== undefined) opArgs.only_errors = args.only_errors;
+      const logs = await onTab(ctx, session, args.tab_id, () => bridge.request(sessionRef(session), "debug_logs", opArgs));
+      return ok(sanitizeLogs(args.source, logs, opArgs.limit));
+    }
   }
+}
+
+function toTabResult(info: unknown): { tab_id: number; url: string; title: string } {
+  const t = (info ?? {}) as Record<string, unknown>;
+  return {
+    tab_id: typeof t.tab_id === "number" ? t.tab_id : -1,
+    url: typeof t.url === "string" ? t.url : "",
+    title: typeof t.title === "string" ? t.title : "",
+  };
+}
+
+const CONSOLE_LEVELS = new Set(["log", "info", "warning", "error", "debug", "exception"]);
+
+/** Origin + path only; data:/blob: keep the scheme. Mirrors the extension (defense in depth). */
+export function stripUrl(raw: unknown): string {
+  if (typeof raw !== "string" || !raw) return "";
+  try {
+    const u = new URL(raw);
+    if (u.protocol === "data:" || u.protocol === "blob:") return u.protocol;
+    return (u.origin !== "null" ? `${u.origin}${u.pathname}` : `${u.protocol}${u.pathname}`).slice(0, 500);
+  } catch {
+    return raw.split(/[?#]/, 1)[0].slice(0, 500);
+  }
+}
+
+/**
+ * Re-whitelist the extension's entries: only the documented fields of V2ConsoleEntry /
+ * V2NetworkEntry reach the agent, whatever the extension sent.
+ */
+export function sanitizeLogs(
+  source: "console" | "network",
+  value: unknown,
+  limit: number,
+): { source: "console" | "network"; entries: V2ConsoleEntry[] | V2NetworkEntry[]; dropped: number } {
+  const v = (value ?? {}) as { entries?: unknown; dropped?: unknown };
+  const raw = (Array.isArray(v.entries) ? v.entries : []).slice(-limit) as Record<string, unknown>[];
+  const num = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) ? x : null);
+  const dropped = typeof v.dropped === "number" && Number.isInteger(v.dropped) && v.dropped >= 0 ? v.dropped : 0;
+  if (source === "console") {
+    const entries: V2ConsoleEntry[] = raw
+      .filter((e) => e && typeof e === "object")
+      .map((e) => ({
+        level: (CONSOLE_LEVELS.has(e.level as string) ? e.level : "log") as V2ConsoleEntry["level"],
+        text: typeof e.text === "string" ? e.text.slice(0, 500) : "",
+        ...(typeof e.url === "string" && e.url && { url: stripUrl(e.url) }),
+        t: num(e.t) ?? 0,
+      }));
+    return { source, entries, dropped };
+  }
+  const entries: V2NetworkEntry[] = raw
+    .filter((e) => e && typeof e === "object")
+    .map((e) => ({
+      method: typeof e.method === "string" ? e.method.slice(0, 16) : "",
+      url: stripUrl(e.url),
+      status: num(e.status),
+      type: typeof e.type === "string" ? e.type.slice(0, 32) : "",
+      ...(typeof e.failed === "string" && { failed: e.failed.slice(0, 200) }),
+      ms: num(e.ms),
+      t: num(e.t) ?? 0,
+    }));
+  return { source, entries, dropped };
 }
