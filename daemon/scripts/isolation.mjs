@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Live isolation test against a running daemon + extension-v2. No model calls.
+// Live isolation test against a running daemon + the TabCrew extension. No model calls.
 // Three sessions share ONE MCP connection, each drives its own tab concurrently with
 // observe -> act(WAIT) -> observe loops, and every cross-session attempt must fail.
 // Usage: node daemon/scripts/isolation.mjs [--keep-open]
@@ -68,7 +68,7 @@ try {
   const created = await Promise.all(sessions.map((s) => call("tab_create", { session: s.handle, url: s.url })));
   const createdOk = created.every((r) => !r.error && Number.isInteger(r.json?.tab_id));
   check("each session created its own tab", createdOk, `${Date.now() - tc} ms; ${created.map((r) => r.json?.tab_id ?? r.error?.code).join(", ")}`);
-  if (!createdOk) throw new Error("tab_create failed; is extension-v2 connected?");
+  if (!createdOk) throw new Error("tab_create failed; is the TabCrew extension connected?");
   sessions.forEach((s, i) => (s.tab = created[i].json.tab_id));
 
   await sleep(2000); // let pages load

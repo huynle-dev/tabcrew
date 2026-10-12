@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Live smoke test against a running daemon + extension-v2. No model calls.
+// Live smoke test against a running daemon + the TabCrew extension. No model calls.
 // Covers sessions/tabs/isolation/screenshot plus navigate, read_text and debug_logs.
 // Usage: node daemon/scripts/smoke.mjs [--keep-open] [--out DIR]
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PAID live check of the Jev `browse` loop against a running daemon + extension-v2.
+// PAID live check of the Jev `browse` loop against a running daemon + the TabCrew extension.
 // Each run makes real OpenRouter calls (Jev Decisions + text helper) billed to OPENROUTER_API_KEY.
 // Usage: node daemon/scripts/live-browse.mjs [--only wikipedia|flights] [--parallel] [--keep-open] [--max-steps N]
 import { readFileSync } from "node:fs";

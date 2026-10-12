@@ -84,7 +84,7 @@ export class WireError {
   constructor(readonly error: V2Error) {}
 }
 
-/** Minimal stand-in for extension-v2: speaks the v2 protocol and simulates tab groups. */
+/** Minimal stand-in for the TabCrew extension: speaks the v2 protocol and simulates tab groups. */
 export class FakeExtension {
   readonly requests: V2Request[] = [];
   readonly groups = new Map<string, V2TabInfo[]>();

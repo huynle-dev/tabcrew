@@ -63,7 +63,7 @@ function lostError(op: V2Op, why: string): DaemonError {
 }
 
 /**
- * WebSocket server for extension-v2. One extension connection at a time; requests are
+ * WebSocket server for the TabCrew extension. One extension connection at a time; requests are
  * matched by id and may run concurrently (there is no global queue).
  */
 export class ExtensionBridge {

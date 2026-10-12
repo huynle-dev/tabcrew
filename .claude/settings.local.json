@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(grep -rn \"^\\\\s*debugger\\\\s*;\\\\?\\\\s*$\" --include=\"*.ts\" extension/src mcp-server/src gateway/src native-host/src shared/src)",
+      "Bash(npm audit *)",
+      "Skill(update-config)",
+      "Skill(update-config:*)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "sqlite",
+    "filesystem"
+  ]
+}

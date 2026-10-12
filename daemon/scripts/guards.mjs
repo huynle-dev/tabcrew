@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live browser guard tests (port of jev-ultrafast scripts/check_guards.py) against a running
-// daemon + extension-v2. No model calls, no external sites: the fixture is served from
-// extension-v2/test-fixtures/ on an ephemeral 127.0.0.1 port.
+// daemon + the TabCrew extension. No model calls, no external sites: the fixture is served from
+// extension/test-fixtures/ on an ephemeral 127.0.0.1 port.
 //
 // The page can only be driven through MCP tools, so each mutation is "armed" by clicking a
 // fixture button; it lands ~400 ms later. The test observes right after arming, waits, then
@@ -22,7 +22,7 @@ const keepOpen = process.argv.includes("--keep-open");
 const onlyIdx = process.argv.indexOf("--only");
 const only = onlyIdx > 0 ? process.argv[onlyIdx + 1] : null;
 const token = readFileSync(join(home, "token"), "utf8").trim();
-const FIXTURES = fileURLToPath(new URL("../../extension-v2/test-fixtures/", import.meta.url));
+const FIXTURES = fileURLToPath(new URL("../../extension/test-fixtures/", import.meta.url));
 const ARM_WAIT_MS = 900; // fixture applies armed mutations after 400 ms
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
