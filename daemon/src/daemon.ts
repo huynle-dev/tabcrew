@@ -113,6 +113,8 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
       textModelApiKey: config.textModelApiKey,
       textModelBaseUrl: config.textModelBaseUrl,
       textModelReasoning: config.textModelReasoning,
+      textModelFallback: config.textModelFallback,
+      textModelTimeoutMs: config.textModelTimeoutMs,
       retryBaseMs: overrides.modelRetryBaseMs,
     },
     limiter: new Limiter(config.browseConcurrency),

@@ -162,6 +162,60 @@ describe("text helper", () => {
   });
 });
 
+describe("text helper fallback", () => {
+  const context = () => fieldContext("g", flightsSnapshot().actions[0], flightsSnapshot(), []);
+  const withFallback: ModelSettings = { ...settings, textModelFallback: "google/gemini-2.5-flash-lite", textModelTimeoutMs: 50 };
+  const reply = (text: string) => Response.json({ choices: [{ message: { content: JSON.stringify({ text }) } }] });
+
+  function stub(byModel: Record<string, () => Promise<Response>>) {
+    const models: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const model = JSON.parse(String(init.body)).model as string;
+      models.push(model);
+      // Honour the abort signal like real fetch does.
+      return await Promise.race([
+        byModel[model](),
+        new Promise<never>((_, reject) => init.signal?.addEventListener("abort", () => reject(init.signal!.reason))),
+      ]);
+    });
+    return models;
+  }
+  const never = () => new Promise<Response>(() => {});
+
+  it("does not call the fallback when the primary answers", async () => {
+    const models = stub({ "inception/mercury-2.5": async () => reply("Zurich") });
+    expect(await fieldText(context(), withFallback)).toMatchObject({ text: "Zurich", model: "inception/mercury-2.5" });
+    expect(models).toEqual(["inception/mercury-2.5"]);
+  });
+
+  it("falls back once when the primary times out", async () => {
+    const models = stub({ "inception/mercury-2.5": never, "google/gemini-2.5-flash-lite": async () => reply("Zurich") });
+    expect(await fieldText(context(), withFallback)).toMatchObject({ text: "Zurich", model: "google/gemini-2.5-flash-lite" });
+    expect(models).toEqual(["inception/mercury-2.5", "google/gemini-2.5-flash-lite"]);
+  });
+
+  it("falls back when the primary returns the wrong shape", async () => {
+    const models = stub({
+      "inception/mercury-2.5": async () => Response.json({ choices: [{ message: { content: '{"field":"x","query":"y"}' } }] }),
+      "google/gemini-2.5-flash-lite": async () => reply("London"),
+    });
+    expect((await fieldText(context(), withFallback)).text).toBe("London");
+    expect(models).toHaveLength(2);
+  });
+
+  it("reports a timeout as a timeout when both models fail, and never tries a third", async () => {
+    const models = stub({ "inception/mercury-2.5": never, "google/gemini-2.5-flash-lite": never });
+    await expect(fieldText(context(), withFallback)).rejects.toMatchObject({ code: "model_error", message: expect.stringContaining("timed out") });
+    expect(models).toHaveLength(2);
+  });
+
+  it("has no fallback when it is disabled", async () => {
+    const models = stub({ "inception/mercury-2.5": never });
+    await expect(fieldText(context(), { ...withFallback, textModelFallback: null })).rejects.toMatchObject({ code: "model_error" });
+    expect(models).toEqual(["inception/mercury-2.5"]);
+  });
+});
+
 describe("postJson", () => {
   it("retries 429/503/529 at most twice, then fails with model_error", async () => {
     const statuses: number[] = [];

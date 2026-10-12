@@ -16,6 +16,10 @@ export interface ModelSettings {
   readonly textModelBaseUrl?: string;
   /** Reasoning effort for the text helper, or "none" (default) to disable reasoning. */
   readonly textModelReasoning: string;
+  /** Tried once if the text model times out or fails (null disables). */
+  readonly textModelFallback?: string | null;
+  /** Per-attempt text helper budget (default 3 s). */
+  readonly textModelTimeoutMs?: number;
   /** Backoff base for 429/503/529 retries: base·2^attempt (default 500 ms). */
   readonly retryBaseMs?: number;
   /** Per-request timeout (default 25 s). */
@@ -24,6 +28,11 @@ export interface ModelSettings {
 
 const RETRY_STATUSES = new Set([429, 503, 529]);
 const MAX_RETRIES = 2;
+
+function isTimeout(err: unknown): boolean {
+  const name = (err as { name?: unknown } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
 
 function modelError(message: string): DaemonError {
   return new DaemonError("model_error", message);
@@ -41,8 +50,8 @@ export async function postJson(url: string, key: string, body: unknown, settings
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(settings.timeoutMs ?? 25_000),
       });
-    } catch {
-      throw modelError("Model connection failed; no action executed.");
+    } catch (err) {
+      throw modelError(isTimeout(err) ? "Model request timed out; no action executed." : "Model connection failed; no action executed.");
     }
     if (RETRY_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
       await response.body?.cancel().catch(() => {});
@@ -55,8 +64,10 @@ export async function postJson(url: string, key: string, body: unknown, settings
     }
     try {
       return await response.json();
-    } catch {
-      throw modelError("Model provider returned invalid JSON; no action executed.");
+    } catch (err) {
+      throw modelError(
+        isTimeout(err) ? "Model response timed out; no action executed." : "Model provider returned invalid JSON; no action executed.",
+      );
     }
   }
 }

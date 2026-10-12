@@ -64,9 +64,29 @@ export interface FieldText {
 export async function fieldText(context: FieldContext, settings: ModelSettings): Promise<FieldText> {
   const key = settings.textModelApiKey || settings.openrouterApiKey;
   if (!key) throw new DaemonError("model_error", MISSING_KEY_MESSAGE);
-  const base = (settings.textModelBaseUrl ?? OPENROUTER_URL).replace(/\/+$/, "");
-  const model = settings.textModel;
+  const models = [settings.textModel];
+  if (settings.textModelFallback && settings.textModelFallback !== settings.textModel) models.push(settings.textModelFallback);
   const started = performance.now();
+  let lastError: unknown;
+  // Generating text is not a browser mutation, so one fallback attempt is safe: nothing has been typed yet.
+  for (const model of models) {
+    try {
+      const { text, cost } = await askTextModel(model, key, context, settings);
+      return { text, model, text_ms: Math.round(performance.now() - started), cost };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
+async function askTextModel(
+  model: string,
+  key: string,
+  context: FieldContext,
+  settings: ModelSettings,
+): Promise<{ text: string; cost: number }> {
+  const base = (settings.textModelBaseUrl ?? OPENROUTER_URL).replace(/\/+$/, "");
   const result = (await postJson(
     `${base}/chat/completions`,
     key,
@@ -80,14 +100,9 @@ export async function fieldText(context: FieldContext, settings: ModelSettings):
         { role: "user", content: JSON.stringify(context) },
       ],
     },
-    settings,
+    { retryBaseMs: settings.retryBaseMs, timeoutMs: settings.textModelTimeoutMs ?? 3_000 },
   )) as { choices?: { message?: { content?: unknown } }[]; usage?: { cost?: unknown } } | null;
   const text = parseTextReply(result?.choices?.[0]?.message?.content);
   const cost = result?.usage?.cost;
-  return {
-    text,
-    model,
-    text_ms: Math.round(performance.now() - started),
-    cost: typeof cost === "number" && Number.isFinite(cost) ? cost : 0,
-  };
+  return { text, cost: typeof cost === "number" && Number.isFinite(cost) ? cost : 0 };
 }

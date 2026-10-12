@@ -111,7 +111,7 @@ check("B cannot read A's logs", logsCross.error?.code === "tab_not_owned", logsC
 const back = await call("navigate", { session: a.session, tab_id: tabA, action: "back" });
 check("navigate back returns to example.com", !back.error && /example\.com/.test(back.json?.url ?? ""), back.error?.code ?? back.json?.url);
 const text = await call("read_text", { session: a.session, tab_id: tabA });
-check("read_text contains \"Example Domain\"", !text.error && (text.json?.text ?? "").includes("Example Domain"), text.error?.code ?? `${text.json?.text?.length} chars`);
+check("read_text contains \"documentation examples\"", !text.error && (text.json?.text ?? "").includes("documentation examples"), text.error?.code ?? `${text.json?.text?.length} chars`);
 const short = await call("read_text", { session: a.session, tab_id: tabA, max_length: 7 });
 check("read_text honours max_length", short.json?.text?.length === 7 && short.json?.truncated === true, JSON.stringify(short.json?.text));
 const textCross = await call("read_text", { session: b.session, tab_id: tabA });

@@ -23,6 +23,10 @@ export interface DaemonConfig {
   readonly textModelApiKey: string | undefined;
   readonly textModelBaseUrl: string | undefined;
   readonly textModelReasoning: string;
+  /** Second text model tried once if the first is slow or fails; null disables. */
+  readonly textModelFallback: string | null;
+  /** Per-attempt budget for the text helper. */
+  readonly textModelTimeoutMs: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -101,6 +105,10 @@ export function loadConfig(env: Env = process.env): DaemonConfig {
     textModelApiKey: env.TEXT_MODEL_API_KEY?.trim() || undefined,
     textModelBaseUrl: envValue(env, "TEXT_MODEL_BASE_URL", z.string().url()),
     textModelReasoning: envValue(env, "TEXT_MODEL_REASONING", z.string().min(1)) ?? "none",
+    textModelFallback: ((v) => (v === "none" ? null : v))(
+      envValue(env, "TEXT_MODEL_FALLBACK", z.string().min(1)) ?? "google/gemini-2.5-flash-lite",
+    ),
+    textModelTimeoutMs: envValue(env, "TEXT_MODEL_TIMEOUT_MS", z.coerce.number().int().min(500).max(60_000)) ?? 3_000,
   };
 }
 
