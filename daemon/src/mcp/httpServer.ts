@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, isInitializeRequest, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { hostAllowed } from "../localhost.js";
 import { log } from "../log.js";
 import { safeEqual } from "../token.js";
 import type { Session } from "../sessions.js";
@@ -17,7 +18,6 @@ export interface McpHttpOptions extends ToolContext {
 }
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
-const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   if (res.headersSent) return;
@@ -51,12 +51,6 @@ function readBody(req: IncomingMessage): Promise<unknown> {
     });
     req.on("error", reject);
   });
-}
-
-function hostAllowed(host: string | undefined): boolean {
-  if (!host) return true;
-  const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
-  return LOCAL_HOSTS.has(name.toLowerCase());
 }
 
 function bearer(req: IncomingMessage): string | null {

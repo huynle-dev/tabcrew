@@ -2,39 +2,66 @@
 
 TabCrew is a local browser automation tool for trusted users and trusted agents. It is not a sandbox for untrusted prompts, untrusted agents, or untrusted MCP clients.
 
-## Supported Versions
+## Supported versions
 
-The project is pre-1.0. Security fixes target the latest commit on the default branch.
+The project is pre-1.0. Security fixes go into the latest release (npm `tabcrew` and the Chrome Web Store extension) and the default branch.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-Please report security issues privately instead of opening a public GitHub issue.
+Please do not open a public issue for security problems.
 
-1. Open a private vulnerability report on GitHub if available for this repository.
-2. Otherwise, contact the maintainer through the GitHub profile associated with the repository.
-3. Include reproduction steps, impact, affected component (`daemon/`, `extension/`, `cli/`, `shared/`), and any suggested mitigation.
+1. Use GitHub private vulnerability reporting: <https://github.com/huynle-dev/tabcrew/security/advisories/new> (repository **Security** tab → **Report a vulnerability**).
+2. If that is unavailable, open a regular issue that only asks for a private contact channel, without details.
+3. Include the affected component (`daemon/`, `extension/`, `cli/`, `shared/`) and version, reproduction steps, impact, and any suggested fix.
 
-## Security Model
+Expect an acknowledgement within a week. Fixes are released as a new version and credited in the release notes unless you prefer otherwise.
 
-TabCrew assumes:
+## Threat model
 
-- The local machine and user account are trusted.
-- MCP clients holding the daemon token are trusted.
-- The browser profile is controlled by the user.
+**Trusted:** the local machine and user account, the browser profile, and every MCP client that holds the daemon token.
 
-TabCrew does not assume web pages, prompts, or tool calls are safe.
+**Untrusted:** web pages (including pages agents visit), other local user accounts, other browser extensions, and anything arriving over the network.
 
-Protections:
+**Assets:** the user's signed-in browser sessions, page content, the daemon token, and the OpenRouter (model provider) API key.
 
-- The daemon listens on `127.0.0.1` only (MCP on 8770, extension socket on 8771).
-- Both endpoints require the bearer token in `~/.tabcrew/token` (mode 0600, directory 0700).
-- The MCP endpoint rejects requests with a disallowed `Origin` or a non-local `Host` header.
-- Sessions can only reach their own tabs.
-- `debug_logs` never records headers, cookies, bodies, or query strings.
-- `OPENROUTER_API_KEY` is read from the environment or `~/.tabcrew/env` (must be 0600), never from `config.toml`.
-- Pairing: the extension gets the token from the `com.tabcrew.pair` native messaging host. Chrome only lets extensions listed in the host manifest's `allowed_origins` start it, and the host re-checks the caller origin Chrome passes against the known TabCrew extension IDs. It answers one `get_token` request and never logs the token. Any local process running as you could already read `~/.tabcrew/token`; pairing does not widen that.
+### What protects them
 
-## Important Risks
+Daemon (`127.0.0.1:8770` MCP over HTTP, `127.0.0.1:8771` extension WebSocket):
+
+- Both servers bind to `127.0.0.1` only.
+- The MCP endpoint requires `Authorization: Bearer <token>`, compared in constant time (SHA-256 then `timingSafeEqual`). The extension socket requires the same token in its first frame and closes with 4401 otherwise, or after a 5 s hello timeout.
+- DNS rebinding and cross-site requests: any request whose `Host` header is not `127.0.0.1`, `localhost` or `[::1]` is refused, on both servers. HTTP requests with an `Origin` not listed in `allowed_origins` (empty by default) are refused, including `/health`. WebSocket handshakes are refused unless the `Origin` is absent or a `chrome-extension://` origin, so web pages, sandboxed (`null`) and `file://` pages cannot connect.
+- The daemon sends no CORS headers, so web pages cannot read its responses. MCP request bodies are capped at 4 MiB.
+- The token is 32 random bytes in `~/.tabcrew/token` (0600); `~/.tabcrew` is 0700; `env` (API keys) and `sessions.json` are 0600. The daemon refuses to load an `env` file readable by group or others, and ignores API keys placed in `config.toml`.
+- Logs carry session short IDs, tool names, step counts and timings only: never tokens, keys, session handles, page text, goals or typed values.
+
+Sessions:
+
+- Each agent's session handle is an unguessable secret; sessions can reach only their own tabs. Handed-over tabs leave the agent's control.
+
+Pairing host (`com.tabcrew.pair`, native messaging):
+
+- Chrome starts it only for extension IDs in its manifest's `allowed_origins` (exact `chrome-extension://<id>/` origins of the published and development builds), and the host checks the caller origin again. It answers one `get_token` request, never logs the token, and exits. Any process running as the user can already read `~/.tabcrew/token`, so pairing does not widen access.
+
+Extension:
+
+- No remote code: everything is bundled; no `eval` or `new Function` (the store build check fails if they appear). Page-inspection scripts run in agent tabs through `chrome.debugger` `Runtime.evaluate` are fixed constants shipped in the bundle, with only JSON-encoded numbers and strings interpolated.
+- Default Manifest V3 content security policy, no content scripts, no `externally_connectable`, no web-accessible resources.
+- The snapshot skips password, file and hidden inputs. `debug_logs` builds each entry field by field: no headers, cookies, bodies or query strings, and never calls `Network.getResponseBody`.
+- The extension talks only to the daemon on `127.0.0.1`.
+
+CLI:
+
+- `setup` asks before editing OpenCode or Claude Code configuration (`--yes` opts in explicitly) and preserves existing entries and comments. The API key prompt is hidden. Only `tabcrew token` prints the token; command output is redacted otherwise.
+
+### Known limitations
+
+- **Claude Code registration passes the token on a command line.** `claude mcp add --header "Authorization: Bearer <token>"` has no option to read headers from a file or the environment, so the token is visible in the process list (to any local account on macOS) for the second that command runs, and Claude Code then stores it in plain text in `~/.claude.json`. OpenCode reads it from `~/.tabcrew/token` instead. If you share the machine with other accounts, skip the Claude Code step and add the server yourself, or rotate the token afterwards (delete `~/.tabcrew/token` and rerun `npx tabcrew setup`).
+- An unauthenticated local client can open a WebSocket and send one large frame before the hello is rejected (frames up to 64 MiB are accepted because screenshots travel this way). This is a local memory-pressure issue only.
+- `/health` answers without a token (version and whether the extension is connected) for `tabcrew doctor`; it is still subject to the `Host` and `Origin` checks.
+- Agents act with your full browser identity. A prompt-injected or malicious agent holding the token can do anything you can do on the sites it visits.
+
+## Important risks
 
 An agent with the token can, in your signed-in browser:
 

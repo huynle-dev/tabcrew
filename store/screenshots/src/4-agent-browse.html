@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="mock.css" />
+  </head>
+  <body>
+    <div class="caption">
+      <div class="brand"><img src="../../../extension/assets/icon-128.png" alt="" />TabCrew</div>
+      <h1>Works with your AI coding agents.</h1>
+      <p>Any MCP client can connect to the free local TabCrew daemon: OpenCode, Claude Code and more.</p>
+      <ul>
+        <li>One command to install: <code>npx tabcrew setup</code></li>
+        <li>Step-by-step control with <code>observe</code> / <code>act</code></li>
+        <li>Hand over whole goals with <code>browse</code></li>
+        <li>Open source (MIT)</li>
+      </ul>
+    </div>
+
+    <div class="terminal">
+      <div class="bar"><i></i><i></i><i></i><b>agent session</b></div>
+<pre><span class="t-user">› Find the cheapest nonstop flight from SFO to Lisbon on Nov 14 and tell me the price.</span>
+
+<span class="t-tool">● tabcrew.session_open</span> <span class="t-dim">{ "label": "flights" }</span>
+  <span class="t-ok">✓</span> <span class="t-dim">session opened · 7k2pq9xd</span>
+
+<span class="t-tool">● tabcrew.tab_create</span> <span class="t-dim">{ "url": "https://flights.example.com" }</span>
+  <span class="t-ok">✓</span> <span class="t-dim">tab 1842</span>
+
+<span class="t-tool">● tabcrew.browse</span>
+  <span class="t-dim">{ "tab_id": 1842,</span>
+  <span class="t-dim">  "goal":</span> <span class="t-str">"Search one-way SFO to LIS on Nov 14, nonstop only,</span>
+<span class="t-str">           sort by price"</span><span class="t-dim"> }</span>
+  <span class="t-dim">step 1  TYPE_TEXT  [3] From        → "SFO"</span>
+  <span class="t-dim">step 2  TYPE_TEXT  [5] To          → "Lisbon"</span>
+  <span class="t-dim">step 3  CLICK      [9] Date: Nov 14</span>
+  <span class="t-dim">step 4  CLICK     [14] Nonstop only</span>
+  <span class="t-dim">step 5  SELECT    [17] Sort by     → "Price"</span>
+  <span class="t-ok">✓ DONE</span> <span class="t-dim">after 5 steps · 9.8 s</span>
+
+<span class="t-tool">● tabcrew.read_text</span> <span class="t-dim">{ "tab_id": 1842, "max_length": 4000 }</span>
+  <span class="t-ok">✓</span> <span class="t-dim">2,931 characters</span>
+
+<span class="t-tool">● tabcrew.session_close</span>
+  <span class="t-ok">✓</span> <span class="t-dim">1 tab handed to you as "✓ flights"</span>
+
+The cheapest nonstop is <b>$612</b>, departing 6:05 pm. I left the results tab
+open for you in the "✓ flights" group.</pre>
+    </div>
+  </body>
+</html>

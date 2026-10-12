@@ -1,0 +1,62 @@
+---
+title: TabCrew privacy policy
+---
+
+# TabCrew privacy policy
+
+Effective date: October 12, 2026. Applies to the TabCrew browser extension and the `tabcrew` command-line tool (the local "daemon"), version 0.4.0 and later.
+
+## The short version
+
+- TabCrew has no servers and no accounts. The developer never receives any of your data.
+- There are no analytics, telemetry, crash reports, ads or tracking.
+- The extension only talks to the TabCrew daemon running on your own computer (`127.0.0.1`).
+- If you use the `browse` tool, the daemon on your computer sends the content of the agent's page to the AI model provider **you** configured, using **your** API key. Nothing else leaves your computer because of TabCrew.
+
+## What TabCrew is
+
+TabCrew lets AI agents that you run on your own computer (for example OpenCode or Claude Code) use your browser. It has two parts, both running only on your machine:
+
+1. **The extension**, which opens tabs for agents, reads those tabs, and clicks or types in them when an agent asks.
+2. **The daemon**, installed with `npx tabcrew setup`, which your agents connect to. It is free and open source.
+
+## What the extension accesses, and why
+
+| Data | When | Where it goes |
+| --- | --- | --- |
+| Text, links, buttons and form fields of pages in **agent tabs** | When an agent calls `observe`, `read_text`, `act` or `browse` | Only to the daemon on your computer |
+| Screenshots of **agent tabs** | When an agent calls `screenshot` | Only to the daemon on your computer |
+| Console messages and request metadata of **agent tabs** (method, origin and path, status, type; never headers, cookies, bodies or query strings) | When an agent calls `debug_logs` | Only to the daemon on your computer |
+| Titles, URLs and group membership of tabs | To keep each agent inside its own tabs and show sessions in the popup | Stays in the browser, or goes to the daemon on your computer |
+| The daemon's access token | Fetched once from your computer by pairing (or typed by you) | Stored in the extension's local storage on your computer |
+| Your settings (tab placement, daemon port) | When you change them | Stored in the extension's local storage on your computer |
+
+Agents can only reach tabs they opened themselves. Your own tabs are never read unless you give a tab to an agent, which TabCrew does not do on its own. Password, file and hidden form fields are excluded from what agents observe.
+
+## What the daemon sends off your computer
+
+Only one thing, and only if you use it: when an agent calls `browse`, the daemon sends the current agent page's visible text and its list of controls, plus the agent's goal, to the model provider you set up (OpenRouter by default, or a provider you configure). It uses your own API key, which is stored in `~/.tabcrew/env` on your computer and never sent anywhere else. That provider's privacy policy applies to that data. If you do not add a key, `browse` is disabled and nothing is sent.
+
+`tabcrew setup` and `tabcrew doctor --online` also make one free request to OpenRouter to check that your key is valid.
+
+## What is stored on your computer
+
+In `~/.tabcrew/` (readable only by your user account): the access token, your API key (if you added one), the list of open agent sessions, optional configuration, and service logs. Logs contain session IDs, tool names and timings; they never contain page text, typed values, tokens or keys. `npx tabcrew uninstall --purge` deletes all of it. Removing the extension deletes its local storage.
+
+## Sharing and selling
+
+TabCrew does not sell, rent or share your data with anyone. The developer does not collect it in the first place. Data is used only to do what you or your agents ask TabCrew to do in your browser.
+
+## Children
+
+TabCrew is a developer tool and is not directed at children.
+
+## Changes
+
+Changes to this policy are published in this file in the TabCrew repository, with a new effective date. The full history is public on GitHub.
+
+## Contact
+
+Questions or concerns: open an issue at <https://github.com/huynle-dev/tabcrew/issues>. For security problems, please use private vulnerability reporting as described in [SECURITY.md](https://github.com/huynle-dev/tabcrew/blob/main/SECURITY.md).
+
+TabCrew is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Google.

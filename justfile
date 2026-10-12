@@ -29,9 +29,32 @@ clean:
 verify: typecheck test build
     npm audit --audit-level=moderate
 
-# Build the Chrome Web Store package (extension/dist-store + zip, no "key").
+# Build and check the Chrome Web Store package (extension/dist-store + zip: no "key", no maps, no eval).
 build-store:
-    npm run build:store -w extension
+    npm run build:store
+
+# Everything CI and the release workflow check, without publishing anything.
+release-check: typecheck test build
+    npm run build:store
+    npm pack --dry-run -w tabcrew
+    for f in daemon/scripts/*.mjs cli/build.mjs extension/scripts/*.mjs store/scripts/*.mjs scripts/*.mjs; do node --check "$f"; done
+    npm audit --audit-level=moderate
+
+# Release steps:
+#   1. just bump X.Y.Z && just release-check
+#   2. git commit -am "chore: release X.Y.Z"
+#   3. git tag vX.Y.Z && git push && git push --tags
+#   4. .github/workflows/release.yml publishes `tabcrew` to npm and creates the GitHub release
+#      with the store zip; upload that zip to the Chrome Web Store by hand (store/SUBMIT.md).
+
+# Set one version in every package.json and the extension manifest, e.g. `just bump 0.5.0`.
+bump version:
+    node scripts/bump-version.mjs {{version}}
+
+# Re-render the extension icons and the Chrome Web Store screenshots (headless Chrome, temp profile).
+store-assets:
+    node extension/scripts/render-icons.mjs
+    node store/scripts/render-screenshots.mjs
 
 # Development install: run the service from this checkout (launchd, pairing host, harnesses).
 setup-dev:

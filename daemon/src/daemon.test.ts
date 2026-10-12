@@ -131,6 +131,28 @@ describe("extension bridge", () => {
     expect(daemon.bridge.connected).toBe(false);
   });
 
+  it("refuses handshakes from web origins and non-local Host headers", async () => {
+    daemon = await startTestDaemon(home);
+    const port = daemon.extensionPort;
+    const attempt = (headers: Record<string, string>) =>
+      new Promise<string>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers });
+        ws.once("open", () => {
+          ws.terminate();
+          resolve("open");
+        });
+        ws.once("unexpected-response", (_req, res) => resolve(`http ${res.statusCode}`));
+        ws.once("error", () => resolve("error"));
+      });
+    expect(await attempt({ origin: "https://evil.example" })).toBe("http 401");
+    expect(await attempt({ origin: "http://127.0.0.1:8000" })).toBe("http 401");
+    expect(await attempt({ origin: "null" })).toBe("http 401");
+    expect(await attempt({ origin: "file://" })).toBe("http 401");
+    expect(await attempt({ host: "evil.example:8771" })).toBe("http 401");
+    expect(await attempt({ origin: "chrome-extension://aejgcpbbemekfbmmkabpbgdkgmddfamo" })).toBe("open");
+    expect(await attempt({})).toBe("open");
+  });
+
   it("closes with 4401 when no hello arrives in time", async () => {
     daemon = await startTestDaemon(home, { helloTimeoutMs: 100 });
     const ws = new WebSocket(`ws://127.0.0.1:${daemon.extensionPort}`);

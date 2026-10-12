@@ -1,29 +1,41 @@
 # TabCrew
 
+[![npm](https://img.shields.io/npm/v/tabcrew)](https://www.npmjs.com/package/tabcrew)
+[![CI](https://github.com/huynle-dev/tabcrew/actions/workflows/ci.yml/badge.svg)](https://github.com/huynle-dev/tabcrew/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 TabCrew lets AI agents use your real browser. One local daemon serves many agents at once, and each agent works in its own isolated browser session: its own window and tab group, its own tabs, and no access to anyone else's tabs.
 
 Agents can drive pages step by step (`observe` / `act`) or hand a whole goal to `browse`. `browse` runs the [jev-ultrafast](https://github.com/browser-use/jev-ultrafast) loop (observe the page, choose one operation and target, act, repeat) using Jev through OpenRouter's Decisions API, plus a small text model for the values it types.
 
 TabCrew was previously called ChromeUse. It is not affiliated with or endorsed by Google.
 
-## Quick start
+## Install
 
-Requires macOS, Node 20+, Google Chrome (or Chromium, Brave, Edge) and, for `browse`, an OpenRouter API key.
+You need macOS, Node.js 20+, Google Chrome (or Chromium, Brave, Edge) and, for `browse`, an [OpenRouter](https://openrouter.ai) API key.
 
-```sh
-npx tabcrew setup
-```
+1. **Install the local daemon:**
 
-Then install the TabCrew extension (Chrome Web Store listing pending; until then see [Development](#development)). There is no token to copy: the extension pairs with the daemon automatically. Check the installation any time with `npx tabcrew doctor`.
+   ```sh
+   npx tabcrew setup
+   ```
 
-`setup`:
+2. **Install the extension** from the Chrome Web Store: *listing pending review* (link will appear here). Until it is published, load the development build as described in [Development](#development).
+
+3. **Check:** the extension pairs with the daemon automatically (no token to copy) and its popup shows **connected**. Run `npx tabcrew doctor` any time.
+
+Your agents (OpenCode, Claude Code, or any MCP client) can now call `session_open` and the other [tools](#tools). Remove everything with `npx tabcrew uninstall --purge`.
+
+TabCrew has no servers and no telemetry; see the [privacy policy](https://huynle-dev.github.io/tabcrew/privacy) and [Security](#security).
+
+### What setup does
 
 1. Moves an existing `~/.chromeuse` into `~/.tabcrew` (leaving a `~/.chromeuse` symlink) and creates the token (`~/.tabcrew/token`, mode 600).
 2. Asks for your OpenRouter key (hidden input), checks it with a free OpenRouter call and stores it in `~/.tabcrew/env` (mode 600). Press Enter to skip; `browse` then reports `model_error` until a key is added.
 3. Copies the self-contained runtime (`daemon.mjs`, `pair-host.mjs`) into `~/.tabcrew/app/`, so nothing depends on the npx cache.
 4. Writes `~/Library/LaunchAgents/com.tabcrew.daemon.plist`, removes the old `com.chromeuse.daemon` job if present, starts the service and waits for `/health`.
 5. Registers the `com.tabcrew.pair` native messaging host for Chrome (and Chromium, Brave, Edge if installed).
-6. Offers to add TabCrew to OpenCode (`~/.config/opencode/opencode.json[c]`, comments preserved) and Claude Code (`claude mcp add`, user scope).
+6. Asks before adding TabCrew to OpenCode (`~/.config/opencode/opencode.json[c]`, comments preserved) and Claude Code (`claude mcp add`, user scope).
 
 Options: `--yes` (no questions; the key comes from `$OPENROUTER_API_KEY`), `--no-harness`, `--from-source <repo>` (development).
 
@@ -66,9 +78,13 @@ Pairing: when the extension has no token (or the daemon rejects it with 4401), t
 | `cli/` | The publishable `tabcrew` npm package: esbuild bundles `dist/cli.mjs`, `dist/daemon.mjs`, `dist/pair-host.mjs` |
 | `extension/` | MV3 extension: offscreen socket, service worker, CDP snapshot/act, popup, pairing |
 | `shared/` | Protocol types and product constants (`@tabcrew/shared/v2`, `@tabcrew/shared/product`) |
-| `docs/plans/` | Design records |
+| `docs/` | Design records (`plans/`) and the GitHub Pages site with the privacy policy |
+| `store/` | Chrome Web Store kit: listing, permission justifications, screenshots, submission checklist |
+| `scripts/` | Release helpers (`bump-version.mjs`) |
 
 ## Development
+
+Requires the same as [Install](#install), plus [just](https://github.com/casey/just) (optional; every recipe is a plain npm command).
 
 ```sh
 just install                 # npm install && npm run build
@@ -78,6 +94,13 @@ just setup-dev               # tabcrew setup --from-source $(pwd): launchd runs 
 Load the extension: open `chrome://extensions`, enable Developer mode, choose **Load unpacked** and select `extension/dist`. Development builds carry a public `key` in their manifest, so their ID is always `aejgcpbbemekfbmmkabpbgdkgmddfamo` and the pairing host accepts them. `npm run build:store -w extension` writes `extension/dist-store/` and `extension/tabcrew-extension-<version>.zip` without `key` for the Chrome Web Store; once the store assigns an ID, add it to `TABCREW_EXTENSION_IDS.store` in `shared/src/product.ts` and rerun `tabcrew setup` (or `update`) so the host manifest allows it.
 
 `node daemon/dist/index.js` runs the daemon in the foreground; `node daemon/dist/index.js <command>` runs any `tabcrew` command from the checkout.
+
+### Releasing
+
+1. `just bump X.Y.Z` (sets the version in every `package.json` and `extension/manifest.json`), then `just release-check` (typecheck, tests, builds, store package check, `npm pack --dry-run`, audit).
+2. Commit, then `git tag vX.Y.Z && git push && git push --tags`.
+3. `.github/workflows/release.yml` publishes `tabcrew` to npm with provenance (needs the `NPM_TOKEN` secret; skipped with a warning without it) and creates a GitHub release with `tabcrew-extension-X.Y.Z.zip` attached.
+4. Upload that zip to the Chrome Web Store by hand: see [`store/SUBMIT.md`](store/SUBMIT.md). The listing text, permission justifications, icon and screenshots live in [`store/`](store/); `just store-assets` re-renders the images.
 
 ## Harness configuration
 
@@ -170,13 +193,14 @@ The following settings come from the environment (or `~/.tabcrew/env`) only:
 
 - Both ports bind to `127.0.0.1` only.
 - The MCP endpoint requires `Authorization: Bearer <token>`; the extension socket requires the same token. The token lives in `~/.tabcrew/token`, readable only by its owner.
-- Requests with an `Origin` header not listed in `allowed_origins` are rejected, so web pages cannot call the daemon. The `Host` header must be `127.0.0.1`, `localhost` or `[::1]`.
+- Requests with an `Origin` header not listed in `allowed_origins` are rejected, so web pages cannot call the daemon; the extension socket only accepts `chrome-extension://` origins. On both ports the `Host` header must be `127.0.0.1`, `localhost` or `[::1]` (DNS rebinding).
+- The extension ships no remote code; the page scripts it evaluates through the debugger are fixed constants in its bundle.
 - `debug_logs` never stores headers, cookies, bodies or query strings.
 - API keys are read from the environment or `~/.tabcrew/env` only; a key in `config.toml` is ignored with a warning.
 - The pairing host only answers TabCrew extension IDs (checked by Chrome via `allowed_origins` and again by the host) and never logs the token.
 - Agents act in your real, signed-in browser. Only connect agents you trust.
 
-See `SECURITY.md` for reporting vulnerabilities.
+See [`SECURITY.md`](SECURITY.md) for the threat model and how to report vulnerabilities privately, and the [privacy policy](https://huynle-dev.github.io/tabcrew/privacy) for what data goes where.
 
 ## Testing
 

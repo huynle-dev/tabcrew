@@ -1,0 +1,6 @@
+# GitHub Pages (Settings → Pages → Deploy from a branch → main, /docs).
+# Serves docs/index.md at https://huynle-dev.github.io/tabcrew/ and docs/privacy.md at /privacy.
+title: TabCrew
+description: Give your local AI agents their own isolated tabs in your browser.
+exclude:
+  - plans

@@ -67,6 +67,7 @@ const staticFiles: [string, string][] = [
   ["src/popup/popup.css", "popup/popup.css"],
   ["src/offscreen/offscreen.html", "offscreen/offscreen.html"],
   ["assets/icon-16.png", "icons/icon-16.png"],
+  ["assets/icon-32.png", "icons/icon-32.png"],
   ["assets/icon-48.png", "icons/icon-48.png"],
   ["assets/icon-128.png", "icons/icon-128.png"],
 ];
@@ -84,7 +85,7 @@ function copyStatic(): void {
 function zipStore(): string {
   const zip = join(root, `tabcrew-extension-${String(sourceManifest.version)}.zip`);
   rmSync(zip, { force: true });
-  execFileSync("zip", ["-qrX", zip, "."], { cwd: dist });
+  execFileSync("zip", ["-qrX", zip, ".", "-x", "*.map", "*.DS_Store"], { cwd: dist });
   return zip;
 }
 

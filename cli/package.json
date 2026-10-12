@@ -17,7 +17,11 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "repository": "github:huynle-dev/tabcrew",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huynle-dev/tabcrew.git",
+    "directory": "cli"
+  },
   "homepage": "https://github.com/huynle-dev/tabcrew#readme",
   "bugs": {
     "url": "https://github.com/huynle-dev/tabcrew/issues"

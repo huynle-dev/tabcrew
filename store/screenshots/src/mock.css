@@ -1,0 +1,373 @@
+/* Shared styles for the Chrome Web Store screenshot mockups (rendered by store/scripts/render-screenshots.mjs). */
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  width: 1280px;
+  height: 800px;
+  overflow: hidden;
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  color: #1f2328;
+}
+body {
+  background: linear-gradient(135deg, #f5f3ff 0%, #ecfeff 55%, #fff7ed 100%);
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 32px;
+  padding: 48px 48px 48px 56px;
+}
+body.promo {
+  width: 440px;
+  height: 280px;
+}
+.caption {
+  align-self: center;
+}
+.caption .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 18px;
+  color: #4c1d95;
+  margin-bottom: 22px;
+}
+.caption .brand img {
+  width: 36px;
+  height: 36px;
+}
+.caption h1 {
+  font-size: 34px;
+  line-height: 1.15;
+  margin: 0 0 16px;
+  letter-spacing: -0.5px;
+}
+.caption p {
+  font-size: 17px;
+  color: #475467;
+  margin: 0 0 12px;
+}
+.caption ul {
+  padding-left: 20px;
+  color: #475467;
+  font-size: 15px;
+}
+
+/* A generic browser window (deliberately not any vendor's chrome). */
+.browser {
+  align-self: center;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(30, 20, 60, 0.18), 0 2px 6px rgba(30, 20, 60, 0.08);
+  overflow: hidden;
+  height: 640px;
+  position: relative;
+}
+.titlebar {
+  height: 44px;
+  background: #e9e7f0;
+  display: flex;
+  align-items: flex-end;
+  padding: 0 10px;
+  gap: 4px;
+}
+.lights {
+  display: flex;
+  gap: 7px;
+  align-self: center;
+  margin-right: 10px;
+}
+.lights i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #d0cdd8;
+  display: block;
+}
+.tab {
+  height: 34px;
+  min-width: 0;
+  max-width: 170px;
+  flex: 1 1 150px;
+  background: transparent;
+  border-radius: 9px 9px 0 0;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #3f3f46;
+  white-space: nowrap;
+  overflow: hidden;
+  position: relative;
+}
+.tab.active {
+  background: #fff;
+}
+.tab .fav {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.tab span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab.in-group::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 0;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--g);
+}
+.group-chip {
+  align-self: center;
+  margin-bottom: 4px;
+  height: 24px;
+  border-radius: 7px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  color: #fff;
+  background: var(--g);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.group-chip.outline {
+  background: transparent;
+  color: var(--g);
+  box-shadow: inset 0 0 0 2px var(--g);
+}
+.toolbar {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-bottom: 1px solid #ecebf1;
+}
+.toolbar .nav {
+  color: #a1a1aa;
+  font-size: 16px;
+  letter-spacing: 8px;
+}
+.omnibox {
+  flex: 1;
+  height: 30px;
+  border-radius: 15px;
+  background: #f1f0f5;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  color: #52525b;
+  font-size: 13px;
+}
+.ext-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+}
+.ext-btn.pressed {
+  background: #ede9fe;
+}
+.ext-btn img {
+  width: 18px;
+  height: 18px;
+}
+.page {
+  padding: 28px 36px;
+  color: #71717a;
+}
+.page .line {
+  height: 12px;
+  border-radius: 6px;
+  background: #ecebf1;
+  margin: 12px 0;
+}
+.page .hero {
+  height: 150px;
+  border-radius: 12px;
+  background: linear-gradient(120deg, #e0f2fe, #ede9fe);
+  margin-bottom: 22px;
+}
+
+/* The real popup's styles (extension/src/popup/popup.css), scoped to .popup. */
+.popup {
+  position: absolute;
+  top: 82px;
+  right: 14px;
+  width: 300px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(20, 10, 40, 0.22), 0 0 0 1px rgba(20, 10, 40, 0.06);
+  padding: 10px 12px 12px;
+  font: 13px/1.4 system-ui, sans-serif;
+  color: #1f2328;
+}
+.popup.big {
+  transform: scale(1.25);
+  transform-origin: top right;
+}
+.popup header,
+.popup .row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.popup header,
+.popup .spread {
+  justify-content: space-between;
+}
+.popup h1 {
+  font-size: 15px;
+  margin: 0;
+}
+.popup h2 {
+  font-size: 13px;
+  margin: 0;
+}
+.popup section,
+.popup details {
+  margin-top: 12px;
+}
+.popup legend {
+  font-weight: 600;
+  margin-bottom: 4px;
+  padding: 0;
+}
+.popup fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.popup label.radio {
+  display: flex;
+  align-items: center;
+  font-weight: normal;
+  margin: 2px 0 0;
+}
+.popup label.radio input {
+  margin: 0 6px 0 0;
+}
+.popup button {
+  padding: 3px 8px;
+  font: 12px system-ui, sans-serif;
+  border: 1px solid #c9c9d1;
+  border-radius: 5px;
+  background: #f7f7f9;
+}
+.popup button.danger {
+  color: #b42318;
+}
+.popup ul {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.popup li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid #eee;
+}
+.popup li .meta {
+  color: #666;
+  font-size: 11px;
+}
+.popup li .actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.popup li.finished > span:first-child {
+  color: #05603a;
+}
+.popup .note {
+  margin: 4px 0 0;
+  color: #666;
+  font-size: 11px;
+}
+.popup .radio-note {
+  margin-left: 18px;
+}
+.popup .status {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: #d1fadf;
+  color: #05603a;
+}
+.popup details summary {
+  color: #444;
+}
+.highlight {
+  border-radius: 8px;
+  box-shadow: 0 0 0 3px #8b5cf6;
+  padding: 6px 8px;
+  margin: 0 -8px;
+}
+
+/* Terminal mock for the harness screenshot. */
+.terminal {
+  align-self: center;
+  background: #1e1b2e;
+  color: #e4e4e7;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(30, 20, 60, 0.25);
+  height: 660px;
+  overflow: hidden;
+  font: 13.5px/1.6 "SF Mono", Menlo, Consolas, monospace;
+}
+.terminal .bar {
+  height: 36px;
+  background: #2a2640;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 7px;
+  color: #a1a1aa;
+  font: 12px system-ui, sans-serif;
+}
+.terminal .bar i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #4a4560;
+  display: block;
+}
+.terminal .bar b {
+  margin-left: 10px;
+  font-weight: 500;
+}
+.terminal pre {
+  margin: 0;
+  padding: 18px 22px;
+  white-space: pre-wrap;
+  font: inherit;
+}
+.t-user {
+  color: #c4b5fd;
+}
+.t-tool {
+  color: #5eead4;
+}
+.t-dim {
+  color: #8b8aa0;
+}
+.t-ok {
+  color: #86efac;
+}
+.t-str {
+  color: #fdba74;
+}

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="mock.css" />
+  </head>
+  <body>
+    <div class="caption">
+      <div class="brand"><img src="../../../extension/assets/icon-128.png" alt="" />TabCrew</div>
+      <h1>Every AI agent gets its own tabs.</h1>
+      <p>Run several agents at once. Each one works in a private session and can't see or touch your tabs or anyone else's.</p>
+      <p>See what is running, bring any session to the front, or stop it with one click.</p>
+    </div>
+
+    <div class="browser">
+      <div class="titlebar">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <div class="group-chip" style="--g: #0d9488">flights · 7k2pq9xd</div>
+        <div class="tab active in-group" style="--g: #0d9488"><span class="fav" style="background: #99f6e4"></span><span>Flights to Lisbon</span></div>
+        <div class="tab in-group" style="--g: #0d9488"><span class="fav" style="background: #fde68a"></span><span>Fare calendar</span></div>
+      </div>
+      <div class="toolbar">
+        <span class="nav">‹ › ↻</span>
+        <div class="omnibox">flights.example.com/search?from=SFO&amp;to=LIS</div>
+        <div class="ext-btn pressed"><img src="../../../extension/assets/icon-32.png" alt="" /></div>
+      </div>
+      <div class="page">
+        <div class="hero"></div>
+        <div class="line" style="width: 62%"></div>
+        <div class="line" style="width: 48%"></div>
+        <div class="line" style="width: 70%"></div>
+        <div class="line" style="width: 40%"></div>
+      </div>
+
+      <div class="popup big">
+        <header>
+          <h1>TabCrew</h1>
+          <span class="status">connected</span>
+        </header>
+        <section>
+          <fieldset>
+            <legend>New agent tabs open in:</legend>
+            <label class="radio"><input type="radio" name="p" checked /> Their own window (fastest)</label>
+            <label class="radio"><input type="radio" name="p" /> My current window</label>
+          </fieldset>
+        </section>
+        <section>
+          <div class="row spread">
+            <h2>Sessions</h2>
+            <button class="danger">Stop all</button>
+          </div>
+          <ul>
+            <li>
+              <span>flights · 7k2pq9xd <span class="meta">2 tabs</span></span>
+              <span class="actions"><button>Show</button><button class="danger">Stop</button></span>
+            </li>
+            <li>
+              <span>research · m3c8vt1a <span class="meta">3 tabs</span></span>
+              <span class="actions"><button>Show</button><button class="danger">Stop</button></span>
+            </li>
+            <li>
+              <span>docs-check · q9w2e4rz <span class="meta">1 tab</span></span>
+              <span class="actions"><button>Show</button><button class="danger">Stop</button></span>
+            </li>
+          </ul>
+        </section>
+        <section>
+          <div class="row spread">
+            <h2>Finished</h2>
+            <button>Close all finished</button>
+          </div>
+          <ul>
+            <li class="finished">
+              <span>✓ compare laptops <span class="meta">3 tabs</span></span>
+              <span class="actions"><button>Open</button><button>Close</button></span>
+            </li>
+            <li class="finished">
+              <span>✓ release notes <span class="meta">1 tab</span></span>
+              <span class="actions"><button>Open</button><button>Close</button></span>
+            </li>
+          </ul>
+        </section>
+        <details>
+          <summary>Advanced</summary>
+        </details>
+      </div>
+    </div>
+  </body>
+</html>

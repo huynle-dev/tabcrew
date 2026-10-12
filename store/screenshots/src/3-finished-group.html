@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="mock.css" />
+    <style>
+      .result {
+        margin: 26px 36px;
+        border: 1px solid #ecebf1;
+        border-radius: 12px;
+        padding: 22px 26px;
+        color: #3f3f46;
+      }
+      .result h3 {
+        margin: 0 0 12px;
+        font-size: 20px;
+        color: #18181b;
+      }
+      .result table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      .result td,
+      .result th {
+        text-align: left;
+        padding: 9px 6px;
+        border-bottom: 1px solid #f1f0f5;
+      }
+      .result th {
+        color: #71717a;
+        font-weight: 600;
+      }
+      .callout {
+        position: absolute;
+        top: 52px;
+        left: 236px;
+        background: #05603a;
+        color: #fff;
+        font-size: 13px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        box-shadow: 0 8px 20px rgba(5, 96, 58, 0.3);
+      }
+      .callout::before {
+        content: "";
+        position: absolute;
+        top: -6px;
+        left: 30px;
+        border: 6px solid transparent;
+        border-top: 0;
+        border-bottom-color: #05603a;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="caption">
+      <div class="brand"><img src="../../../extension/assets/icon-128.png" alt="" />TabCrew</div>
+      <h1>Finished work comes back to you.</h1>
+      <p>When an agent is done, its tabs move into your window as a collapsed <b>✓ task</b> group, ready for review.</p>
+      <p>The agent loses access to them at that moment. Open the group, keep what you need, close the rest.</p>
+    </div>
+
+    <div class="browser">
+      <div class="titlebar">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <div class="tab"><span class="fav" style="background: #c7d2fe"></span><span>Project board</span></div>
+        <div class="group-chip" style="--g: #16a34a">✓ compare laptops</div>
+        <div class="group-chip outline" style="--g: #16a34a">✓ release notes</div>
+        <div class="tab active"><span class="fav" style="background: #fecaca"></span><span>Inbox</span></div>
+      </div>
+      <div class="callout">3 tabs from the "compare laptops" agent, handed over for review</div>
+      <div class="toolbar">
+        <span class="nav">‹ › ↻</span>
+        <div class="omnibox">mail.example.com/inbox</div>
+        <div class="ext-btn"><img src="../../../extension/assets/icon-32.png" alt="" /></div>
+      </div>
+      <div class="result" style="margin-top: 70px">
+        <h3>Laptop comparison (prepared by your agent)</h3>
+        <table>
+          <tr><th>Model</th><th>Weight</th><th>Battery</th><th>Price</th></tr>
+          <tr><td>Model A 14"</td><td>1.24 kg</td><td>18 h</td><td>$1,299</td></tr>
+          <tr><td>Model B 13"</td><td>1.10 kg</td><td>15 h</td><td>$1,149</td></tr>
+          <tr><td>Model C 14"</td><td>1.39 kg</td><td>21 h</td><td>$1,399</td></tr>
+        </table>
+      </div>
+      <div class="page">
+        <div class="line" style="width: 58%"></div>
+        <div class="line" style="width: 42%"></div>
+      </div>
+    </div>
+  </body>
+</html>

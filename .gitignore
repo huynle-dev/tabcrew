@@ -19,3 +19,8 @@ __MACOSX/
 *.swo
 
 .worktrees
+
+# Temporary headless Chrome profiles of store/scripts/render-screenshots.mjs
+store/.chrome-profile-*/
+# Jekyll (GitHub Pages preview)
+docs/_site/

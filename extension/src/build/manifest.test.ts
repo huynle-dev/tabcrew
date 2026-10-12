@@ -33,4 +33,23 @@ describe("extension manifest", () => {
     expect(store.permissions).toContain("nativeMessaging");
     expect(store.version).toBe(source.version);
   });
+
+  it("declares 16/32/48/128 icons that exist in assets at their stated size", () => {
+    const icons = source.icons as Record<string, string>;
+    const action = (source.action as { default_icon: Record<string, string> }).default_icon;
+    expect(Object.keys(icons).sort()).toEqual(["128", "16", "32", "48"]);
+    expect(action).toEqual(icons);
+    for (const [size, path] of Object.entries(icons)) {
+      const png = readFileSync(new URL(`../../assets/${path.replace(/^icons\//, "")}`, import.meta.url));
+      expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
+      expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([Number(size), Number(size)]);
+    }
+  });
+
+  it("has the same version as every package.json in the repo", () => {
+    for (const pkg of ["../../package.json", "../../../package.json", "../../../cli/package.json", "../../../daemon/package.json", "../../../shared/package.json"]) {
+      const version = (JSON.parse(readFileSync(new URL(pkg, import.meta.url), "utf8")) as { version: string }).version;
+      expect(version, pkg).toBe(source.version);
+    }
+  });
 });

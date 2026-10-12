@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="mock.css" />
+  </head>
+  <body>
+    <div class="caption">
+      <div class="brand"><img src="../../../extension/assets/icon-128.png" alt="" />TabCrew</div>
+      <h1>You decide where agents work.</h1>
+      <p>Agent tabs open in their own window by default, so they never get in your way.</p>
+      <p>Prefer to watch? Let them open in your current window instead. Agents never switch the tab you are looking at.</p>
+    </div>
+
+    <div class="browser">
+      <div class="titlebar">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <div class="tab active"><span class="fav" style="background: #c7d2fe"></span><span>Project board</span></div>
+        <div class="tab"><span class="fav" style="background: #fecaca"></span><span>Inbox</span></div>
+        <div class="group-chip" style="--g: #7c3aed">research · m3c8vt1a</div>
+        <div class="tab in-group" style="--g: #7c3aed"><span class="fav" style="background: #ddd6fe"></span><span>Benchmarks 2026</span></div>
+      </div>
+      <div class="toolbar">
+        <span class="nav">‹ › ↻</span>
+        <div class="omnibox">board.example.com/team/sprint-42</div>
+        <div class="ext-btn pressed"><img src="../../../extension/assets/icon-32.png" alt="" /></div>
+      </div>
+      <div class="page">
+        <div class="hero" style="background: linear-gradient(120deg, #fef3c7, #fce7f3)"></div>
+        <div class="line" style="width: 55%"></div>
+        <div class="line" style="width: 66%"></div>
+        <div class="line" style="width: 44%"></div>
+      </div>
+
+      <div class="popup big" style="transform: scale(1.45)">
+        <header>
+          <h1>TabCrew</h1>
+          <span class="status">connected</span>
+        </header>
+        <section>
+          <div class="highlight"><fieldset>
+            <legend>New agent tabs open in:</legend>
+            <label class="radio"><input type="radio" name="p" /> Their own window (fastest)</label>
+            <label class="radio"><input type="radio" name="p" checked /> My current window</label>
+            <p class="note radio-note">Slower: Chrome throttles tabs you aren't looking at. Agents never switch your current tab.</p>
+          </fieldset></div>
+        </section>
+        <section>
+          <div class="row spread">
+            <h2>Sessions</h2>
+            <button class="danger">Stop all</button>
+          </div>
+          <ul>
+            <li>
+              <span>research · m3c8vt1a <span class="meta">1 tab</span></span>
+              <span class="actions"><button>Show</button><button class="danger">Stop</button></span>
+            </li>
+          </ul>
+        </section>
+        <details>
+          <summary>Advanced</summary>
+        </details>
+      </div>
+    </div>
+  </body>
+</html>

@@ -34,17 +34,14 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Build store package
-        run: npm run build:store -w extension
-
-      - name: Check store manifest has no key
-        run: node -e 'const m=require("./extension/dist-store/manifest.json"); if ("key" in m) process.exit(1)'
+      - name: Build and check the store package (no key, no source maps, no eval)
+        run: npm run build:store
 
       - name: Check the CLI package contents
         run: npm pack --dry-run -w tabcrew
 
       - name: Check scripts parse
-        run: for f in daemon/scripts/*.mjs cli/build.mjs; do node --check "$f"; done
+        run: for f in daemon/scripts/*.mjs cli/build.mjs extension/scripts/*.mjs store/scripts/*.mjs scripts/*.mjs; do node --check "$f"; done
 
       - name: Audit dependencies
         run: npm audit --audit-level=moderate

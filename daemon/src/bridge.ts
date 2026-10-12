@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   V2_PROTOCOL_VERSION,
@@ -10,6 +11,7 @@ import {
 } from "@tabcrew/shared/v2";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { DaemonError, fromWireError } from "./errors.js";
+import { extensionOriginAllowed, hostAllowed } from "./localhost.js";
 import { log } from "./log.js";
 import { safeEqual } from "./token.js";
 
@@ -94,8 +96,10 @@ export class ExtensionBridge {
       host: this.options.host ?? "127.0.0.1",
       port: this.options.port,
       maxPayload: 64 * 1024 * 1024,
-      // Web pages must never reach this socket; the extension's origin is chrome-extension://.
-      verifyClient: ({ origin }: { origin?: string }) => !origin || !/^https?:/i.test(origin),
+      // Web pages must never reach this socket (the extension's origin is chrome-extension://), and
+      // a rebound DNS name must not either. The token in the hello frame is still required.
+      verifyClient: ({ origin, req }: { origin?: string; req: IncomingMessage }) =>
+        extensionOriginAllowed(origin) && hostAllowed(req.headers.host),
     });
     this.wss = wss;
     wss.on("connection", (socket) => this.handleConnection(socket));

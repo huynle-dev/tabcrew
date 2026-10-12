@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist dist-store tabcrew-extension-*.zip",
-    "build:store": "tsx esbuild.config.ts --store"
+    "build:store": "tsx esbuild.config.ts --store && node scripts/check-store.mjs"
   },
   "dependencies": {
     "@tabcrew/shared": "*"
