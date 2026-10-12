@@ -17,7 +17,7 @@ This package installs and manages the local side: the daemon service, the pairin
 npx tabcrew setup
 ```
 
-Then install the **TabCrew** browser extension (Chrome Web Store listing pending; until then load `extension/dist` from the repository as an unpacked extension). It pairs with the daemon automatically: there is no token to copy. Check everything with:
+Then install the **TabCrew** browser extension. The Chrome Web Store listing is pending; until then download `tabcrew-extension-unpacked-<version>.zip` from the [latest GitHub release](https://github.com/huynle/tabcrew/releases/latest), unzip it to a permanent folder, and load it with **Load unpacked** in `chrome://extensions` (Developer mode). It pairs with the daemon automatically: there is no token to copy. Check everything with:
 
 ```sh
 npx tabcrew doctor

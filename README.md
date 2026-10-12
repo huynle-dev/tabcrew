@@ -20,7 +20,8 @@ You need macOS, Node.js 20+, Google Chrome (or Chromium, Brave, Edge) and, for `
    npx tabcrew setup
    ```
 
-2. **Install the extension** from the Chrome Web Store: *listing pending review* (link will appear here). Until it is published, load the development build as described in [Development](#development).
+2. **Install the extension** from the Chrome Web Store: *listing pending review* (link will appear here).
+   Until the store listing is live, install it manually: download `tabcrew-extension-unpacked-<version>.zip` from the [latest release](https://github.com/huynle/tabcrew/releases/latest), unzip it to a permanent folder, open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and select that folder. It pairs automatically.
 
 3. **Check:** the extension pairs with the daemon automatically (no token to copy) and its popup shows **connected**. Run `npx tabcrew doctor` any time.
 

@@ -60,6 +60,11 @@ jobs:
       - name: Build and check the store package
         run: npm run build:store
 
+      - name: Zip the unpacked (fixed-ID) build for manual install
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          (cd extension/dist && zip -qr "../tabcrew-extension-unpacked-$version.zip" . -x '*.map' -x '.DS_Store')
+
       - name: Check the CLI package contents
         run: npm pack --dry-run -w tabcrew
 
@@ -87,11 +92,12 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           zip="extension/tabcrew-extension-$version.zip"
-          test -f "$zip"
+          unpacked="extension/tabcrew-extension-unpacked-$version.zip"
+          test -f "$zip" && test -f "$unpacked"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$zip" --clobber
+            gh release upload "$GITHUB_REF_NAME" "$zip" "$unpacked" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$zip" \
+            gh release create "$GITHUB_REF_NAME" "$zip" "$unpacked" \
               --verify-tag \
               --title "TabCrew $version" \
               --generate-notes
