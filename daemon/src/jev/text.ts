@@ -1,4 +1,4 @@
-import type { V2Action } from "@chromeuse/shared/v2";
+import type { V2Action } from "@tabcrew/shared/v2";
 import { DaemonError } from "../errors.js";
 import { MAX_TYPE_TEXT } from "../observe.js";
 import { MISSING_KEY_MESSAGE, OPENROUTER_URL, postJson, type HistoryEntry, type ModelSettings, type PageState } from "./decisions.js";

@@ -14,7 +14,7 @@ import {
   type V2Snapshot,
   type V2TabInfo,
   type V2Welcome,
-} from "@chromeuse/shared/v2";
+} from "@tabcrew/shared/v2";
 import { WebSocket } from "ws";
 import { loadConfig, type DaemonConfig } from "../config.js";
 import { startDaemon, type DaemonOverrides, type RunningDaemon } from "../daemon.js";
@@ -23,12 +23,12 @@ import { setLogSink } from "../log.js";
 setLogSink(() => {});
 
 export function tempHome(): { home: string; cleanup: () => void } {
-  const home = mkdtempSync(join(tmpdir(), "chromeuse-daemon-test-"));
+  const home = mkdtempSync(join(tmpdir(), "tabcrew-daemon-test-"));
   return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
 
 export function testConfig(home: string, extra: Record<string, string> = {}): DaemonConfig {
-  return loadConfig({ CHROMEUSE_HOME: home, CHROMEUSE_MCP_PORT: "0", CHROMEUSE_EXTENSION_PORT: "0", ...extra });
+  return loadConfig({ TABCREW_HOME: home, TABCREW_MCP_PORT: "0", TABCREW_EXTENSION_PORT: "0", ...extra });
 }
 
 export async function startTestDaemon(

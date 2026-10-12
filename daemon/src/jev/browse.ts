@@ -1,4 +1,4 @@
-import type { V2Action, V2ActResult, V2Snapshot } from "@chromeuse/shared/v2";
+import type { V2Action, V2ActResult, V2Snapshot } from "@tabcrew/shared/v2";
 import type { ExtensionBridge } from "../bridge.js";
 import { DaemonError } from "../errors.js";
 import { isCode, onTab } from "../lanes.js";

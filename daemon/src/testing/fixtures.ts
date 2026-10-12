@@ -1,4 +1,4 @@
-import type { V2Snapshot } from "@chromeuse/shared/v2";
+import type { V2Snapshot } from "@tabcrew/shared/v2";
 
 /** A realistic snapshot in the shape produced by the jev-ultrafast snapshot.js port. */
 export function flightsSnapshot(fingerprint = "fp-flights-1"): V2Snapshot {

@@ -1,5 +1,5 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { V2Request, V2Snapshot } from "@chromeuse/shared/v2";
+import type { V2Request, V2Snapshot } from "@tabcrew/shared/v2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunningDaemon } from "../daemon.js";
 import { setLogSink } from "../log.js";
@@ -507,13 +507,13 @@ describe("loop control", () => {
     const a = await openWithTab(client, ext);
     const r = await browse(client, { session: a.S, tab_id: a.tab, goal: "g" });
     expect(r.status).toBe("model_error");
-    expect(r.message).toContain("set OPENROUTER_API_KEY in ~/.chromeuse/env");
+    expect(r.message).toContain("set OPENROUTER_API_KEY in ~/.tabcrew/env");
     expect(modelCalls).toHaveLength(0);
     expect(acts(ext)).toHaveLength(0);
   });
 
   it("caps concurrent loops at browse_concurrency; excess calls wait in order", async () => {
-    const { client, ext } = await setup({ OPENROUTER_API_KEY: "k", CHROMEUSE_BROWSE_CONCURRENCY: "1" });
+    const { client, ext } = await setup({ OPENROUTER_API_KEY: "k", TABCREW_BROWSE_CONCURRENCY: "1" });
     const a = await openWithTab(client, ext);
     const b = await openWithTab(client, ext);
     const c = await openWithTab(client, ext);

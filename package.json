@@ -1,17 +1,17 @@
 {
-  "name": "chromeuse-mcp",
-  "version": "0.3.0",
+  "name": "tabcrew-monorepo",
+  "version": "0.4.0",
   "private": true,
-  "description": "One local daemon that gives many AI agents their own isolated sessions in your real Chrome, with Jev-driven browse",
+  "description": "TabCrew: one local daemon that gives many AI agents their own isolated sessions in your real browser, with Jev-driven browse",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/huynle/chromeuse-mcp.git"
+    "url": "git+https://github.com/huynle/tabcrew.git"
   },
   "bugs": {
-    "url": "https://github.com/huynle/chromeuse-mcp/issues"
+    "url": "https://github.com/huynle/tabcrew/issues"
   },
-  "homepage": "https://github.com/huynle/chromeuse-mcp#readme",
+  "homepage": "https://github.com/huynle/tabcrew#readme",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -23,11 +23,13 @@
   "workspaces": [
     "shared",
     "daemon",
-    "extension-v2"
+    "cli",
+    "extension"
   ],
   "scripts": {
-    "build": "npm run build -w shared && npm run build -w daemon && npm run build -w extension-v2",
-    "typecheck": "npm run build -w shared && npm run typecheck -w daemon && npm run typecheck -w extension-v2",
+    "build": "npm run build -w shared && npm run build -w daemon && npm run build -w cli && npm run build -w extension",
+    "build:store": "npm run build -w shared && npm run build:store -w extension",
+    "typecheck": "npm run build -w shared && npm run typecheck -w daemon && npm run typecheck -w cli && npm run typecheck -w extension",
     "test": "npm run test --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"
   },

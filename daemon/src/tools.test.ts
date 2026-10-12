@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { V2Request } from "@chromeuse/shared/v2";
+import type { V2Request } from "@tabcrew/shared/v2";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunningDaemon } from "./daemon.js";
 import { SessionRegistry } from "./sessions.js";

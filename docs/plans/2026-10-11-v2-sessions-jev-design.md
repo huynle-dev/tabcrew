@@ -1,4 +1,6 @@
-# ChromeUse v2: Isolated Agent Sessions and the Jev Loop
+# TabCrew (formerly ChromeUse v2): Isolated Agent Sessions and the Jev Loop
+
+> 2026-10-12: the product was renamed **TabCrew** (`extension-v2/` → `extension/`, `~/.chromeuse` → `~/.tabcrew`, launchd `com.tabcrew.daemon`) and gained the `tabcrew` CLI and automatic pairing. See `2026-10-12-tabcrew-packaging-pairing.md`. Paths below use the new names.
 
 Date: 2026-10-11
 Status: Approved design, not yet implemented
@@ -6,7 +8,7 @@ Supersedes: the `ai_*` tools from `2026-10-01-direct-jev-browser-decisions.md`; 
 
 ## Goal
 
-Many agents, including subagents inside one harness, share one ChromeUse service. Each agent fully controls its own tabs and cannot see or touch anyone else's. Agents can hand a whole goal to TypeSafe's Jev model through OpenRouter, using the loop proven in `~/projects/jev-ultrafast`. That loop runs Zürich → London on Google Flights in 7.7–11.8 s, checked independently.
+Many agents, including subagents inside one harness, share one TabCrew service. Each agent fully controls its own tabs and cannot see or touch anyone else's. Agents can hand a whole goal to TypeSafe's Jev model through OpenRouter, using the loop proven in `~/projects/jev-ultrafast`. That loop runs Zürich → London on Google Flights in 7.7–11.8 s, checked independently.
 
 ## Why v1 falls short
 
@@ -71,7 +73,7 @@ v2 uses ports 8770 (MCP) and 8771 (extension). v1 keeps 8766/8765, and the jev-u
 **Sessions**
 
 - `session_open({label})` returns an unguessable handle (`s_` plus 128 random bits). Every other tool requires it.
-- The registry is saved to `~/.chromeuse/sessions.json`. After a daemon restart, the extension reports its tab groups and the daemon matches them back to their sessions.
+- The registry is saved to `~/.tabcrew/sessions.json`. After a daemon restart, the extension reports its tab groups and the daemon matches them back to their sessions.
 - `session_close` closes the session's tabs. An idle session (default 30 min without calls) is closed the same way.
 - Each tab group is titled `<label> · <short id>`.
 
@@ -149,12 +151,12 @@ The loop stops on `DONE`, `BLOCKED`, three non-WAIT actions in a row that don't 
 
 **Security**
 
-- The MCP endpoint binds to `127.0.0.1` only. It rejects requests whose `Origin` is not allowed, so web pages can't call it, and it requires `Authorization: Bearer <token>`. The token is kept in `~/.chromeuse/token`, readable only by its owner.
+- The MCP endpoint binds to `127.0.0.1` only. It rejects requests whose `Origin` is not allowed, so web pages can't call it, and it requires `Authorization: Bearer <token>`. The token is kept in `~/.tabcrew/token`, readable only by its owner.
 - The extension socket accepts only the v2 extension, which presents the same token.
 - `OPENROUTER_API_KEY` comes from the environment and is never written to config files. The current plaintext key in `~/.config/opencode/opencode.jsonc` moves to `{env:OPENROUTER_API_KEY}`.
-- Page text and typed values are not logged at the default level. Traces are written to `~/.chromeuse/traces/` only when tracing is turned on.
+- Page text and typed values are not logged at the default level. Traces are written to `~/.tabcrew/traces/` only when tracing is turned on.
 
-**Configuration:** `~/.chromeuse/config.toml`, overridden by environment variables. It covers the ports, `JEV_MODEL` (default `typesafe/jev-1.13`), the text model, the idle timeout, the browse limit and the Agents window behaviour.
+**Configuration:** `~/.tabcrew/config.toml`, overridden by environment variables. It covers the ports, `JEV_MODEL` (default `typesafe/jev-1.13`), the text model, the idle timeout, the browse limit and the Agents window behaviour.
 
 ## 5. Testing and rollout
 
@@ -180,7 +182,7 @@ Phases 1 and 2, and the snapshot part of phase 4, are independent and can be bui
 
 ## Status (2026-10-12)
 
-Phases 1–6 and 8 are built: the daemon (`daemon/`), extension (`extension-v2/`) and 12 tools, with the offline unit tests and the live smoke, isolation, guards, concurrency and paid live-browse scripts. v1 (`gateway/`, `mcp-server/`, `native-host/`, `extension/`) was deleted; it is recoverable from tag `v1-final`.
+Phases 1–6 and 8 are built: the daemon (`daemon/`), extension (`extension/`, formerly `extension-v2/`) and 12 tools, with the offline unit tests and the live smoke, isolation, guards, concurrency and paid live-browse scripts. v1 (`gateway/`, `mcp-server/`, `native-host/`, `extension/`) was deleted; it is recoverable from tag `v1-final`.
 
 Decisions made during the build:
 

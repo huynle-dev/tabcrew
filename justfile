@@ -9,7 +9,7 @@ install:
     npm install
     npm run build
 
-# Build shared, daemon and extension-v2 (in that order).
+# Build shared, daemon, cli (bundles) and the extension dev build (in that order).
 build:
     npm run build
 
@@ -29,14 +29,25 @@ clean:
 verify: typecheck test build
     npm audit --audit-level=moderate
 
-# Print the steps to run the daemon under launchd (runs nothing).
-daemon-install:
-    @echo "1. node daemon/dist/index.js install-launchd"
-    @echo "2. Run the 'launchctl bootstrap gui/\$(id -u) ...' command it prints."
+# Build the Chrome Web Store package (extension/dist-store + zip, no "key").
+build-store:
+    npm run build:store -w extension
 
-# Print the daemon's auth token (paste it into the extension popup).
+# Development install: run the service from this checkout (launchd, pairing host, harnesses).
+setup-dev:
+    node daemon/dist/index.js setup --from-source "$(pwd)"
+
+# Check the local installation.
+doctor:
+    node daemon/dist/index.js doctor
+
+# Print the daemon's auth token (only needed for manual setups; pairing is automatic).
 token:
     node daemon/dist/index.js token
+
+# Show what `npm publish -w tabcrew` would ship.
+pack:
+    npm pack --dry-run -w tabcrew
 
 # Live check against the running daemon and extension: basic tools.
 smoke:

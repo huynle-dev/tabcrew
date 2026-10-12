@@ -1,13 +1,13 @@
 {
-  "name": "@chromeuse/daemon",
-  "version": "0.3.0",
+  "name": "@tabcrew/daemon",
+  "version": "0.4.0",
   "private": true,
-  "description": "ChromeUse v2 daemon: HTTP MCP endpoint, sessions, per-tab scheduling, Jev loop",
+  "description": "TabCrew daemon: HTTP MCP endpoint, sessions, per-tab scheduling, Jev loop, setup CLI",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "chromeuse-daemon": "dist/index.js"
+    "tabcrew-daemon": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -17,8 +17,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@chromeuse/shared": "*",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@tabcrew/shared": "*",
+    "jsonc-parser": "^3.3.1",
     "smol-toml": "^1.3.0",
     "ws": "^8.20.1",
     "zod": "^3.25.0"

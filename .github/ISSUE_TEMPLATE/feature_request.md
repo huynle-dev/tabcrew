@@ -8,7 +8,7 @@ assignees: ""
 
 ## Workflow
 
-What workflow should ChromeUse MCP support?
+What workflow should TabCrew support?
 
 ## Current Limitation
 

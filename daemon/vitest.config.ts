@@ -4,8 +4,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
-      "@chromeuse/shared/v2": fileURLToPath(new URL("../shared/src/v2.ts", import.meta.url)),
-      "@chromeuse/shared": fileURLToPath(new URL("../shared/src/index.ts", import.meta.url)),
+      "@tabcrew/shared/product": fileURLToPath(new URL("../shared/src/product.ts", import.meta.url)),
+      "@tabcrew/shared/v2": fileURLToPath(new URL("../shared/src/v2.ts", import.meta.url)),
+      "@tabcrew/shared": fileURLToPath(new URL("../shared/src/index.ts", import.meta.url)),
     },
   },
   test: {

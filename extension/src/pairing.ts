@@ -1,0 +1,80 @@
+/**
+ * Automatic pairing: the extension asks the `com.tabcrew.pair` native messaging host (installed by
+ * `npx tabcrew setup`) for the daemon token and stores it like a manually entered one. Storing it
+ * fires chrome.storage.onChanged, which pushes the new config to the offscreen bridge.
+ *
+ * - No token stored → ask the host (retried from the keepalive alarm while unpaired).
+ * - The daemon rejected the stored token (4401) → ask the host once per rejected token; a different
+ *   token means the daemon's token changed (e.g. reinstall), so it replaces the stored one.
+ */
+
+import { NATIVE_HOST_NAME, type PairRequest } from "@tabcrew/shared/product";
+
+export const NOT_PAIRED_TEXT = "not paired: run npx tabcrew setup";
+
+export interface PairingDeps {
+  sendNativeMessage(host: string, message: PairRequest): Promise<unknown>;
+  loadToken(): Promise<string | null>;
+  saveToken(token: string): Promise<void>;
+}
+
+/** "same": the host returned the token that is already stored. */
+export type PairOutcome = "already_paired" | "paired" | "same" | "failed";
+
+export class Pairing {
+  private inFlight: Promise<PairOutcome> | null = null;
+  private repairedFor: string | null = null;
+  private _lastError: string | null = null;
+
+  constructor(private readonly deps: PairingDeps) {}
+
+  /** Why the last attempt failed (null after a success). Never contains the token. */
+  get lastError(): string | null {
+    return this._lastError;
+  }
+
+  /** Pair if no token is stored. */
+  async ensurePaired(): Promise<PairOutcome> {
+    if (await this.deps.loadToken()) return "already_paired";
+    return this.pair(null);
+  }
+
+  /**
+   * The daemon rejected `rejectedToken` (close code 4401). Ask the host once for this token; true if
+   * a different token was stored.
+   */
+  async repair(rejectedToken: string | null): Promise<boolean> {
+    if (rejectedToken === null || this.repairedFor === rejectedToken) return false;
+    this.repairedFor = rejectedToken;
+    return (await this.pair(rejectedToken)) === "paired";
+  }
+
+  private pair(current: string | null): Promise<PairOutcome> {
+    if (!this.inFlight) {
+      this.inFlight = this.request(current).finally(() => {
+        this.inFlight = null;
+      });
+    }
+    return this.inFlight;
+  }
+
+  private async request(current: string | null): Promise<PairOutcome> {
+    let response: unknown;
+    try {
+      response = await this.deps.sendNativeMessage(NATIVE_HOST_NAME, { type: "get_token" });
+    } catch (err) {
+      this._lastError = err instanceof Error ? err.message : String(err);
+      return "failed";
+    }
+    const token = (response as { token?: unknown } | null)?.token;
+    if (typeof token !== "string" || token.trim().length < 32) {
+      const error = (response as { error?: unknown } | null)?.error;
+      this._lastError = typeof error === "string" ? error : "unexpected reply from the pairing host";
+      return "failed";
+    }
+    this._lastError = null;
+    if (token.trim() === current) return "same";
+    await this.deps.saveToken(token.trim());
+    return "paired";
+  }
+}

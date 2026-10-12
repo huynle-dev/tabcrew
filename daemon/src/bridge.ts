@@ -7,7 +7,7 @@ import {
   type V2Op,
   type V2OpMap,
   type V2SessionRef,
-} from "@chromeuse/shared/v2";
+} from "@tabcrew/shared/v2";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { DaemonError, fromWireError } from "./errors.js";
 import { log } from "./log.js";
@@ -154,7 +154,7 @@ export class ExtensionBridge {
       };
       const timer = setTimeout(() => {
         this.waiters.delete(done);
-        reject(new DaemonError("extension_offline", "ChromeUse v2 extension is not connected; retry later"));
+        reject(new DaemonError("extension_offline", "TabCrew extension is not connected; retry later"));
       }, waitMs);
       this.waiters.add(done);
     });

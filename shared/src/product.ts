@@ -1,0 +1,46 @@
+/**
+ * TabCrew product constants shared by the daemon, the `tabcrew` CLI, the pairing host and the
+ * extension.
+ */
+
+export const PRODUCT_NAME = "TabCrew";
+
+/** Chrome native messaging host that hands the daemon token to the extension. */
+export const NATIVE_HOST_NAME = "com.tabcrew.pair";
+
+/** launchd label of the daemon service (macOS). */
+export const LAUNCHD_LABEL = "com.tabcrew.daemon";
+/** launchd label used by ChromeUse, removed on setup. */
+export const LEGACY_LAUNCHD_LABEL = "com.chromeuse.daemon";
+
+export interface TabCrewExtensionIds {
+  /** Fixed ID of unpacked development builds (from the public `key` in extension/dev-key.pub). */
+  readonly dev: string;
+  /**
+   * PLACEHOLDER: the Chrome Web Store assigns this ID on first publication. Set it here once known;
+   * until then only the dev ID can pair.
+   */
+  readonly store: string | null;
+}
+
+export const TABCREW_EXTENSION_IDS: TabCrewExtensionIds = {
+  dev: "aejgcpbbemekfbmmkabpbgdkgmddfamo",
+  store: null,
+};
+
+/** Every known extension ID (placeholders skipped). */
+export function tabcrewExtensionIds(ids: TabCrewExtensionIds = TABCREW_EXTENSION_IDS): string[] {
+  return [ids.dev, ids.store].filter((id): id is string => typeof id === "string" && /^[a-p]{32}$/.test(id));
+}
+
+/** `chrome-extension://<id>/` origins allowed to launch the pairing host. */
+export function tabcrewExtensionOrigins(ids: TabCrewExtensionIds = TABCREW_EXTENSION_IDS): string[] {
+  return tabcrewExtensionIds(ids).map((id) => `chrome-extension://${id}/`);
+}
+
+/** PLACEHOLDER until the extension is published on the Chrome Web Store. */
+export const CHROME_WEB_STORE_URL = "https://chromewebstore.google.com/detail/tabcrew/<pending>";
+
+/** Message the extension sends to the pairing host, and its replies. */
+export type PairRequest = { readonly type: "get_token" };
+export type PairResponse = { readonly token: string } | { readonly error: string };

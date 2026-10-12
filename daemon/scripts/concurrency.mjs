@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-const token = readFileSync(`${homedir()}/.chromeuse/token`, "utf8").trim();
+const token = readFileSync(`${process.env.TABCREW_HOME ?? `${homedir()}/.tabcrew`}/token`, "utf8").trim();
 const c = new Client({ name: "phase", version: "0" });
 await c.connect(new StreamableHTTPClientTransport(new URL("http://127.0.0.1:8770/mcp"), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
 const j = async (n, a) => { const r = await c.callTool({ name: n, arguments: a }); return JSON.parse(r.content.find(x => x.type === "text").text); };

@@ -5,7 +5,9 @@ const stderrSink: LogSink = (level, message) => {
   process.stderr.write(`${new Date().toISOString()} ${level} ${message}\n`);
 };
 
-let sink: LogSink = process.env.CHROMEUSE_LOG === "silent" ? () => {} : stderrSink;
+const level = (process.env.TABCREW_LOG || process.env.CHROMEUSE_LOG || "").trim();
+
+let sink: LogSink = level === "silent" ? () => {} : stderrSink;
 
 /** Replace the log sink (tests use this to silence or capture logs). */
 export function setLogSink(next: LogSink | null): void {
@@ -16,7 +18,7 @@ export function setLogSink(next: LogSink | null): void {
  * One-line logs. Never pass tokens, session handles, page text or typed values here;
  * use a session's short_id to identify it.
  */
-const debugEnabled = process.env.CHROMEUSE_LOG === "debug";
+const debugEnabled = level === "debug";
 
 export const log = {
   debug: (message: string) => {

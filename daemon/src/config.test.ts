@@ -1,8 +1,8 @@
 import { chmodSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig, loadEnvFile } from "./config.js";
-import { launchdPlist, writeLaunchdPlist } from "./launchd.js";
+import { loadConfig, loadEnvFile, resolveHome } from "./config.js";
+import { launchdPlist, stableNodePath, writeLaunchdPlist } from "./launchd.js";
 import { tempHome } from "./testing/helpers.js";
 import { ensureToken, safeEqual } from "./token.js";
 
@@ -20,7 +20,7 @@ function home(): string {
 describe("config", () => {
   it("uses defaults", () => {
     const h = home();
-    const c = loadConfig({ CHROMEUSE_HOME: h });
+    const c = loadConfig({ TABCREW_HOME: h });
     expect(c).toMatchObject({
       home: h,
       mcpPort: 8770,
@@ -40,7 +40,7 @@ describe("config", () => {
       join(h, "config.toml"),
       'mcp_port = 9000\nextension_port = 9001\nidle_timeout_minutes = 5\njev_model = "x/y"\nallowed_origins = ["http://ok"]\nopenrouter_api_key = "nope"\n',
     );
-    const c = loadConfig({ CHROMEUSE_HOME: h, CHROMEUSE_MCP_PORT: "0", JEV_MODEL: "env/model", OPENROUTER_API_KEY: "k" });
+    const c = loadConfig({ TABCREW_HOME: h, TABCREW_MCP_PORT: "0", JEV_MODEL: "env/model", OPENROUTER_API_KEY: "k" });
     expect(c.mcpPort).toBe(0);
     expect(c.extensionPort).toBe(9001);
     expect(c.idleTimeoutMinutes).toBe(5);
@@ -51,9 +51,45 @@ describe("config", () => {
 
   it("rejects invalid values", () => {
     const h = home();
-    expect(() => loadConfig({ CHROMEUSE_HOME: h, CHROMEUSE_MCP_PORT: "70000" })).toThrow(/CHROMEUSE_MCP_PORT/);
+    expect(() => loadConfig({ TABCREW_HOME: h, TABCREW_MCP_PORT: "70000" })).toThrow(/TABCREW_MCP_PORT/);
+    expect(() => loadConfig({ TABCREW_HOME: h, CHROMEUSE_MCP_PORT: "70000" })).toThrow(/CHROMEUSE_MCP_PORT/);
     writeFileSync(join(h, "config.toml"), "mcp_port = -1\n");
-    expect(() => loadConfig({ CHROMEUSE_HOME: h })).toThrow(/mcp_port/);
+    expect(() => loadConfig({ TABCREW_HOME: h })).toThrow(/mcp_port/);
+  });
+
+  it("reads TABCREW_* first and falls back to the deprecated CHROMEUSE_* names", () => {
+    const h = home();
+    const legacy = loadConfig({
+      CHROMEUSE_HOME: h,
+      CHROMEUSE_MCP_PORT: "9100",
+      CHROMEUSE_EXTENSION_PORT: "9101",
+      CHROMEUSE_IDLE_TIMEOUT_MINUTES: "7",
+      CHROMEUSE_BROWSE_CONCURRENCY: "3",
+      CHROMEUSE_ALLOWED_ORIGINS: "http://a, http://b",
+    });
+    expect(legacy).toMatchObject({
+      home: h,
+      mcpPort: 9100,
+      extensionPort: 9101,
+      idleTimeoutMinutes: 7,
+      browseConcurrency: 3,
+      allowedOrigins: ["http://a", "http://b"],
+    });
+    const both = loadConfig({
+      TABCREW_HOME: h,
+      CHROMEUSE_HOME: "/nonexistent-legacy",
+      TABCREW_MCP_PORT: "9200",
+      CHROMEUSE_MCP_PORT: "9100",
+      TABCREW_IDLE_TIMEOUT_MINUTES: " ",
+      CHROMEUSE_IDLE_TIMEOUT_MINUTES: "9",
+    });
+    expect(both).toMatchObject({ home: h, mcpPort: 9200, idleTimeoutMinutes: 9 });
+  });
+
+  it("defaults the home to ~/.tabcrew", () => {
+    expect(resolveHome({}, "/Users/x")).toBe("/Users/x/.tabcrew");
+    expect(resolveHome({ CHROMEUSE_HOME: "/legacy" }, "/Users/x")).toBe("/legacy");
+    expect(resolveHome({ TABCREW_HOME: "/new", CHROMEUSE_HOME: "/legacy" }, "/Users/x")).toBe("/new");
   });
 
   it("loads <home>/env without overriding existing vars, only when 0600", () => {
@@ -85,22 +121,45 @@ describe("token", () => {
 });
 
 describe("launchd", () => {
-  it("writes a plist without secrets and with logs under home", () => {
+  it("writes the com.tabcrew.daemon plist without secrets and with logs under home", () => {
     const h = home();
     const opts = {
       home: h,
       launchAgentsDir: join(h, "LaunchAgents"),
       nodePath: "/usr/local/bin/node",
-      scriptPath: "/opt/chromeuse/daemon/dist/index.js",
+      scriptPath: "/Users/x/.tabcrew/app/daemon.mjs",
       pathEnv: "/usr/bin:/bin",
     };
     const path = writeLaunchdPlist(opts);
-    expect(path).toBe(join(h, "LaunchAgents", "com.chromeuse.daemon.plist"));
+    expect(path).toBe(join(h, "LaunchAgents", "com.tabcrew.daemon.plist"));
     const plist = launchdPlist(opts);
-    expect(plist).toContain("<string>/opt/chromeuse/daemon/dist/index.js</string>");
+    expect(plist).toContain("<string>com.tabcrew.daemon</string>");
+    expect(plist).toContain("<string>/usr/local/bin/node</string>\n    <string>/Users/x/.tabcrew/app/daemon.mjs</string>");
     expect(plist).toContain("<key>KeepAlive</key>");
+    expect(plist).toContain("<key>RunAtLoad</key>");
+    expect(plist).toContain("<key>PATH</key>\n    <string>/usr/bin:/bin</string>");
     expect(plist).toContain(join(h, "logs", "daemon.err.log"));
-    expect(plist).not.toMatch(/OPENROUTER/);
+    expect(plist).toContain(join(h, "logs", "daemon.out.log"));
+    expect(plist).not.toMatch(/OPENROUTER|TABCREW_HOME/);
     expect(statSync(join(h, "logs")).isDirectory()).toBe(true);
+  });
+
+  it("sets TABCREW_HOME only for a custom home and escapes XML", () => {
+    const plist = launchdPlist({
+      home: "/tmp/a&b",
+      launchAgentsDir: "/tmp/la",
+      nodePath: "/n",
+      scriptPath: "/s<x>",
+      pathEnv: "/bin",
+      tabcrewHome: "/tmp/a&b",
+    });
+    expect(plist).toContain("<key>TABCREW_HOME</key>\n    <string>/tmp/a&amp;b</string>");
+    expect(plist).toContain("<string>/s&lt;x&gt;</string>");
+  });
+
+  it("prefers a stable node link over a versioned Cellar path", () => {
+    const real = (p: string) => (p === "/opt/homebrew/bin/node" || p === "/cellar/node/22/bin/node" ? "/cellar/node/22/bin/node" : p);
+    expect(stableNodePath("/cellar/node/22/bin/node", real)).toBe("/opt/homebrew/bin/node");
+    expect(stableNodePath("/somewhere/node", (p) => p)).toBe("/somewhere/node");
   });
 });

@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const home = process.env.CHROMEUSE_HOME ?? join(homedir(), ".chromeuse");
-const port = process.env.CHROMEUSE_MCP_PORT ?? "8770";
+const home = process.env.TABCREW_HOME ?? process.env.CHROMEUSE_HOME ?? join(homedir(), ".tabcrew");
+const port = process.env.TABCREW_MCP_PORT ?? process.env.CHROMEUSE_MCP_PORT ?? "8770";
 const keepOpen = process.argv.includes("--keep-open");
 const LOOPS = 3;
 const token = readFileSync(join(home, "token"), "utf8").trim();
@@ -18,7 +18,7 @@ const token = readFileSync(join(home, "token"), "utf8").trim();
 const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
   requestInit: { headers: { Authorization: `Bearer ${token}` } },
 });
-const client = new Client({ name: "chromeuse-isolation", version: "0.0.0" });
+const client = new Client({ name: "tabcrew-isolation", version: "0.0.0" });
 await client.connect(transport);
 
 const results = [];

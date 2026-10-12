@@ -1,10 +1,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { V2_EXTENSION_PORT, V2_MCP_PORT } from "@chromeuse/shared/v2";
+import { join } from "node:path";
+import { V2_EXTENSION_PORT, V2_MCP_PORT } from "@tabcrew/shared/v2";
 import { parse as parseToml } from "smol-toml";
 import { z } from "zod";
+import { productEnv, resolveHome, type Env } from "./home.js";
 import { log } from "./log.js";
+
+export { resolveHome } from "./home.js";
 
 export interface DaemonConfig {
   readonly home: string;
@@ -29,8 +31,6 @@ export interface DaemonConfig {
   readonly textModelTimeoutMs: number;
 }
 
-type Env = Record<string, string | undefined>;
-
 const port = z.coerce.number().int().min(0).max(65535);
 
 const fileSchema = z
@@ -44,11 +44,6 @@ const fileSchema = z
     allowed_origins: z.array(z.string().min(1)).optional(),
   })
   .passthrough();
-
-export function resolveHome(env: Env = process.env): string {
-  const fromEnv = env.CHROMEUSE_HOME?.trim();
-  return fromEnv ? resolve(fromEnv) : join(homedir(), ".chromeuse");
-}
 
 function readConfigFile(home: string): z.infer<typeof fileSchema> {
   const path = join(home, "config.toml");
@@ -70,6 +65,15 @@ function readConfigFile(home: string): z.infer<typeof fileSchema> {
   return parsed.data;
 }
 
+/** A `TABCREW_<name>` setting (deprecated fallback: `CHROMEUSE_<name>`). */
+function productValue<T>(env: Env, name: string, schema: z.ZodType<T>): T | undefined {
+  const found = productEnv(env, name);
+  if (!found) return undefined;
+  const parsed = schema.safeParse(found.value);
+  if (!parsed.success) throw new Error(`invalid ${found.from}: ${parsed.error.issues[0].message}`);
+  return parsed.data;
+}
+
 function envValue<T>(env: Env, name: string, schema: z.ZodType<T>): T | undefined {
   const raw = env[name];
   if (raw === undefined || raw.trim() === "") return undefined;
@@ -81,15 +85,15 @@ function envValue<T>(env: Env, name: string, schema: z.ZodType<T>): T | undefine
 export function loadConfig(env: Env = process.env): DaemonConfig {
   const home = resolveHome(env);
   const file = readConfigFile(home);
-  const origins = envValue(env, "CHROMEUSE_ALLOWED_ORIGINS", z.string());
+  const origins = productValue(env, "ALLOWED_ORIGINS", z.string());
   return {
     home,
-    mcpPort: envValue(env, "CHROMEUSE_MCP_PORT", port) ?? file.mcp_port ?? V2_MCP_PORT,
-    extensionPort: envValue(env, "CHROMEUSE_EXTENSION_PORT", port) ?? file.extension_port ?? V2_EXTENSION_PORT,
+    mcpPort: productValue(env, "MCP_PORT", port) ?? file.mcp_port ?? V2_MCP_PORT,
+    extensionPort: productValue(env, "EXTENSION_PORT", port) ?? file.extension_port ?? V2_EXTENSION_PORT,
     idleTimeoutMinutes:
-      envValue(env, "CHROMEUSE_IDLE_TIMEOUT_MINUTES", z.coerce.number().min(0)) ?? file.idle_timeout_minutes ?? 30,
+      productValue(env, "IDLE_TIMEOUT_MINUTES", z.coerce.number().min(0)) ?? file.idle_timeout_minutes ?? 30,
     browseConcurrency:
-      envValue(env, "CHROMEUSE_BROWSE_CONCURRENCY", z.coerce.number().int().min(1).max(64)) ??
+      productValue(env, "BROWSE_CONCURRENCY", z.coerce.number().int().min(1).max(64)) ??
       file.browse_concurrency ??
       8,
     jevModel: envValue(env, "JEV_MODEL", z.string().min(1)) ?? file.jev_model ?? "typesafe/jev-1.13",

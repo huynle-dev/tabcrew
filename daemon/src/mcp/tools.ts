@@ -1,4 +1,4 @@
-import type { V2ConsoleEntry, V2NetworkEntry } from "@chromeuse/shared/v2";
+import type { V2ConsoleEntry, V2NetworkEntry } from "@tabcrew/shared/v2";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { ExtensionBridge } from "../bridge.js";

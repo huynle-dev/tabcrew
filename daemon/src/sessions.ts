@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { V2SessionRef, V2TabInfo } from "@chromeuse/shared/v2";
+import type { V2SessionRef, V2TabInfo } from "@tabcrew/shared/v2";
 import { DaemonError } from "./errors.js";
 import { log } from "./log.js";
 

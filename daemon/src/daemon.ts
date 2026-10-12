@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { V2Event } from "@chromeuse/shared/v2";
+import type { V2Event } from "@tabcrew/shared/v2";
 import { ExtensionBridge } from "./bridge.js";
 import { Limiter } from "./jev/browse.js";
 import type { DaemonConfig } from "./config.js";
@@ -39,7 +39,11 @@ export interface RunningDaemon {
   close(): Promise<void>;
 }
 
+declare const __TABCREW_VERSION__: string | undefined;
+
 export function daemonVersion(): string {
+  // Bundled runtimes (cli/dist/*.mjs) have the version inlined; package.json is not next to them.
+  if (typeof __TABCREW_VERSION__ === "string") return __TABCREW_VERSION__;
   try {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
     return pkg.version ?? "0.0.0";
@@ -160,7 +164,7 @@ export async function startDaemon(config: DaemonConfig, overrides: DaemonOverrid
   }
 
   log.info(
-    `chromeuse-daemon ${version} listening: mcp http://127.0.0.1:${mcpPort}/mcp, extension ws://127.0.0.1:${extensionPort}, ${registry.size} session(s) restored`,
+    `tabcrew-daemon ${version} listening: mcp http://127.0.0.1:${mcpPort}/mcp, extension ws://127.0.0.1:${extensionPort}, ${registry.size} session(s) restored`,
   );
 
   return {

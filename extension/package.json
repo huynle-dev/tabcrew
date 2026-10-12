@@ -1,0 +1,26 @@
+{
+  "name": "@tabcrew/extension",
+  "version": "0.4.0",
+  "private": true,
+  "description": "TabCrew browser extension (MV3): session tab groups, CDP, observe/act only",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsx esbuild.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist dist-store tabcrew-extension-*.zip",
+    "build:store": "tsx esbuild.config.ts --store"
+  },
+  "dependencies": {
+    "@tabcrew/shared": "*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@types/node": "^25.5.2",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
+  }
+}

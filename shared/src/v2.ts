@@ -1,7 +1,7 @@
 /**
- * ChromeUse v2 wire protocol between the daemon and extension-v2.
+ * TabCrew wire protocol (v2) between the daemon and the extension.
  *
- * Transport: one WebSocket (JSON text frames) from extension-v2 to the daemon at
+ * Transport: one WebSocket (JSON text frames) from the extension to the daemon at
  * ws://127.0.0.1:{V2_EXTENSION_PORT}. The extension connects out and must send a
  * `hello` with the shared token as its first frame. The daemon owns sessions and
  * policy; the extension only observes and acts on tabs inside a session's group.

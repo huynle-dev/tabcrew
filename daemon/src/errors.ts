@@ -1,4 +1,4 @@
-import { V2_ERROR_CODES, type V2Error, type V2ErrorCode } from "@chromeuse/shared/v2";
+import { V2_ERROR_CODES, type V2Error, type V2ErrorCode } from "@tabcrew/shared/v2";
 
 /** A typed, agent-facing error. `message` is a one-line hint, never a stack trace. */
 export class DaemonError extends Error implements V2Error {

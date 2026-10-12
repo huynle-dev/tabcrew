@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a reproducible problem with ChromeUse MCP
+about: Report a reproducible problem with TabCrew
 title: ""
 labels: bug
 assignees: ""
@@ -16,7 +16,7 @@ Describe the bug clearly.
 - Browser and version:
 - Node.js version:
 - MCP client:
-- ChromeUse MCP commit or version:
+- TabCrew commit or version:
 
 ## Steps to Reproduce
 

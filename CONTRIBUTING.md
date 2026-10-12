@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve ChromeUse. It is a local developer tool, so reliability, clear behavior, and security awareness matter more than feature count.
+Thanks for helping improve TabCrew. It is a local developer tool, so reliability, clear behavior, and security awareness matter more than feature count.
 
 ## Before You Start
 
@@ -16,7 +16,7 @@ just install    # npm install && npm run build
 just verify     # typecheck, offline tests, build, audit
 ```
 
-After changing `extension-v2/`, rebuild and reload the unpacked extension (`extension-v2/dist`) in `chrome://extensions`. After changing `daemon/`, rebuild and restart the daemon.
+After changing `extension/`, rebuild and reload the unpacked extension (`extension/dist`) in `chrome://extensions`. After changing `daemon/`, rebuild and restart the daemon.
 
 ## Pull Request Checklist
 
@@ -29,8 +29,9 @@ After changing `extension-v2/`, rebuild and reload the unpacked extension (`exte
 ## Code Layout
 
 - `shared/`: protocol types used by both the daemon and the extension.
-- `daemon/`: MCP endpoint, sessions, scheduling, and the Jev `browse` loop.
-- `extension-v2/`: browser-specific behavior (tabs, windows, CDP, popup).
+- `daemon/`: MCP endpoint, sessions, scheduling, the Jev `browse` loop, the `tabcrew` CLI (`src/cli/`) and the pairing host (`src/pair/`).
+- `cli/`: the publishable `tabcrew` npm package (esbuild bundles of the CLI, daemon and pairing host).
+- `extension/`: browser-specific behavior (tabs, windows, CDP, popup).
 
 ## Reporting Bugs
 

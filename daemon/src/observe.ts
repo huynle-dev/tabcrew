@@ -1,4 +1,4 @@
-import type { V2Action, V2Snapshot } from "@chromeuse/shared/v2";
+import type { V2Action, V2Snapshot } from "@tabcrew/shared/v2";
 import { DaemonError } from "./errors.js";
 
 /** Operations an agent may request from `act`. Never selectors, coordinates or code. */

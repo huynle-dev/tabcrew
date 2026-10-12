@@ -67,7 +67,7 @@ function bearer(req: IncomingMessage): string | null {
 }
 
 export const SERVER_INSTRUCTIONS = [
-  "ChromeUse drives the user's real Chrome. Each agent or subagent opens its own session with session_open and passes the handle on every call.",
+  "TabCrew drives the user's real browser (Chrome). Each agent or subagent opens its own session with session_open and passes the handle on every call.",
   "Prefer browse for multi-step goals, observe/act for precise control, read_text for long content. browse's DONE is a claim: verify the page.",
   "When your task is finished, close any throwaway tabs with tab_close, then call session_close: your remaining tabs stay open for the user to review in their own window, and you no longer control them. Sessions left open are handed over the same way when your connection ends or after they sit idle.",
 ].join(" ");
@@ -79,7 +79,7 @@ export const SERVER_INSTRUCTIONS = [
  */
 function createProtocolServer(opts: McpHttpOptions, isShuttingDown: () => boolean): Server {
   const server = new Server(
-    { name: "chromeuse", version: opts.version },
+    { name: "tabcrew", version: opts.version },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
   const opened = new Set<Session>();
@@ -171,7 +171,7 @@ export class McpHttpServer {
 
     const presented = bearer(req);
     if (presented === null || !safeEqual(presented, this.opts.token)) {
-      res.setHeader("www-authenticate", 'Bearer realm="chromeuse"');
+      res.setHeader("www-authenticate", 'Bearer realm="tabcrew"');
       sendJson(res, 401, { error: "unauthorized", message: "missing or invalid bearer token" });
       return;
     }

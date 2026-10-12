@@ -16,8 +16,8 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const home = process.env.CHROMEUSE_HOME ?? join(homedir(), ".chromeuse");
-const port = process.env.CHROMEUSE_MCP_PORT ?? "8770";
+const home = process.env.TABCREW_HOME ?? process.env.CHROMEUSE_HOME ?? join(homedir(), ".tabcrew");
+const port = process.env.TABCREW_MCP_PORT ?? process.env.CHROMEUSE_MCP_PORT ?? "8770";
 const keepOpen = process.argv.includes("--keep-open");
 const onlyIdx = process.argv.indexOf("--only");
 const only = onlyIdx > 0 ? process.argv[onlyIdx + 1] : null;
@@ -44,7 +44,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
   requestInit: { headers: { Authorization: `Bearer ${token}` } },
 });
-const client = new Client({ name: "chromeuse-guards", version: "0.0.0" });
+const client = new Client({ name: "tabcrew-guards", version: "0.0.0" });
 await client.connect(transport);
 
 async function call(name, args) {

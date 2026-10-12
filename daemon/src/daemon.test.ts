@@ -81,7 +81,7 @@ describe("HTTP endpoint", () => {
   });
 
   it("returns 403 for a disallowed Origin and accepts an allowed one", async () => {
-    daemon = await startTestDaemon(home, {}, { CHROMEUSE_ALLOWED_ORIGINS: "http://allowed.test" });
+    daemon = await startTestDaemon(home, {}, { TABCREW_ALLOWED_ORIGINS: "http://allowed.test" });
     const auth = { ...jsonHeaders, authorization: `Bearer ${daemon.token}` };
     const evil = await rawHttp(daemon.mcpPort, "POST", "/mcp", { ...auth, origin: "https://evil.example" }, initBody);
     expect(evil.status).toBe(403);

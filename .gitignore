@@ -1,5 +1,9 @@
 node_modules/
 dist/
+dist-store/
+extension/tabcrew-extension-*.zip
+# Never commit extension signing keys (only extension/dev-key.pub, the public half, is tracked).
+*.pem
 release/
 *.tsbuildinfo
 .DS_Store

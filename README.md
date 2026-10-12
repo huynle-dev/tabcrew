@@ -1,8 +1,43 @@
-# ChromeUse
+# TabCrew
 
-ChromeUse lets AI agents use your real Chrome. One local daemon serves many agents at once, and each agent works in its own isolated browser session: its own window and tab group, its own tabs, and no access to anyone else's tabs.
+TabCrew lets AI agents use your real browser. One local daemon serves many agents at once, and each agent works in its own isolated browser session: its own window and tab group, its own tabs, and no access to anyone else's tabs.
 
 Agents can drive pages step by step (`observe` / `act`) or hand a whole goal to `browse`. `browse` runs the [jev-ultrafast](https://github.com/browser-use/jev-ultrafast) loop (observe the page, choose one operation and target, act, repeat) using Jev through OpenRouter's Decisions API, plus a small text model for the values it types.
+
+TabCrew was previously called ChromeUse. It is not affiliated with or endorsed by Google.
+
+## Quick start
+
+Requires macOS, Node 20+, Google Chrome (or Chromium, Brave, Edge) and, for `browse`, an OpenRouter API key.
+
+```sh
+npx tabcrew setup
+```
+
+Then install the TabCrew extension (Chrome Web Store listing pending; until then see [Development](#development)). There is no token to copy: the extension pairs with the daemon automatically. Check the installation any time with `npx tabcrew doctor`.
+
+`setup`:
+
+1. Moves an existing `~/.chromeuse` into `~/.tabcrew` (leaving a `~/.chromeuse` symlink) and creates the token (`~/.tabcrew/token`, mode 600).
+2. Asks for your OpenRouter key (hidden input), checks it with a free OpenRouter call and stores it in `~/.tabcrew/env` (mode 600). Press Enter to skip; `browse` then reports `model_error` until a key is added.
+3. Copies the self-contained runtime (`daemon.mjs`, `pair-host.mjs`) into `~/.tabcrew/app/`, so nothing depends on the npx cache.
+4. Writes `~/Library/LaunchAgents/com.tabcrew.daemon.plist`, removes the old `com.chromeuse.daemon` job if present, starts the service and waits for `/health`.
+5. Registers the `com.tabcrew.pair` native messaging host for Chrome (and Chromium, Brave, Edge if installed).
+6. Offers to add TabCrew to OpenCode (`~/.config/opencode/opencode.json[c]`, comments preserved) and Claude Code (`claude mcp add`, user scope).
+
+Options: `--yes` (no questions; the key comes from `$OPENROUTER_API_KEY`), `--no-harness`, `--from-source <repo>` (development).
+
+## CLI
+
+| Command | Does |
+| --- | --- |
+| `tabcrew setup` | Install or repair everything (idempotent). |
+| `tabcrew doctor [--online]` | Check Node, home permissions, token, key (`--online` validates it), launchd job, `/health`, extension connection, pairing host and harness entries. Prints a one-line fix per problem; exits non-zero on failure. |
+| `tabcrew token` | Print the token (the only command that does). |
+| `tabcrew update` | Reinstall the runtime from the current package and restart the service. |
+| `tabcrew uninstall [--purge] [--yes]` | Stop and remove the service, pairing host and runtime. `--purge` also deletes token, env, sessions, config and logs; `--yes` also removes the harness entries. |
+
+The background service is macOS-only for now; on other platforms `setup` stops with "not supported yet" after preparing the home, and `token`/`doctor` still work.
 
 ## Architecture
 
@@ -10,71 +45,64 @@ Agents can drive pages step by step (`observe` / `act`) or hand a whole goal to 
 agent harnesses (OpenCode, Claude Code, ...)
         │  MCP over streamable HTTP, Authorization: Bearer <token>
         ▼
-daemon  (127.0.0.1:8770, launchd: com.chromeuse.daemon)
+daemon  (127.0.0.1:8770, launchd: com.tabcrew.daemon, runtime in ~/.tabcrew/app)
         │  sessions, tab ownership, per-tab queues, Jev browse loop
         │  WebSocket 127.0.0.1:8771 (same token)
         ▼
 extension offscreen document   (holds the socket)
         │  chrome.runtime port
         ▼
-extension service worker       (windows, tab groups, placement)
+extension service worker       (windows, tab groups, placement, pairing)
         │  chrome.debugger, one attachment per tab
         ▼
 tabs
 ```
 
+Pairing: when the extension has no token (or the daemon rejects it with 4401), the service worker calls `chrome.runtime.sendNativeMessage("com.tabcrew.pair", {type: "get_token"})`. Chrome starts `~/.tabcrew/app/pair-host` only for extension IDs in the host manifest's `allowed_origins`; the host re-checks the caller, replies `{token}` and exits. While unpaired the popup shows **not paired: run npx tabcrew setup** and pairing is retried every minute. A token can still be entered by hand under the popup's **Advanced** section.
+
 | Path | Contents |
 | --- | --- |
-| `daemon/` | Node daemon: HTTP MCP endpoint, sessions, scheduler, Jev loop, CLI (`token`, `install-launchd`) |
-| `extension-v2/` | MV3 extension: offscreen socket, service worker, CDP snapshot/act, popup |
-| `shared/` | Protocol types shared by the daemon and the extension (`@chromeuse/shared/v2`) |
+| `daemon/` | Node daemon: HTTP MCP endpoint, sessions, scheduler, Jev loop; the `tabcrew` CLI (`src/cli/`) and pairing host (`src/pair/`) |
+| `cli/` | The publishable `tabcrew` npm package: esbuild bundles `dist/cli.mjs`, `dist/daemon.mjs`, `dist/pair-host.mjs` |
+| `extension/` | MV3 extension: offscreen socket, service worker, CDP snapshot/act, popup, pairing |
+| `shared/` | Protocol types and product constants (`@tabcrew/shared/v2`, `@tabcrew/shared/product`) |
 | `docs/plans/` | Design records |
 
-## Install
+## Development
 
-Requires Node 20+, Chrome, macOS (for launchd) and an OpenRouter API key.
+```sh
+just install                 # npm install && npm run build
+just setup-dev               # tabcrew setup --from-source $(pwd): launchd runs daemon/dist/index.js
+```
 
-1. Build:
+Load the extension: open `chrome://extensions`, enable Developer mode, choose **Load unpacked** and select `extension/dist`. Development builds carry a public `key` in their manifest, so their ID is always `aejgcpbbemekfbmmkabpbgdkgmddfamo` and the pairing host accepts them. `npm run build:store -w extension` writes `extension/dist-store/` and `extension/tabcrew-extension-<version>.zip` without `key` for the Chrome Web Store; once the store assigns an ID, add it to `TABCREW_EXTENSION_IDS.store` in `shared/src/product.ts` and rerun `tabcrew setup` (or `update`) so the host manifest allows it.
 
-   ```sh
-   just install        # npm install && npm run build
-   ```
-
-2. Load the extension: open `chrome://extensions`, enable Developer mode, choose **Load unpacked** and select `extension-v2/dist`.
-
-3. Store the OpenRouter key where the daemon reads it (never in `config.toml`):
-
-   ```sh
-   mkdir -p ~/.chromeuse
-   echo 'OPENROUTER_API_KEY=sk-or-...' > ~/.chromeuse/env
-   chmod 600 ~/.chromeuse/env
-   ```
-
-   The daemon skips this file if it is readable by group or other.
-
-4. Run the daemon under launchd:
-
-   ```sh
-   node daemon/dist/index.js install-launchd
-   # then run the "launchctl bootstrap gui/$(id -u) ..." command it prints
-   ```
-
-5. Print the token with `just token` (creates `~/.chromeuse/token` on first run) and paste it into the extension popup. The popup should show **connected**.
+`node daemon/dist/index.js` runs the daemon in the foreground; `node daemon/dist/index.js <command>` runs any `tabcrew` command from the checkout.
 
 ## Harness configuration
 
-Point any MCP client that supports remote (streamable HTTP) servers at `http://127.0.0.1:8770/mcp` with the bearer token. OpenCode:
+`tabcrew setup` does this for you. By hand: point any MCP client that supports remote (streamable HTTP) servers at `http://127.0.0.1:8770/mcp` with the bearer token. OpenCode:
 
 ```jsonc
 {
   "mcp": {
-    "chromeuse": {
-      "type": "remote",
-      "url": "http://127.0.0.1:8770/mcp",
-      "headers": { "Authorization": "Bearer {file:~/.chromeuse/token}" }
+    "servers": {
+      "tabcrew": {
+        "type": "remote",
+        "url": "http://127.0.0.1:8770/mcp",
+        "headers": { "Authorization": "Bearer {file:~/.tabcrew/token}" },
+        "oauth": false,
+        "timeout": { "catalog": 30000, "execution": 600000 }
+      }
     }
   }
 }
+```
+
+Claude Code:
+
+```sh
+claude mcp add --transport http --scope user tabcrew http://127.0.0.1:8770/mcp --header "Authorization: Bearer $(npx tabcrew token)"
 ```
 
 ## Tools
@@ -105,26 +133,27 @@ Every tool except `session_open` takes the `session` handle; tab tools also take
 
 ## Extension popup
 
-- Connection status and the daemon token field (plus the daemon port).
+- Connection status (`not paired: run npx tabcrew setup` until pairing succeeds).
 - Placement setting: new agent tabs open in **their own window** (default, fastest) or in **my current window**. Agents never switch your current tab.
 - Active sessions, each with **Show** (bring its window to the front) and **Stop**, plus **Stop all**.
 - **Finished** list of handed-over sessions, with **Close** per session and **Close all finished**.
+- **Advanced**: manual token entry and the daemon port.
 
 ## Configuration
 
-The daemon reads `~/.chromeuse/config.toml` (or `$CHROMEUSE_HOME/config.toml`). Environment variables override it.
+The daemon reads `~/.tabcrew/config.toml` (or `$TABCREW_HOME/config.toml`). Environment variables override it. The old `CHROMEUSE_*` names are still read when the `TABCREW_*` variable is unset (deprecated).
 
 | `config.toml` key | Environment variable | Default |
 | --- | --- | --- |
-| `mcp_port` | `CHROMEUSE_MCP_PORT` | `8770` |
-| `extension_port` | `CHROMEUSE_EXTENSION_PORT` | `8771` |
-| `idle_timeout_minutes` (0 disables) | `CHROMEUSE_IDLE_TIMEOUT_MINUTES` | `30` |
-| `browse_concurrency` (1–64) | `CHROMEUSE_BROWSE_CONCURRENCY` | `8` |
+| `mcp_port` | `TABCREW_MCP_PORT` | `8770` |
+| `extension_port` | `TABCREW_EXTENSION_PORT` | `8771` |
+| `idle_timeout_minutes` (0 disables) | `TABCREW_IDLE_TIMEOUT_MINUTES` | `30` |
+| `browse_concurrency` (1–64) | `TABCREW_BROWSE_CONCURRENCY` | `8` |
 | `jev_model` | `JEV_MODEL` | `typesafe/jev-1.13` |
 | `text_model` | `TEXT_MODEL` | `inception/mercury-2.5` |
-| `allowed_origins` (array) | `CHROMEUSE_ALLOWED_ORIGINS` (comma-separated) | none |
+| `allowed_origins` (array) | `TABCREW_ALLOWED_ORIGINS` (comma-separated) | none |
 
-The following settings come from the environment (or `~/.chromeuse/env`) only:
+The following settings come from the environment (or `~/.tabcrew/env`) only:
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
@@ -134,16 +163,17 @@ The following settings come from the environment (or `~/.chromeuse/env`) only:
 | `TEXT_MODEL_REASONING` | Reasoning effort for the text model, or `none` | `none` |
 | `TEXT_MODEL_FALLBACK` | Second text model tried once if the first is slow or fails; `none` disables | `google/gemini-2.5-flash-lite` |
 | `TEXT_MODEL_TIMEOUT_MS` | Per-attempt budget for the text model (500–60000) | `3000` |
-| `CHROMEUSE_HOME` | Home directory for token, config and env | `~/.chromeuse` |
-| `CHROMEUSE_LOG` | `debug` for verbose logs | info |
+| `TABCREW_HOME` | Home directory for token, config, env, logs and runtime | `~/.tabcrew` |
+| `TABCREW_LOG` | `debug` for verbose logs, `silent` for none | info |
 
 ## Security
 
 - Both ports bind to `127.0.0.1` only.
-- The MCP endpoint requires `Authorization: Bearer <token>`; the extension socket requires the same token. The token lives in `~/.chromeuse/token`, readable only by its owner.
+- The MCP endpoint requires `Authorization: Bearer <token>`; the extension socket requires the same token. The token lives in `~/.tabcrew/token`, readable only by its owner.
 - Requests with an `Origin` header not listed in `allowed_origins` are rejected, so web pages cannot call the daemon. The `Host` header must be `127.0.0.1`, `localhost` or `[::1]`.
 - `debug_logs` never stores headers, cookies, bodies or query strings.
-- API keys are read from the environment or `~/.chromeuse/env` only; a key in `config.toml` is ignored with a warning.
+- API keys are read from the environment or `~/.tabcrew/env` only; a key in `config.toml` is ignored with a warning.
+- The pairing host only answers TabCrew extension IDs (checked by Chrome via `allowed_origins` and again by the host) and never logs the token.
 - Agents act in your real, signed-in browser. Only connect agents you trust.
 
 See `SECURITY.md` for reporting vulnerabilities.
@@ -154,7 +184,7 @@ See `SECURITY.md` for reporting vulnerabilities.
 just verify          # typecheck + offline tests + build (+ npm audit)
 ```
 
-Unit tests never open a browser or call a paid API. The live scripts need the daemon running and the extension connected:
+Unit tests never open a browser, call a paid API, or touch your real home directory: the CLI tests run setup/doctor/uninstall against a temp HOME with fake `launchctl`, `claude` and `fetch`. The live scripts need the daemon running and the extension connected:
 
 | Recipe | Checks | Cost |
 | --- | --- | --- |
@@ -174,7 +204,7 @@ Measured on the development machine: the 3-agent isolation run went from 20.6 s 
 - Background tabs are slower in "My current window" placement because Chrome throttles tabs you aren't looking at.
 - No iframes, shadow DOM, canvas content or file uploads.
 
-## Recovering v1
+## Recovering ChromeUse v1
 
 The previous native-messaging version (gateway, stdio MCP server, native host, v1 extension) was removed. Restore it with:
 
