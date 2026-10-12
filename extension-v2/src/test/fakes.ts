@@ -220,6 +220,14 @@ export function createFakeChrome() {
         }
         dropEmpty();
       }),
+      ungroup: vi.fn(async (ids: number | number[]) => {
+        for (const id of Array.isArray(ids) ? ids : [ids]) {
+          const t = tabs.get(id);
+          if (!t) throw notFound("tab", id);
+          t.groupId = -1;
+        }
+        dropEmpty();
+      }),
       group: vi.fn(async (opts: { groupId?: number; tabIds: number | number[]; createProperties?: { windowId?: number } }) => {
         const ids = Array.isArray(opts.tabIds) ? opts.tabIds : [opts.tabIds];
         let group: FakeGroup;

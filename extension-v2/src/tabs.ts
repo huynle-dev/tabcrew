@@ -140,7 +140,7 @@ export class TabManager {
       try {
         await this.addToSessionGroup(session, tabId, windowId);
       } catch (err) {
-        await chrome.tabs.remove(tabId).catch(() => undefined);
+        await closeTabsUngrouped([tabId]).catch(() => undefined);
         throw err;
       }
       const tab = await chrome.tabs.get(tabId);
@@ -460,7 +460,7 @@ export class TabManager {
   async closeFinished(groupId: number): Promise<{ closed_tabs: number }> {
     await this.requireReleased(groupId);
     const ids = (await chrome.tabs.query({ groupId })).map((t) => t.id).filter((id): id is number => typeof id === "number");
-    if (ids.length > 0) await chrome.tabs.remove(ids);
+    if (ids.length > 0) await closeTabsUngrouped(ids);
     await this.released.remove(groupId);
     return { closed_tabs: ids.length };
   }
@@ -720,7 +720,7 @@ export class TabManager {
         await chrome.tabGroups.update(finalGroup, { collapsed: true }).catch(() => undefined);
       }
     } catch (err) {
-      await chrome.tabs.remove(tabId).catch(() => undefined);
+      await closeTabsUngrouped([tabId]).catch(() => undefined);
       throw err;
     } finally {
       if (previousActive !== undefined && (await activeTabId(windowId)) !== previousActive) {
@@ -772,7 +772,7 @@ export class TabManager {
         if (rest.length === 0) await chrome.tabs.create({ windowId, active: false }).catch(() => undefined);
       }
     }
-    await chrome.tabs.remove(tabIds);
+    await closeTabsUngrouped(tabIds);
   }
 
   /** Group id for a session, verifying the persisted mapping and falling back to a title scan. */
@@ -864,4 +864,14 @@ async function activeTabId(windowId: number): Promise<number | undefined> {
 async function isNormalWindow(windowId: number): Promise<boolean> {
   const win = await chrome.windows.get(windowId).catch(() => null);
   return win !== null && win.type === "normal";
+}
+
+/**
+ * Close tabs without leaving a saved tab group behind. Chrome saves (and pins to the bookmarks
+ * bar) a group whose tabs are closed while still grouped; ungrouping first lets the group vanish.
+ */
+export async function closeTabsUngrouped(tabIds: number[]): Promise<void> {
+  if (tabIds.length === 0) return;
+  await chrome.tabs.ungroup(tabIds).catch(() => undefined);
+  await chrome.tabs.remove(tabIds);
 }

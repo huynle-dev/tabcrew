@@ -578,3 +578,46 @@ describe("session_release", () => {
     expect(events).toEqual([]);
   });
 });
+
+describe("closing never leaves a saved tab group behind", () => {
+  // Chrome saves and pins a group to the bookmarks bar when its tabs are closed while still
+  // grouped (seen live: every closed test session left a grey chip). Tabs must be ungrouped first.
+  function watchGroupedRemovals(): number[] {
+    const grouped: number[] = [];
+    const orig = fake.chrome.tabs.remove.getMockImplementation()!;
+    fake.chrome.tabs.remove.mockImplementation(async (ids: number | number[]) => {
+      for (const id of Array.isArray(ids) ? ids : [ids]) if ((fake.tabs.get(id)?.groupId ?? -1) > 0) grouped.push(id);
+      return orig(ids);
+    });
+    return grouped;
+  }
+
+  it("tab_close ungroups before removing", async () => {
+    const grouped = watchGroupedRemovals();
+    const a = (await call(alice, "tab_create", { url: "https://a/1" })) as { tab_id: number };
+    await call(alice, "tab_create", { url: "https://a/2" });
+    await call(alice, "tab_close", { tab_id: a.tab_id });
+    expect(fake.tabs.has(a.tab_id)).toBe(false);
+    expect(grouped).toEqual([]);
+  });
+
+  it("session_close ungroups before removing", async () => {
+    const grouped = watchGroupedRemovals();
+    await call(alice, "tab_create", {});
+    await call(alice, "tab_create", {});
+    expect(await call(alice, "session_close")).toEqual({ closed_tabs: 2 });
+    expect(grouped).toEqual([]);
+  });
+
+  it("closing a finished (released) group from the popup ungroups first", async () => {
+    const userWin = fake.addWindow({ focused: true });
+    fake.addTab({ windowId: userWin.id, url: "https://user.example", active: true });
+    await call(alice, "tab_create", { url: "https://a/1" });
+    await call(alice, "session_release");
+    const grouped = watchGroupedRemovals();
+    const finishedGroup = [...fake.groups.values()].find((g) => g.title.startsWith("✓"))!;
+    await tabs.closeFinished(finishedGroup.id);
+    expect(grouped).toEqual([]);
+    expect([...fake.tabs.values()].some((t) => t.url === "https://a/1")).toBe(false);
+  });
+});
