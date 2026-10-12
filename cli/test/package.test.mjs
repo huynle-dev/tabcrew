@@ -18,7 +18,7 @@ describe("tabcrew package metadata", () => {
     expect(pkg.engines.node).toBe(">=20.0.0");
     expect(pkg.license).toBe("MIT");
     // npm --provenance requires repository.url to match the GitHub repository the workflow runs in.
-    expect(pkg.repository).toEqual({ type: "git", url: "git+https://github.com/huynle-dev/tabcrew.git", directory: "cli" });
+    expect(pkg.repository).toEqual({ type: "git", url: "git+https://github.com/huynle/tabcrew.git", directory: "cli" });
     expect(pkg.dependencies).toBeUndefined();
   });
 });

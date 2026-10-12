@@ -10,7 +10,7 @@ The project is pre-1.0. Security fixes go into the latest release (npm `tabcrew`
 
 Please do not open a public issue for security problems.
 
-1. Use GitHub private vulnerability reporting: <https://github.com/huynle-dev/tabcrew/security/advisories/new> (repository **Security** tab → **Report a vulnerability**).
+1. Use GitHub private vulnerability reporting: <https://github.com/huynle/tabcrew/security/advisories/new> (repository **Security** tab → **Report a vulnerability**).
 2. If that is unavailable, open a regular issue that only asks for a private contact channel, without details.
 3. Include the affected component (`daemon/`, `extension/`, `cli/`, `shared/`) and version, reproduction steps, impact, and any suggested fix.
 

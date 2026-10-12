@@ -57,6 +57,6 @@ Changes to this policy are published in this file in the TabCrew repository, wit
 
 ## Contact
 
-Questions or concerns: open an issue at <https://github.com/huynle-dev/tabcrew/issues>. For security problems, please use private vulnerability reporting as described in [SECURITY.md](https://github.com/huynle-dev/tabcrew/blob/main/SECURITY.md).
+Questions or concerns: open an issue at <https://github.com/huynle/tabcrew/issues>. For security problems, please use private vulnerability reporting as described in [SECURITY.md](https://github.com/huynle/tabcrew/blob/main/SECURITY.md).
 
 TabCrew is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Google.

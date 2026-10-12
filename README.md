@@ -1,7 +1,7 @@
 # TabCrew
 
 [![npm](https://img.shields.io/npm/v/tabcrew)](https://www.npmjs.com/package/tabcrew)
-[![CI](https://github.com/huynle-dev/tabcrew/actions/workflows/ci.yml/badge.svg)](https://github.com/huynle-dev/tabcrew/actions/workflows/ci.yml)
+[![CI](https://github.com/huynle/tabcrew/actions/workflows/ci.yml/badge.svg)](https://github.com/huynle/tabcrew/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 TabCrew lets AI agents use your real browser. One local daemon serves many agents at once, and each agent works in its own isolated browser session: its own window and tab group, its own tabs, and no access to anyone else's tabs.
@@ -26,7 +26,7 @@ You need macOS, Node.js 20+, Google Chrome (or Chromium, Brave, Edge) and, for `
 
 Your agents (OpenCode, Claude Code, or any MCP client) can now call `session_open` and the other [tools](#tools). Remove everything with `npx tabcrew uninstall --purge`.
 
-TabCrew has no servers and no telemetry; see the [privacy policy](https://huynle-dev.github.io/tabcrew/privacy) and [Security](#security).
+TabCrew has no servers and no telemetry; see the [privacy policy](https://huynle.github.io/tabcrew/privacy) and [Security](#security).
 
 ### What setup does
 
@@ -200,7 +200,7 @@ The following settings come from the environment (or `~/.tabcrew/env`) only:
 - The pairing host only answers TabCrew extension IDs (checked by Chrome via `allowed_origins` and again by the host) and never logs the token.
 - Agents act in your real, signed-in browser. Only connect agents you trust.
 
-See [`SECURITY.md`](SECURITY.md) for the threat model and how to report vulnerabilities privately, and the [privacy policy](https://huynle-dev.github.io/tabcrew/privacy) for what data goes where.
+See [`SECURITY.md`](SECURITY.md) for the threat model and how to report vulnerabilities privately, and the [privacy policy](https://huynle.github.io/tabcrew/privacy) for what data goes where.
 
 ## Testing
 

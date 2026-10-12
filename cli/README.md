@@ -49,11 +49,11 @@ Then remove the extension from your browser.
 
 ## Privacy and security
 
-Everything lives in `~/.tabcrew` (override with `TABCREW_HOME`), readable only by you. The daemon listens on `127.0.0.1` only and requires the token. There is no telemetry. Page content leaves your computer only when an agent uses `browse`, and then only to the model provider you configured, with your key. See the [privacy policy](https://huynle-dev.github.io/tabcrew/privacy) and [SECURITY.md](https://github.com/huynle-dev/tabcrew/blob/main/SECURITY.md).
+Everything lives in `~/.tabcrew` (override with `TABCREW_HOME`), readable only by you. The daemon listens on `127.0.0.1` only and requires the token. There is no telemetry. Page content leaves your computer only when an agent uses `browse`, and then only to the model provider you configured, with your key. See the [privacy policy](https://huynle.github.io/tabcrew/privacy) and [SECURITY.md](https://github.com/huynle/tabcrew/blob/main/SECURITY.md).
 
 ## Links
 
-- Source and documentation: <https://github.com/huynle-dev/tabcrew>
-- Issues: <https://github.com/huynle-dev/tabcrew/issues>
+- Source and documentation: <https://github.com/huynle/tabcrew>
+- Issues: <https://github.com/huynle/tabcrew/issues>
 
 License: MIT. TabCrew is an independent project, not affiliated with or endorsed by Google.

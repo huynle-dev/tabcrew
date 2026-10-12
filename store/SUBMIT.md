@@ -4,7 +4,7 @@ A checklist for the repository owner. Everything to paste lives in `store/listin
 
 ## 0. Before the first submission (one time)
 
-- [ ] **Enable GitHub Pages** for the privacy policy: repository Settings → Pages → Source "Deploy from a branch" → Branch `main`, folder `/docs` → Save. Wait for the build, then open <https://huynle-dev.github.io/tabcrew/privacy> and check that it loads.
+- [ ] **Enable GitHub Pages** for the privacy policy: repository Settings → Pages → Source "Deploy from a branch" → Branch `main`, folder `/docs` → Save. Wait for the build, then open <https://huynle.github.io/tabcrew/privacy> and check that it loads.
 - [ ] **Register a Chrome Web Store developer account** at <https://chrome.google.com/webstore/devconsole>: sign in with the Google account that should own the item, accept the developer agreement, pay the one-time US$5 fee.
 - [ ] **Complete account setup** (Account tab): publisher display name (e.g. "TabCrew" or your name), contact email, and verify that email. Complete identity / trader verification if the dashboard asks for it (it can take a few days). Optionally turn on 2-step verification (required for publishing on most accounts).
 - [ ] **Enable private vulnerability reporting** on GitHub (Settings → Security → Private vulnerability reporting → Enable), as `SECURITY.md` points reporters there.
@@ -33,7 +33,7 @@ Copy from `store/listing.md`:
 - [ ] Store icon → `store/assets/icon-128.png`.
 - [ ] Screenshots → `store/screenshots/1-sessions.png`, `2-placement.png`, `3-finished-group.png`, `4-agent-browse.png` (1280×800).
 - [ ] Small promo tile → `store/screenshots/promo-small-440x280.png`.
-- [ ] Homepage URL → `https://github.com/huynle-dev/tabcrew`; Support URL → `https://github.com/huynle-dev/tabcrew/issues`.
+- [ ] Homepage URL → `https://github.com/huynle/tabcrew`; Support URL → `https://github.com/huynle/tabcrew/issues`.
 - [ ] Mature content → No.
 
 ## 4. Privacy tab
@@ -44,7 +44,7 @@ Copy from `store/permissions.md`:
 - [ ] One justification per permission: `debugger`, `tabs`, `tabGroups`, `storage`, `alarms`, `offscreen`, `nativeMessaging` (there are no host permissions). If the dashboard lists a permission not covered there, stop: the manifest changed and `store/permissions.md` must be updated first.
 - [ ] Remote code → "No, I am not using remote code".
 - [ ] Data usage → check **Web history** and **Website content** only; check all three certifications.
-- [ ] Privacy policy URL → `https://huynle-dev.github.io/tabcrew/privacy`.
+- [ ] Privacy policy URL → `https://huynle.github.io/tabcrew/privacy`.
 
 ## 5. Distribution tab
 

@@ -7,8 +7,8 @@ title: TabCrew
 TabCrew gives your local AI agents their own isolated tabs in your real browser. Each agent works in its own session; you stay in control and get finished work handed back for review.
 
 - [Privacy policy](privacy)
-- [Source code, installation and documentation](https://github.com/huynle-dev/tabcrew)
-- [Report an issue](https://github.com/huynle-dev/tabcrew/issues)
+- [Source code, installation and documentation](https://github.com/huynle/tabcrew)
+- [Report an issue](https://github.com/huynle/tabcrew/issues)
 
 Install the daemon with:
 

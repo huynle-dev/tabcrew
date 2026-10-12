@@ -96,7 +96,7 @@ Certifications (check all three):
 ## Privacy policy URL
 
 ```
-https://huynle-dev.github.io/tabcrew/privacy
+https://huynle.github.io/tabcrew/privacy
 ```
 
 Source: `docs/privacy.md`. The owner must enable GitHub Pages (repository Settings → Pages → Deploy from a branch → `main`, folder `/docs`) and open the URL once to confirm it loads before submitting.
@@ -104,5 +104,5 @@ Source: `docs/privacy.md`. The owner must enable GitHub Pages (repository Settin
 ## Notes for reviewers (optional "test instructions" field)
 
 ```
-TabCrew needs its local daemon to do anything. To test: on macOS with Node.js 20+, run "npx tabcrew setup" (press Enter to skip the OpenRouter key; everything except "browse" works without it). The popup then shows "connected". From a terminal, the daemon's MCP endpoint at http://127.0.0.1:8770/mcp (bearer token: "npx tabcrew token") accepts tool calls such as session_open, tab_create and observe; each session's tabs appear in their own window and tab group. Source: https://github.com/huynle-dev/tabcrew
+TabCrew needs its local daemon to do anything. To test: on macOS with Node.js 20+, run "npx tabcrew setup" (press Enter to skip the OpenRouter key; everything except "browse" works without it). The popup then shows "connected". From a terminal, the daemon's MCP endpoint at http://127.0.0.1:8770/mcp (bearer token: "npx tabcrew token") accepts tool calls such as session_open, tab_create and observe; each session's tabs appear in their own window and tab group. Source: https://github.com/huynle/tabcrew
 ```

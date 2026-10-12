@@ -19,12 +19,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/huynle-dev/tabcrew.git",
+    "url": "git+https://github.com/huynle/tabcrew.git",
     "directory": "cli"
   },
-  "homepage": "https://github.com/huynle-dev/tabcrew#readme",
+  "homepage": "https://github.com/huynle/tabcrew#readme",
   "bugs": {
-    "url": "https://github.com/huynle-dev/tabcrew/issues"
+    "url": "https://github.com/huynle/tabcrew/issues"
   },
   "keywords": [
     "mcp",
